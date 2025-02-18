@@ -72,9 +72,10 @@ func NewBinaryTreeMemory() *Memory {
 	index := NewBinaryTreeIndex()
 	index.setPageBacking(pages)
 	return &Memory{
-		merkleIndex:  index,
-		pageTable:    pages,
-		lastPageKeys: [2]Word{^Word(0), ^Word(0)}, // default to invalid keys, to not match any pages
+		merkleIndex:   index,
+		pageTable:     pages,
+		lastPageKeys:  [2]Word{^Word(0), ^Word(0)}, // default to invalid keys, to not match any pages
+		ProgramRegion: make([]*CachedPage, 0, 1<<31),
 	}
 }
 
@@ -141,7 +142,8 @@ func (m *BinaryTreeIndex) MerkleizeSubtree(gindex uint64) [32]byte {
 func (m *BinaryTreeIndex) MerkleProof(addr Word) (out [MemProofSize]byte) {
 	proof := m.traverseBranch(1, addr, 0)
 	// encode the proof
-	for i := 0; i < MemProofLeafCount; i++ {
+	_ = proof[MemProofLeafCount-1]
+	for i := 0; i <= MemProofLeafCount-1; i++ {
 		copy(out[i*32:(i+1)*32], proof[i][:])
 	}
 	return out

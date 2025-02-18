@@ -17,10 +17,12 @@ const (
 	WordSize    = 32
 	ExtMask     = 0x3
 
-	HeapStart       = 0x05_00_00_00
-	HeapEnd         = 0x60_00_00_00
-	ProgramBreak    = 0x40_00_00_00
-	HighMemoryStart = 0x7f_ff_d0_00
+	Limit            = 0xff_ff_ff_ff
+	ProgramHeapStart = 0x00_c0_00_00
+	HeapStart        = 0x05_00_00_00
+	HeapEnd          = 0x60_00_00_00
+	ProgramBreak     = 0x40_00_00_00
+	HighMemoryStart  = 0x7f_ff_d0_00
 )
 
 // 32-bit Syscall codes

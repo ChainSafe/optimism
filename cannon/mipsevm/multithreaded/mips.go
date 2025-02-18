@@ -24,11 +24,41 @@ func (m *InstrumentedState) handleSyscall() error {
 	v0 := Word(0)
 	v1 := Word(0)
 
+	// func HandleSysMmap(a0, a1, heap Word) (v0, v1, newHeap Word) {
+	// 	v1 = Word(0)
+	// 	newHeap = heap
+
+	// 	sz := a1
+	// 	if sz&memory.PageAddrMask != 0 { // adjust size to align with page size
+	// 		sz += memory.PageSize - (sz & memory.PageAddrMask)
+	// 	}
+	// 	if a0 == 0 {
+	// 		v0 = heap
+	// 		v0bytes := make([]byte, 8)
+	// 		binary.BigEndian.PutUint64(v0bytes, uint64(v0))
+	// 		fmt.Printf("mmap heap % X size 0x%x\n", v0bytes, sz)
+	// 		newHeap += sz
+	// 		// Fail if new heap exceeds memory limit, newHeap overflows around to low memory, or sz overflows
+	// 		if newHeap > program.HEAP_END || newHeap < heap || sz < a1 {
+	// 			v0 = SysErrorSignal
+	// 			v1 = MipsEINVAL
+	// 			return v0, v1, heap
+	// 		}
+	// 	} else {
+	// 		v0 = a0
+	// 		v0bytes := make([]byte, 8)
+	// 		binary.BigEndian.PutUint64(v0bytes, uint64(v0))
+	// 		fmt.Printf("mmap hint % X size 0x%x\n", v0bytes, sz)
+	// 	}
+
+	// 	return v0, v1, newHeap
+	// }
 	//fmt.Printf("syscall: %d\n", syscallNum)
 	switch syscallNum {
 	case arch.SysMmap:
 		var newHeap Word
 		v0, v1, newHeap = exec.HandleSysMmap(a0, a1, m.state.Heap)
+		m.state.Memory.Mmap(a0, a1, newHeap)
 		m.state.Heap = newHeap
 	case arch.SysBrk:
 		v0 = program.PROGRAM_BREAK
