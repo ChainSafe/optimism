@@ -30,7 +30,7 @@ type Word = arch.Word
 type MappedMemoryRegion struct {
 	start_addr Word
 	end_addr   Word
-	data       []byte
+	Data       []byte
 }
 
 func (m *MappedMemoryRegion) AddrInRegion(addr Word) bool {
@@ -43,7 +43,7 @@ func (m *MappedMemoryRegion) PageIndexInRegion(pageIndex Word) bool {
 
 func (m *MappedMemoryRegion) AccessWordBytes(addr Word) ([]byte, bool) {
 	if m.AddrInRegion(addr) {
-		return m.data[addr : addr+arch.WordSizeBytes : addr+arch.WordSizeBytes], true
+		return m.Data[addr : addr+arch.WordSizeBytes : addr+arch.WordSizeBytes], true
 	}
 	return nil, false
 }
@@ -60,7 +60,7 @@ type Memory struct {
 	lastPageKeys [2]Word
 	lastPage     [2]*CachedPage
 
-	mappedRegions []MappedMemoryRegion
+	MappedRegions []MappedMemoryRegion
 }
 
 type PageIndex interface {
@@ -75,25 +75,6 @@ type PageIndex interface {
 
 func NewMemory() *Memory {
 	return NewBinaryTreeMemory()
-}
-
-func (m *Memory) InitMappedRegions() {
-	indexes := maps.Keys(m.pageTable)
-	slices.Sort(indexes)
-	for _, pageIdx := range indexes {
-		for _, region := range m.mappedRegions {
-			if region.PageIndexInRegion(pageIdx) {
-				currLen := len(region.data)
-				indexAdjusted := pageIdx - region.start_addr>>PageAddrSize
-				if indexAdjusted*PageSize >= Word(currLen) {
-					region.data = region.data[:(pageIdx+1)*PageSize]
-				}
-				copy(region.data[indexAdjusted*PageSize:(indexAdjusted+1)*PageSize], m.pageTable[pageIdx].Data)
-				m.pageTable[pageIdx].Data = region.data[indexAdjusted*PageSize : (indexAdjusted+1)*PageSize]
-				break
-			}
-		}
-	}
 }
 
 // start end size gap
@@ -246,10 +227,10 @@ func (m *Memory) GetWord(addr Word) Word {
 	if addr&arch.ExtMask != 0 {
 		panic(fmt.Errorf("unaligned memory access: %x", addr))
 	}
-	for _, region := range m.mappedRegions {
+	for _, region := range m.MappedRegions {
 		if ok := region.AddrInRegion(addr); ok {
 			offset := addr - region.start_addr
-			return arch.ByteOrderWord.Word(region.data[offset : offset+arch.WordSizeBytes : offset+arch.WordSizeBytes])
+			return arch.ByteOrderWord.Word(region.Data[offset : offset+arch.WordSizeBytes : offset+arch.WordSizeBytes])
 		}
 	}
 
@@ -265,14 +246,14 @@ func (m *Memory) GetWord(addr Word) Word {
 
 func (m *Memory) AllocPage(pageIndex Word) *CachedPage {
 	p := new(CachedPage)
-	for _, region := range m.mappedRegions {
+	for _, region := range m.MappedRegions {
 		if region.PageIndexInRegion(pageIndex) {
-			currLen := len(region.data)
+			currLen := len(region.Data)
 			indexAdjusted := pageIndex - region.start_addr>>PageAddrSize
 			if indexAdjusted*PageSize >= Word(currLen) {
-				region.data = region.data[:(pageIndex+1)*PageSize]
+				region.Data = region.Data[:(pageIndex+1)*PageSize]
 			}
-			p.Data = region.data[indexAdjusted*PageSize : (indexAdjusted+1)*PageSize : (indexAdjusted+1)*PageSize]
+			p.Data = region.Data[indexAdjusted*PageSize : (indexAdjusted+1)*PageSize : (indexAdjusted+1)*PageSize]
 			break
 		}
 	}
@@ -347,9 +328,6 @@ func (m *Memory) Copy() *Memory {
 		pageTable:    pages,
 		lastPageKeys: [2]Word{^Word(0), ^Word(0)}, // default to invalid keys, to not match any pages
 		lastPage:     [2]*CachedPage{nil, nil},
-		// ProgramRegion:  make([]byte, len(m.ProgramRegion), 1<<31),
-		// GoMallocRegion: make([]byte, len(m.GoMallocRegion), 1<<31),
-
 	}
 
 	for k, page := range m.pageTable {
@@ -404,6 +382,7 @@ func (m *Memory) Deserialize(in io.Reader) error {
 			return err
 		}
 	}
+
 	return nil
 }
 

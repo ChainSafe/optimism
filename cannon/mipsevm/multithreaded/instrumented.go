@@ -28,17 +28,17 @@ type InstrumentedState struct {
 	preimageOracle *exec.TrackingPreimageOracleReader
 	meta           mipsevm.Metadata
 
-	// cached_decode []InstructionDetails
+	cached_decode []InstructionDetails
 }
 
 var _ mipsevm.FPVM = (*InstrumentedState)(nil)
 
 func NewInstrumentedState(state *State, po mipsevm.PreimageOracle, stdOut, stdErr io.Writer, log log.Logger, meta mipsevm.Metadata) *InstrumentedState {
-	// cached_decode := make([]InstructionDetails, 0)
-	// for pc := Word(0); pc < Word(len(state.Memory.ProgramRegion)); pc += 4 {
-	// 	insn, opcode, fun := exec.GetInstructionDetails(pc, state.Memory)
-	// 	cached_decode = append(cached_decode, InstructionDetails{insn, opcode, fun})
-	// }
+	cached_decode := make([]InstructionDetails, 0)
+	for pc := Word(0); pc < Word(len(state.Memory.MappedRegions[0].Data)); pc += 4 {
+		insn, opcode, fun := exec.GetInstructionDetails(pc, state.Memory)
+		cached_decode = append(cached_decode, InstructionDetails{insn, opcode, fun})
+	}
 	return &InstrumentedState{
 		state:          state,
 		log:            log,
@@ -49,7 +49,7 @@ func NewInstrumentedState(state *State, po mipsevm.PreimageOracle, stdOut, stdEr
 		statsTracker:   NoopStatsTracker(),
 		preimageOracle: exec.NewTrackingPreimageOracleReader(po),
 		meta:           meta,
-		// cached_decode:  cached_decode,
+		cached_decode:  cached_decode,
 	}
 }
 

@@ -2,7 +2,6 @@ package exec
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -117,9 +116,7 @@ func HandleSysMmap(a0, a1, heap Word) (v0, v1, newHeap Word) {
 	}
 	if a0 == 0 {
 		v0 = heap
-		v0bytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(v0bytes, uint64(v0))
-		fmt.Printf("mmap heap %x size 0x%x\n", v0bytes, sz)
+		//fmt.Printf("mmap heap 0x%x size 0x%x\n", v0, sz)
 		newHeap += sz
 		// Fail if new heap exceeds memory limit, newHeap overflows around to low memory, or sz overflows
 		if newHeap > program.HEAP_END || newHeap < heap || sz < a1 {
@@ -129,9 +126,7 @@ func HandleSysMmap(a0, a1, heap Word) (v0, v1, newHeap Word) {
 		}
 	} else {
 		v0 = a0
-		v0bytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(v0bytes, uint64(v0))
-		fmt.Printf("mmap hint %x size 0x%x\n", v0bytes, sz)
+		//fmt.Printf("mmap hint 0x%x size 0x%x\n", v0, sz)
 	}
 
 	return v0, v1, newHeap
