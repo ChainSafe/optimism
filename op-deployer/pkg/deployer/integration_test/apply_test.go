@@ -364,7 +364,7 @@ func TestProofParamOverrides(t *testing.T) {
 		{
 			"disputeGameFinalityDelaySeconds",
 			uint64Caster,
-			st.ImplementationsDeployment.OptimismPortalImplAddress,
+			st.ImplementationsDeployment.AnchorStateRegistryImplAddress,
 		},
 		{
 			"faultGameAbsolutePrestate",
@@ -399,24 +399,6 @@ func TestProofParamOverrides(t *testing.T) {
 			checkImmutable(t, allocs, tt.address, tt.caster(t, intent.GlobalDeployOverrides[tt.name]))
 		})
 	}
-}
-
-func TestInteropDeployment(t *testing.T) {
-	op_e2e.InitParallel(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	opts, intent, st := setupGenesisChain(t, defaultL1ChainID)
-	intent.UseInterop = true
-
-	require.NoError(t, deployer.ApplyPipeline(ctx, opts))
-
-	chainState := st.Chains[0]
-	depManagerSlot := common.HexToHash("0x1708e077affb93e89be2665fb0fb72581be66f84dc00d25fed755ae911905b1c")
-	checkImmutable(t, st.L1StateDump.Data.Accounts, st.ImplementationsDeployment.SystemConfigImplAddress, depManagerSlot)
-	proxyAdminOwnerHash := common.BytesToHash(intent.Chains[0].Roles.SystemConfigOwner.Bytes())
-	checkStorageSlot(t, st.L1StateDump.Data.Accounts, chainState.SystemConfigProxyAddress, depManagerSlot, proxyAdminOwnerHash)
 }
 
 func TestAltDADeployment(t *testing.T) {
@@ -747,10 +729,11 @@ func validateSuperchainDeployment(t *testing.T, st *state.State, cg codeGetter, 
 func validateOPChainDeployment(t *testing.T, cg codeGetter, st *state.State, intent *state.Intent, govEnabled bool) {
 	// Validate that the implementation addresses are always set, even in subsequent deployments
 	// that pull from an existing OPCM deployment.
-	implAddrs := []struct {
+	type addrTuple struct {
 		name string
 		addr common.Address
-	}{
+	}
+	implAddrs := []addrTuple{
 		{"DelayedWETHImplAddress", st.ImplementationsDeployment.DelayedWETHImplAddress},
 		{"OptimismPortalImplAddress", st.ImplementationsDeployment.OptimismPortalImplAddress},
 		{"SystemConfigImplAddress", st.ImplementationsDeployment.SystemConfigImplAddress},
@@ -762,6 +745,11 @@ func validateOPChainDeployment(t *testing.T, cg codeGetter, st *state.State, int
 		{"MipsSingletonAddress", st.ImplementationsDeployment.MipsSingletonAddress},
 		{"PreimageOracleSingletonAddress", st.ImplementationsDeployment.PreimageOracleSingletonAddress},
 	}
+
+	if !intent.L1ContractsLocator.IsTag() {
+		implAddrs = append(implAddrs, addrTuple{"ETHLockboxImplAddress", st.ImplementationsDeployment.ETHLockboxImplAddress})
+	}
+
 	for _, addr := range implAddrs {
 		require.NotEmpty(t, addr.addr, "%s should be set", addr.name)
 		code := cg(t, addr.addr)

@@ -17,6 +17,14 @@ func (db *ChainsDB) FindSealedBlock(chain eth.ChainID, number uint64) (seal type
 	return logDB.FindSealedBlock(number)
 }
 
+func (db *ChainsDB) FindBlockID(chain eth.ChainID, number uint64) (id eth.BlockID, err error) {
+	sealed, err := db.FindSealedBlock(chain, number)
+	if err != nil {
+		return eth.BlockID{}, err
+	}
+	return sealed.ID(), nil
+}
+
 // LatestBlockNum returns the latest fully-sealed block number that has been recorded to the logs db
 // for the given chain. It does not contain safety guarantees.
 // The block number might not be available (empty database, or non-existent chain).
@@ -29,36 +37,34 @@ func (db *ChainsDB) LatestBlockNum(chain eth.ChainID) (num uint64, ok bool) {
 	return bl.Number, ok
 }
 
+// IsCrossUnsafe checks if the given block is less than the cross-unsafe block number.
+// It does not check if the block is actually cross-unsafe (ie, known in the database).
 func (db *ChainsDB) IsCrossUnsafe(chainID eth.ChainID, block eth.BlockID) error {
-	v, ok := db.crossUnsafe.Get(chainID)
+	xU, ok := db.crossUnsafe.Get(chainID)
 	if !ok {
 		return types.ErrUnknownChain
 	}
-	crossUnsafe := v.Get()
+	crossUnsafe := xU.Get()
 	if crossUnsafe == (types.BlockSeal{}) {
 		return types.ErrFuture
 	}
 	if block.Number > crossUnsafe.Number {
 		return types.ErrFuture
 	}
-	// TODO(#11693): make cross-unsafe reorg safe
-	return nil
-}
-
-func (db *ChainsDB) ParentBlock(chainID eth.ChainID, parentOf eth.BlockID) (parent eth.BlockID, err error) {
-	logDB, ok := db.logDBs.Get(chainID)
+	// now we know it's within the cross-unsafe range
+	// check if it's consistent with unsafe data
+	lU, ok := db.logDBs.Get(chainID)
 	if !ok {
-		return eth.BlockID{}, types.ErrUnknownChain
+		return types.ErrUnknownChain
 	}
-	if parentOf.Number == 0 {
-		return eth.BlockID{}, nil
-	}
-	// TODO(#11693): make parent-lookup reorg safe
-	got, err := logDB.FindSealedBlock(parentOf.Number - 1)
+	unsafeBlock, err := lU.FindSealedBlock(block.Number)
 	if err != nil {
-		return eth.BlockID{}, err
+		return fmt.Errorf("failed to find sealed block %d: %w", block.Number, err)
 	}
-	return got.ID(), nil
+	if unsafeBlock.ID() != block {
+		return fmt.Errorf("found %s but was looking for unsafe block %s: %w", unsafeBlock.ID(), block, types.ErrConflict)
+	}
+	return nil
 }
 
 func (db *ChainsDB) IsLocalUnsafe(chainID eth.ChainID, block eth.BlockID) error {
@@ -90,6 +96,21 @@ func (db *ChainsDB) IsLocalSafe(chainID eth.ChainID, block eth.BlockID) error {
 		return types.ErrUnknownChain
 	}
 	return ldb.ContainsDerived(block)
+}
+
+func (db *ChainsDB) IsFinalized(chainID eth.ChainID, block eth.BlockID) error {
+	finL1 := db.FinalizedL1()
+	if finL1 == (eth.BlockRef{}) {
+		return types.ErrUninitialized
+	}
+	source, err := db.CrossDerivedToSource(chainID, block)
+	if err != nil {
+		return fmt.Errorf("failed to get cross-safe source: %w", err)
+	}
+	if finL1.Number >= source.Number {
+		return nil
+	}
+	return fmt.Errorf("cross-safe source block is not finalized: %w", types.ErrFuture)
 }
 
 func (db *ChainsDB) SafeDerivedAt(chainID eth.ChainID, source eth.BlockID) (types.BlockSeal, error) {
@@ -395,41 +416,6 @@ func (db *ChainsDB) NextSource(chain eth.ChainID, source eth.BlockID) (after eth
 		return eth.BlockRef{}, err
 	}
 	return v.MustWithParent(source), nil
-}
-
-// Safest returns the strongest safety level that can be guaranteed for the given log entry.
-// it assumes the log entry has already been checked and is valid, this function only checks safety levels.
-// Safety levels are assumed to graduate from LocalUnsafe to LocalSafe to CrossUnsafe to CrossSafe, with Finalized as the strongest.
-func (db *ChainsDB) Safest(chainID eth.ChainID, blockNum uint64, index uint32) (safest types.SafetyLevel, err error) {
-	if finalized, err := db.Finalized(chainID); err == nil {
-		if finalized.Number >= blockNum {
-			return types.Finalized, nil
-		}
-	}
-	crossSafe, err := db.CrossSafe(chainID)
-	if err != nil {
-		return types.Invalid, err
-	}
-	if crossSafe.Derived.Number >= blockNum {
-		return types.CrossSafe, nil
-	}
-	crossUnsafe, err := db.CrossUnsafe(chainID)
-	if err != nil {
-		return types.Invalid, err
-	}
-	// TODO(#12425): API: "index" for in-progress block building shouldn't be exposed from DB.
-	//  For now we're not counting anything cross-safe until the block is sealed.
-	if blockNum <= crossUnsafe.Number {
-		return types.CrossUnsafe, nil
-	}
-	localSafe, err := db.LocalSafe(chainID)
-	if err != nil {
-		return types.Invalid, err
-	}
-	if blockNum <= localSafe.Derived.Number {
-		return types.LocalSafe, nil
-	}
-	return types.LocalUnsafe, nil
 }
 
 func (db *ChainsDB) IteratorStartingAt(chain eth.ChainID, sealedNum uint64, logIndex uint32) (logs.Iterator, error) {
