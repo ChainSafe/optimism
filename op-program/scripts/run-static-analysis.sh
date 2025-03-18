@@ -27,7 +27,7 @@ fi
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 BIN_DIR="bin"
-ANALYZER_BIN="analyzer"
+ANALYZER_BIN="vm-compat"
 
 # Normalize architecture naming
 case "$ARCH" in
@@ -47,19 +47,17 @@ fi
 
 echo "✅ llvm-objdump found at $(which llvm-objdump)"
 
-# Check if 'analyzer' is installed
-if ! command -v analyzer &>/dev/null; then
-    echo "❌ Error: 'analyzer' is required but not found in \$PATH"
+# Check if 'vm-compat' is installed
+if ! command -v vm-compat &>/dev/null; then
+    echo "❌ Error: 'vm-compat' is required but not found in \$PATH"
     echo "Please install it using:"
-    echo "  mise plugins add vm-compat https://github.com/ChainSafe/mise-vm-compat.git"
-    echo "  mise install vm-compat@1.1.0"
-    echo "  mise use -g vm-compat@1.1.0"
+    echo "  mise use -g ubi:ChainSafe/vm-compat@1.1.0"
     echo "Or manually download from:"
     echo "  https://github.com/ChainSafe/vm-compat/releases"
     exit 1
 fi
 
-echo "✅ analyzer found at $(which analyzer)"
+echo "✅ vm-compat found at $(which vm-compat)"
 
 # Run the analyzer
 echo "Running analysis with VM profile: $VM_PROFILE using baseline report: $BASELINE_REPORT..."
