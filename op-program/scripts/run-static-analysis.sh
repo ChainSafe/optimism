@@ -25,12 +25,6 @@ fi
 
 ANALYZER_BIN="vm-compat"
 
-# Normalize architecture naming
-case "$ARCH" in
-    x86_64) ARCH="amd64" ;;
-    aarch64) ARCH="arm64" ;;
-esac
-
 if ! command -v llvm-objdump &>/dev/null; then
     echo "❌ Error: llvm-objdump is required but not found in \$PATH"
     echo "Please install it using one of the following commands, based on your OS:"
