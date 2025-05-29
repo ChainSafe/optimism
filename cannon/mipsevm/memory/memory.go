@@ -41,13 +41,6 @@ func (m *MappedMemoryRegion) PageIndexInRegion(pageIndex Word) bool {
 	return pageIndex >= m.start_addr>>PageAddrSize && pageIndex < m.end_addr>>PageAddrSize
 }
 
-func (m *MappedMemoryRegion) AccessWordBytes(addr Word) ([]byte, bool) {
-	if m.AddrInRegion(addr) {
-		return m.Data[addr : addr+arch.WordSizeBytes : addr+arch.WordSizeBytes], true
-	}
-	return nil, false
-}
-
 type Memory struct {
 	merkleIndex PageIndex
 	// Note: since we don't de-alloc Pages, we don't do ref-counting.
@@ -237,11 +230,7 @@ func (m *Memory) AllocPage(pageIndex Word) *CachedPage {
 	p := new(CachedPage)
 	for _, region := range m.MappedRegions {
 		if region.PageIndexInRegion(pageIndex) {
-			currLen := len(region.Data)
 			indexAdjusted := pageIndex - region.start_addr>>PageAddrSize
-			if indexAdjusted*PageSize >= Word(currLen) {
-				region.Data = region.Data[:(pageIndex+1)*PageSize]
-			}
 			p.Data = region.Data[indexAdjusted*PageSize : (indexAdjusted+1)*PageSize : (indexAdjusted+1)*PageSize]
 			break
 		}
