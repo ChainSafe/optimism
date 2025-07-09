@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestChainFork checks that the chain does not fork (all nodes have the same block hash for a fixed block number).
+// TestChainFork checks that the chain does not fork.
 func TestChainFork(t *testing.T) {
 	systest.SystemTest(t,
 		chainForkTestScenario(),
@@ -54,7 +54,6 @@ func chainForkTestScenario() systest.SystemTestFunc {
 				chainLogger.Debug("Waiting for the next block")
 				err = wait.ForNextBlock(ctx, client)
 				require.NoError(t, err, "failed to wait for the next block")
-
 				// Check for a chain fork again
 				err = laterCheck(false)
 				require.NoError(t, err, "second chain fork check failed")

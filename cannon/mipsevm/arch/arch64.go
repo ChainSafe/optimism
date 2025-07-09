@@ -43,7 +43,6 @@ const (
 	SysNanosleep    = 5034
 	SysClockGetTime = 5222
 	SysGetpid       = 5038
-	SysGetRandom    = 5313
 )
 
 // Noop Syscall numbers
@@ -72,6 +71,7 @@ const (
 	SysPipe2         = 5287
 	SysEpollCtl      = 5208
 	SysEpollPwait    = 5272
+	SysGetRandom     = 5313
 	SysUname         = 5061
 	SysStat64        = UndefinedSysNr
 	SysGetuid        = 5100

@@ -40,8 +40,8 @@ type MIPSEVM struct {
 	lastPreimageOracleInput []byte
 }
 
-func newMIPSEVM(t testing.TB, contracts *ContractMetadata, opts ...evmOption) *MIPSEVM {
-	env, evmState := NewEVMEnv(t, contracts)
+func newMIPSEVM(contracts *ContractMetadata, opts ...evmOption) *MIPSEVM {
+	env, evmState := NewEVMEnv(contracts)
 	sender := common.Address{0x13, 0x37}
 	startingGas := uint64(maxStepGas)
 	evm := &MIPSEVM{sender, startingGas, env, evmState, contracts.Addresses, nil, contracts.Artifacts, math.MaxUint64, nil, nil}
@@ -104,7 +104,7 @@ func (m *MIPSEVM) Step(t *testing.T, stepWitness *mipsevm.StepWitness, step uint
 	input := EncodeStepInput(t, stepWitness, mipsevm.LocalContext{}, m.artifacts.MIPS)
 	m.lastStepInput = input
 	ret, leftOverGas, err := m.env.Call(m.sender, m.addrs.MIPS, input, m.startingGas, common.U2560)
-	require.NoError(t, err, "evm should not fail, but got %v with return value 0x%x", err, ret)
+	require.NoError(t, err, "evm should not fail")
 	require.Len(t, ret, 32, "expecting 32-byte state hash")
 	// remember state hash, to check it against state
 	postHash := common.Hash(*(*[32]byte)(ret))
@@ -117,9 +117,7 @@ func (m *MIPSEVM) Step(t *testing.T, stepWitness *mipsevm.StepWitness, step uint
 	require.Equal(t, stateHash, postHash, "logged state must be accurate")
 
 	m.env.StateDB.RevertToSnapshot(snap)
-	if step%100_000 == 0 {
-		t.Logf("EVM step %d took %d gas, and returned stateHash %s", step, m.startingGas-leftOverGas, postHash)
-	}
+	t.Logf("EVM step %d took %d gas, and returned stateHash %s", step, m.startingGas-leftOverGas, postHash)
 	return evmPost
 }
 
@@ -207,7 +205,7 @@ type EvmValidator struct {
 
 // NewEvmValidator creates a validator that can be run repeatedly across multiple steps
 func NewEvmValidator(t *testing.T, hashFn mipsevm.HashFn, contracts *ContractMetadata, opts ...evmOption) *EvmValidator {
-	evm := newMIPSEVM(t, contracts, opts...)
+	evm := newMIPSEVM(contracts, opts...)
 	LogStepFailureAtCleanup(t, evm)
 
 	return &EvmValidator{
@@ -263,7 +261,7 @@ func AssertEVMReverts(t *testing.T, state mipsevm.FPVMState, contracts *Contract
 	input := EncodeStepInput(t, stepWitness, mipsevm.LocalContext{}, contracts.Artifacts.MIPS)
 	startingGas := uint64(maxStepGas)
 
-	env, evmState := NewEVMEnv(t, contracts)
+	env, evmState := NewEVMEnv(contracts)
 	env.Config.Tracer = tracer
 	sender := common.Address{0x13, 0x37}
 	ret, _, err := env.Call(sender, contracts.Addresses.MIPS, input, startingGas, common.U2560)
@@ -276,7 +274,7 @@ func AssertEVMReverts(t *testing.T, state mipsevm.FPVMState, contracts *Contract
 }
 
 func AssertPreimageOracleReverts(t *testing.T, preimageKey [32]byte, preimageValue []byte, preimageOffset arch.Word, contracts *ContractMetadata, opts ...evmOption) {
-	evm := newMIPSEVM(t, contracts, opts...)
+	evm := newMIPSEVM(contracts, opts...)
 	LogStepFailureAtCleanup(t, evm)
 
 	evm.assertPreimageOracleReverts(t, preimageKey, preimageValue, preimageOffset)

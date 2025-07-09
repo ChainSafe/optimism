@@ -7,7 +7,6 @@ import (
 	"io"
 	"math/big"
 
-	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/depset"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
 
@@ -109,7 +108,7 @@ type safeDB interface {
 
 func NewL2Verifier(t Testing, log log.Logger, l1 derive.L1Fetcher,
 	blobsSrc derive.L1BlobsFetcher, altDASrc driver.AltDAIface,
-	eng L2API, cfg *rollup.Config, depSet depset.DependencySet, syncCfg *sync.Config, safeHeadListener safeDB,
+	eng L2API, cfg *rollup.Config, syncCfg *sync.Config, safeHeadListener safeDB,
 ) *L2Verifier {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -212,7 +211,7 @@ func NewL2Verifier(t Testing, log log.Logger, l1 derive.L1Fetcher,
 	apis := []rpc.API{
 		{
 			Namespace:     "optimism",
-			Service:       node.NewNodeAPI(cfg, depSet, eng, backend, safeHeadListener, log),
+			Service:       node.NewNodeAPI(cfg, eng, backend, safeHeadListener, log),
 			Public:        true,
 			Authenticated: false,
 		},
