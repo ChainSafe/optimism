@@ -28,17 +28,17 @@ const (
 type Word = arch.Word
 
 type MappedMemoryRegion struct {
-	start_addr Word
-	end_addr   Word
-	Data       []byte
+	startAddr Word
+	endAddr   Word
+	Data      []byte
 }
 
 func (m *MappedMemoryRegion) AddrInRegion(addr Word) bool {
-	return addr >= m.start_addr && addr < m.end_addr
+	return addr >= m.startAddr && addr < m.endAddr
 }
 
 func (m *MappedMemoryRegion) PageIndexInRegion(pageIndex Word) bool {
-	return pageIndex >= m.start_addr>>PageAddrSize && pageIndex < m.end_addr>>PageAddrSize
+	return pageIndex >= m.startAddr>>PageAddrSize && pageIndex < m.endAddr>>PageAddrSize
 }
 
 type Memory struct {
@@ -211,7 +211,7 @@ func (m *Memory) GetWord(addr Word) Word {
 	}
 	for _, region := range m.MappedRegions {
 		if ok := region.AddrInRegion(addr); ok {
-			offset := addr - region.start_addr
+			offset := addr - region.startAddr
 			return arch.ByteOrderWord.Word(region.Data[offset : offset+arch.WordSizeBytes : offset+arch.WordSizeBytes])
 		}
 	}
@@ -230,7 +230,7 @@ func (m *Memory) AllocPage(pageIndex Word) *CachedPage {
 	p := new(CachedPage)
 	for _, region := range m.MappedRegions {
 		if region.PageIndexInRegion(pageIndex) {
-			indexAdjusted := pageIndex - region.start_addr>>PageAddrSize
+			indexAdjusted := pageIndex - region.startAddr>>PageAddrSize
 			p.Data = region.Data[indexAdjusted*PageSize : (indexAdjusted+1)*PageSize : (indexAdjusted+1)*PageSize]
 			break
 		}

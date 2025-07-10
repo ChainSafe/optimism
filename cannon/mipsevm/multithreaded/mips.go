@@ -311,8 +311,18 @@ func (m *InstrumentedState) doMipsStep() error {
 	}
 	m.state.StepsSinceLastContextSwitch += 1
 
-	insn_detail := m.cached_decode[m.state.GetPC()/4]
-	insn, opcode, fun := insn_detail.insn, insn_detail.opcode, insn_detail.fun
+	pc := m.state.GetPC()
+	cacheIdx := pc / 4
+	var insn, opcode, fun uint32
+	if int(cacheIdx) < len(m.cached_decode) {
+		insn_detail := m.cached_decode[cacheIdx]
+		insn, opcode, fun = insn_detail.insn, insn_detail.opcode, insn_detail.fun
+	} else {
+		rawInsn := m.state.Memory.GetWord(pc)
+		insn = uint32(rawInsn)
+		opcode = (insn >> 26) & 0x3F
+		fun = insn & 0x3F
+	}
 
 	// Handle syscall separately
 	// syscall (can read and write)
