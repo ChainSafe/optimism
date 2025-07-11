@@ -47,6 +47,6 @@ func TestOutputJsonMarshal(t *testing.T) {
 	require.JSONEq(t, string(expectedJson), string(jsonOutput))
 
 	var unmarshaled OutputV0
-	json.Unmarshal([]byte(expectedJson), &unmarshaled)
+	require.NoError(t, json.Unmarshal([]byte(expectedJson), &unmarshaled))
 	require.Equal(t, output, unmarshaled)
 }
