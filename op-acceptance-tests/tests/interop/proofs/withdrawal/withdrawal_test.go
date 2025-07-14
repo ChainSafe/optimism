@@ -1,4 +1,4 @@
-package proofs
+package withdrawal
 
 import (
 	"testing"
@@ -10,7 +10,7 @@ import (
 )
 
 func TestSuperRootWithdrawal(gt *testing.T) {
-	t := devtest.ParallelT(gt)
+	t := devtest.SerialT(gt)
 	sys := presets.NewSimpleInterop(t)
 	sys.L1Network.WaitForOnline()
 

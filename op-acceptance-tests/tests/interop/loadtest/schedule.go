@@ -46,6 +46,7 @@ var _ AIMDObserver = NoOpAIMDObserver{}
 func (NoOpAIMDObserver) UpdateRPS(uint64) {}
 
 type aimdConfig struct {
+	baseRPS           uint64
 	increaseDelta     uint64       // additive delta
 	decreaseFactor    float64      // multiplicative factor
 	failRateThreshold float64      // when to start decreasing (e.g., 0.05 of all requests are failures)
@@ -55,6 +56,7 @@ type aimdConfig struct {
 
 func NewAIMD(baseRPS uint64, slotTime time.Duration, opts ...AIMDOption) *AIMD {
 	cfg := &aimdConfig{
+		baseRPS:           baseRPS,
 		increaseDelta:     max(baseRPS/10, 1),
 		decreaseFactor:    0.5,
 		failRateThreshold: 0.05,
@@ -70,7 +72,7 @@ func NewAIMD(baseRPS uint64, slotTime time.Duration, opts ...AIMDOption) *AIMD {
 		metrics:  aimdMetrics{},
 		cfg:      cfg,
 	}
-	aimd.rps.Store(baseRPS)
+	aimd.rps.Store(cfg.baseRPS)
 	aimd.cfg.observer.UpdateRPS(baseRPS)
 	return aimd
 }
@@ -82,6 +84,12 @@ func WithAIMDOptsCombined(opts ...AIMDOption) AIMDOption {
 		for _, opt := range opts {
 			opt(cfg)
 		}
+	}
+}
+
+func WithBaseRPS(rps uint64) AIMDOption {
+	return func(cfg *aimdConfig) {
+		cfg.baseRPS = rps
 	}
 }
 
@@ -182,7 +190,8 @@ func NewBurst(blockTime time.Duration, opts ...AIMDOption) *Burst {
 	}
 }
 
-// Run will spam until the budget is depleted before exiting successfully.
+// Run executes spammer.Spam with increasing throughput. It decreases throughput when errors are
+// encountered.
 func (b *Burst) Run(t devtest.T, spammer Spammer) {
 	ctx, cancel := context.WithCancel(t.Ctx())
 	defer cancel()
@@ -232,29 +241,11 @@ func NewSteady(el InfoByLabel, elasticityMultiplier uint64, blockTime time.Durat
 	}
 }
 
-// Run will spam just enough to keep the network within 95%-100% of the gas target. It exists
-// successfully upon NAT_STEADY_TIMEOUT.
+// Run will spam just enough to keep the network within 95%-100% of the gas target.
 func (s *Steady) Run(t devtest.T, spammer Spammer) {
-	// Configure a context that will allow us to exit the test on time. We set the following
-	// deadlines/timeouts on the context and let the context package choose the minimum:
-	//
-	// 1. Test context deadline (minus 10s for cleanup), if it exists.
-	// 2. NAT_STEADY_TIMEOUT or 3m if it doesn't exist.
 	ctx, cancel := context.WithCancel(t.Ctx())
-	t.Cleanup(cancel)
-	if deadline, exists := ctx.Deadline(); exists {
-		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-10*time.Second))
-		t.Cleanup(cancel)
-	}
-	if timeoutStr, exists := os.LookupEnv("NAT_STEADY_TIMEOUT"); exists {
-		timeout, err := time.ParseDuration(timeoutStr)
-		t.Require().NoError(err)
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-	} else {
-		ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
-	}
+	defer cancel()
 	t = t.WithCtx(ctx)
-	t.Cleanup(cancel)
 
 	// The backpressure algorithm will adjust every slot to stay within 95-100% of the gas target.
 	aimd := setupAIMD(t, s.blockTime, WithAIMDOptsCombined(s.opts...), WithAdjustWindow(1), WithDecreaseFactor(0.95))
@@ -265,12 +256,12 @@ func (s *Steady) Run(t devtest.T, spammer Spammer) {
 		defer wg.Done()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-t.Ctx().Done():
 				return
 			case <-time.After(s.blockTime):
-				unsafe, err := s.el.InfoByLabel(ctx, eth.Unsafe)
+				unsafe, err := s.el.InfoByLabel(t.Ctx(), eth.Unsafe)
 				if err != nil {
-					if errors.Is(err, context.DeadlineExceeded) {
+					if errors.Is(err, t.Ctx().Err()) {
 						return
 					}
 					t.Require().NoError(err)
@@ -292,9 +283,37 @@ func (s *Steady) Run(t devtest.T, spammer Spammer) {
 			}
 			if isOverdraftErr(err) {
 				cancel()
-				t.Require().NoError(err)
 			}
 			t.Logger().Warn("Spammer error", "err", err)
+		}()
+	}
+}
+
+type Constant struct {
+	blockTime time.Duration
+	aimdOpts  []AIMDOption
+}
+
+var _ Schedule = (*Constant)(nil)
+
+func NewConstant(blockTime time.Duration, aimdOpts ...AIMDOption) *Constant {
+	return &Constant{
+		blockTime: blockTime,
+		aimdOpts:  aimdOpts,
+	}
+}
+
+func (c *Constant) Run(t devtest.T, spammer Spammer) {
+	aimd := setupAIMD(t, c.blockTime, c.aimdOpts...)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	for range aimd.Ready() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := spammer.Spam(t); err != nil {
+				t.Logger().Warn("Spammer error", "err", err)
+			}
 		}()
 	}
 }
