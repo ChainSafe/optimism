@@ -212,6 +212,9 @@ func (m *Memory) GetWord(addr Word) Word {
 	for _, region := range m.MappedRegions {
 		if ok := region.AddrInRegion(addr); ok {
 			offset := addr - region.startAddr
+			if offset+arch.WordSizeBytes > Word(len(region.Data)) {
+				return 0 // out of bounds access, return zero
+			}
 			return arch.ByteOrderWord.Word(region.Data[offset : offset+arch.WordSizeBytes : offset+arch.WordSizeBytes])
 		}
 	}
@@ -230,8 +233,15 @@ func (m *Memory) AllocPage(pageIndex Word) *CachedPage {
 	p := new(CachedPage)
 	for _, region := range m.MappedRegions {
 		if region.PageIndexInRegion(pageIndex) {
-			indexAdjusted := pageIndex - region.startAddr>>PageAddrSize
-			p.Data = region.Data[indexAdjusted*PageSize : (indexAdjusted+1)*PageSize : (indexAdjusted+1)*PageSize]
+			indexAdjusted := pageIndex - (region.startAddr >> PageAddrSize)
+			start := indexAdjusted * PageSize
+			end := (indexAdjusted + 1) * PageSize
+			// Bounds check to avoid panic
+			if end <= Word(len(region.Data)) && start < end { //start >= 0 not needed as start is unint and always >= 0
+				p.Data = region.Data[start:end:end]
+			} else {
+				p.Data = make(Page, PageSize)
+			}
 			break
 		}
 	}
