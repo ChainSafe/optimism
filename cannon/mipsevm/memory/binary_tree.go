@@ -21,12 +21,12 @@ func NewBinaryTreeMemory() *Memory {
 	indexedRegions := make([]MappedMemoryRegion, 2)
 	indexedRegions[0] = MappedMemoryRegion{
 		startAddr: 0,
-		endAddr:   arch.ProgramHeapStart,
+		endAddr:   1 << 31,
 		Data:      make([]byte, 1<<31),
 	}
 	indexedRegions[1] = MappedMemoryRegion{
 		startAddr: arch.ProgramHeapStart,
-		endAddr:   arch.HeapStart,
+		endAddr:   arch.ProgramHeapStart + 1<<31,
 		Data:      make([]byte, 1<<31),
 	}
 	return &Memory{
