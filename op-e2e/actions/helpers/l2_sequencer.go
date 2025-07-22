@@ -3,14 +3,13 @@ package helpers
 import (
 	"context"
 
-	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/depset"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
 
 	"github.com/ethereum/go-ethereum/log"
 
+	"github.com/ethereum-optimism/optimism/op-node/config"
 	"github.com/ethereum-optimism/optimism/op-node/metrics"
-	"github.com/ethereum-optimism/optimism/op-node/node"
 	"github.com/ethereum-optimism/optimism/op-node/node/safedb"
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/async"
@@ -19,10 +18,11 @@ import (
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/driver"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/engine"
-	"github.com/ethereum-optimism/optimism/op-node/rollup/event"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/sequencing"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/sync"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-service/event"
+	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/depset"
 )
 
 // MockL1OriginSelector is a shim to override the origin as sequencer, so we can force it to stay on an older origin.
@@ -59,14 +59,14 @@ func NewL2Sequencer(t Testing, log log.Logger, l1 derive.L1Fetcher, blobSrc deri
 	altDASrc driver.AltDAIface, eng L2API, cfg *rollup.Config, depSet depset.DependencySet, seqConfDepth uint64,
 ) *L2Sequencer {
 	ver := NewL2Verifier(t, log, l1, blobSrc, altDASrc, eng, cfg, depSet, &sync.Config{}, safedb.Disabled)
-	attrBuilder := derive.NewFetchingAttributesBuilder(cfg, l1, eng)
+	attrBuilder := derive.NewFetchingAttributesBuilder(cfg, depSet, l1, eng)
 	seqConfDepthL1 := confdepth.NewConfDepth(seqConfDepth, ver.syncStatus.L1Head, l1)
 	originSelector := sequencing.NewL1OriginSelector(t.Ctx(), log, cfg, seqConfDepthL1)
 	l1OriginSelector := &MockL1OriginSelector{
 		actual: originSelector,
 	}
 	metr := metrics.NoopMetrics
-	seqStateListener := node.DisabledConfigPersistence{}
+	seqStateListener := config.DisabledConfigPersistence{}
 	conduc := &conductor.NoOpConductor{}
 	asyncGossip := async.NoOpGossiper{}
 	seq := sequencing.NewSequencer(t.Ctx(), log, cfg, attrBuilder, l1OriginSelector,
@@ -104,7 +104,7 @@ func (s *L2Sequencer) ActL2StartBlock(t Testing) {
 		t.InvalidAction("already started building L2 block")
 		return
 	}
-	s.synchronousEvents.Emit(sequencing.SequencerActionEvent{})
+	s.synchronousEvents.Emit(sequencing.SequencerActionEvent{Ctx: event.WrapCtx(t.Ctx())})
 	require.NoError(t, s.drainer.DrainUntil(event.Is[engine.BuildStartedEvent], false),
 		"failed to start block building")
 
@@ -119,14 +119,14 @@ func (s *L2Sequencer) ActL2EndBlock(t Testing) {
 	}
 	s.l2Building = false
 
-	s.synchronousEvents.Emit(sequencing.SequencerActionEvent{})
+	s.synchronousEvents.Emit(sequencing.SequencerActionEvent{Ctx: event.WrapCtx(t.Ctx())})
 	require.NoError(t, s.drainer.DrainUntil(event.Is[engine.PayloadSuccessEvent], false),
 		"failed to complete block building")
 
 	// After having built a L2 block, make sure to get an engine update processed.
 	// This will ensure the sync-status and such reflect the latest changes.
-	s.synchronousEvents.Emit(engine.TryUpdateEngineEvent{})
-	s.synchronousEvents.Emit(engine.ForkchoiceRequestEvent{})
+	s.synchronousEvents.Emit(engine.TryUpdateEngineEvent{Ctx: event.WrapCtx(t.Ctx())})
+	s.synchronousEvents.Emit(engine.ForkchoiceRequestEvent{Ctx: event.WrapCtx(t.Ctx())})
 	require.NoError(t, s.drainer.DrainUntil(func(ev event.Event) bool {
 		x, ok := ev.(engine.ForkchoiceUpdateEvent)
 		return ok && x.UnsafeL2Head == s.engine.UnsafeL2Head()

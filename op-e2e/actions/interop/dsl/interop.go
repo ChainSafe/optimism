@@ -19,7 +19,7 @@ import (
 	"github.com/ethereum-optimism/optimism/op-e2e/actions/helpers"
 	"github.com/ethereum-optimism/optimism/op-e2e/e2eutils"
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
-	"github.com/ethereum-optimism/optimism/op-node/rollup/event"
+	"github.com/ethereum-optimism/optimism/op-service/event"
 	"github.com/ethereum-optimism/optimism/op-service/sources"
 	"github.com/ethereum-optimism/optimism/op-service/testlog"
 	"github.com/ethereum-optimism/optimism/op-supervisor/config"
@@ -41,9 +41,10 @@ const (
 type Chain struct {
 	ChainID eth.ChainID
 
-	RollupCfg   *rollup.Config
-	L2Genesis   *core.Genesis
-	BatcherAddr common.Address
+	RollupCfg     *rollup.Config
+	DependencySet depset.DependencySet
+	L2Genesis     *core.Genesis
+	BatcherAddr   common.Address
 
 	Sequencer       *helpers.L2Sequencer
 	SequencerEngine *helpers.L2Engine
@@ -329,6 +330,7 @@ func createL2Services(
 	return &Chain{
 		ChainID:         eth.ChainIDFromBig(output.Genesis.Config.ChainID),
 		RollupCfg:       output.RollupCfg,
+		DependencySet:   depSet,
 		L2Genesis:       output.Genesis,
 		BatcherAddr:     crypto.PubkeyToAddress(batcherKey.PublicKey),
 		Sequencer:       seq,

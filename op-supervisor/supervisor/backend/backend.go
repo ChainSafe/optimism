@@ -13,10 +13,11 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/log"
 
-	"github.com/ethereum-optimism/optimism/op-node/rollup/event"
 	"github.com/ethereum-optimism/optimism/op-service/client"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-service/event"
 	"github.com/ethereum-optimism/optimism/op-service/locks"
+	"github.com/ethereum-optimism/optimism/op-service/safemath"
 	"github.com/ethereum-optimism/optimism/op-service/sources"
 	"github.com/ethereum-optimism/optimism/op-supervisor/config"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/cross"
@@ -46,6 +47,9 @@ type SupervisorBackend struct {
 
 	// cfgSet is the full config set that the backend uses to know about the chains it is indexing
 	cfgSet depset.FullConfigSet
+
+	// linker checks if the configuration constraints of a message (check chain ID + timestamp)
+	linker depset.LinkChecker
 
 	// chainDBs is the primary interface to the databases, including logs, derived-from information and L1 finalization
 	chainDBs *db.ChainsDB
@@ -81,8 +85,10 @@ type SupervisorBackend struct {
 	rpcVerificationWarnings bool
 }
 
-var _ event.AttachEmitter = (*SupervisorBackend)(nil)
-var _ frontend.Backend = (*SupervisorBackend)(nil)
+var (
+	_ event.AttachEmitter = (*SupervisorBackend)(nil)
+	_ frontend.Backend    = (*SupervisorBackend)(nil)
+)
 
 var (
 	errAlreadyStopped        = errors.New("already stopped")
@@ -97,7 +103,8 @@ var (
 var verifyAccessWithRPCTimeout = 10 * time.Second
 
 func NewSupervisorBackend(ctx context.Context, logger log.Logger,
-	m Metrics, cfg *config.Config, eventExec event.Executor) (*SupervisorBackend, error) {
+	m Metrics, cfg *config.Config, eventExec event.Executor,
+) (*SupervisorBackend, error) {
 	// attempt to prepare the data directory
 	if err := db.PrepDataDir(cfg.Datadir); err != nil {
 		return nil, err
@@ -140,6 +147,7 @@ func NewSupervisorBackend(ctx context.Context, logger log.Logger,
 		m:          m,
 		dataDir:    cfg.Datadir,
 		cfgSet:     cfgSet,
+		linker:     depset.LinkerFromConfig(cfgSet),
 		chainDBs:   chainsDBs,
 		l1Accessor: l1Accessor,
 		// For testing we can avoid running the processors.
@@ -176,29 +184,58 @@ func NewSupervisorBackend(ctx context.Context, logger log.Logger,
 func (su *SupervisorBackend) OnEvent(ev event.Event) bool {
 	switch x := ev.(type) {
 	case superevents.LocalUnsafeReceivedEvent:
+		if !su.cfgSet.IsInterop(x.ChainID, x.NewLocalUnsafe.Time) {
+			su.logger.Warn("ignoring local unsafe received event for pre-interop block", "chainID", x.ChainID, "unsafe", x.NewLocalUnsafe)
+			return false
+		} else if su.cfgSet.IsInteropActivationBlock(x.ChainID, x.NewLocalUnsafe.Time) {
+			su.emitter.Emit(superevents.UnsafeActivationBlockEvent{
+				ChainID: x.ChainID,
+				Unsafe:  x.NewLocalUnsafe,
+				Ctx:     x.Ctx,
+			})
+			// don't process events of the activation block
+			return true
+		}
 		su.emitter.Emit(superevents.ChainProcessEvent{
 			ChainID: x.ChainID,
 			Target:  x.NewLocalUnsafe.Number,
+			Ctx:     x.Ctx,
 		})
 	case superevents.LocalUnsafeUpdateEvent:
 		su.emitter.Emit(superevents.UpdateCrossUnsafeRequestEvent{
 			ChainID: x.ChainID,
+			Ctx:     x.Ctx,
 		})
 	case superevents.CrossUnsafeUpdateEvent:
 		su.emitter.Emit(superevents.UpdateCrossUnsafeRequestEvent{
 			ChainID: x.ChainID,
+			Ctx:     x.Ctx,
 		})
+	case superevents.LocalDerivedEvent:
+		if !su.cfgSet.IsInterop(x.ChainID, x.Derived.Derived.Time) {
+			su.logger.Warn("ignoring local derived event for pre-interop block", "chainID", x.ChainID, "derived", x.Derived.Derived)
+			return false
+		} else if su.cfgSet.IsInteropActivationBlock(x.ChainID, x.Derived.Derived.Time) {
+			su.emitter.Emit(superevents.SafeActivationBlockEvent{
+				ChainID: x.ChainID,
+				Safe:    x.Derived,
+				Ctx:     x.Ctx,
+			})
+		}
 	case superevents.LocalSafeUpdateEvent:
 		su.emitter.Emit(superevents.ChainProcessEvent{
 			ChainID: x.ChainID,
 			Target:  x.NewLocalSafe.Derived.Number,
+			Ctx:     x.Ctx,
 		})
 		su.emitter.Emit(superevents.UpdateCrossSafeRequestEvent{
 			ChainID: x.ChainID,
+			Ctx:     x.Ctx,
 		})
 	case superevents.CrossSafeUpdateEvent:
 		su.emitter.Emit(superevents.UpdateCrossSafeRequestEvent{
 			ChainID: x.ChainID,
+			Ctx:     x.Ctx,
 		})
 	default:
 		return false
@@ -223,15 +260,14 @@ func (su *SupervisorBackend) initResources(ctx context.Context, cfg *config.Conf
 		}
 	}
 
-	linker := depset.LinkerFromConfig(su.cfgSet)
 	// initialize all cross-unsafe processors
 	for _, chainID := range chains {
-		worker := cross.NewCrossUnsafeWorker(su.logger, chainID, su.chainDBs, linker)
+		worker := cross.NewCrossUnsafeWorker(su.logger, chainID, su.chainDBs, su.linker)
 		su.eventSys.Register(fmt.Sprintf("cross-unsafe-%s", chainID), worker)
 	}
 	// initialize all cross-safe processors
 	for _, chainID := range chains {
-		worker := cross.NewCrossSafeWorker(su.logger, chainID, su.chainDBs, linker)
+		worker := cross.NewCrossSafeWorker(su.logger, chainID, su.chainDBs, su.linker)
 		su.eventSys.Register(fmt.Sprintf("cross-safe-%s", chainID), worker)
 	}
 	// For each chain initialize a chain processor service,
@@ -299,6 +335,21 @@ func (su *SupervisorBackend) openChainDBs(chainID eth.ChainID) error {
 
 	su.chainDBs.AddCrossUnsafeTracker(chainID)
 
+	// If Interop is active at genesis, emit SafeActivationBlockEvent so that the DB
+	// can initialize, if needed.
+	genesis := su.cfgSet.Genesis(chainID)
+	if su.cfgSet.IsInterop(chainID, genesis.L2.Timestamp) {
+		su.emitter.Emit(superevents.SafeActivationBlockEvent{
+			ChainID: chainID,
+			Safe: types.DerivedBlockRefPair{
+				// Initialization skips parent checks, so zero parents are ok.
+				Source:  genesis.L1.WithZeroParent(),
+				Derived: genesis.L2.WithZeroParent(),
+			},
+			Ctx: event.WrapCtx(su.sysContext),
+		})
+	}
+
 	return nil
 }
 
@@ -314,11 +365,6 @@ func (su *SupervisorBackend) AttachSyncNode(ctx context.Context, src syncnode.Sy
 	if !su.cfgSet.HasChain(chainID) {
 		return nil, fmt.Errorf("chain %s is not part of the interop dependency set: %w", chainID, types.ErrUnknownChain)
 	}
-	// before attaching the sync source to the backend at all,
-	// query the anchor point to initialize the database
-	if err := su.QueryAnchorpoint(chainID, src); err != nil {
-		return nil, fmt.Errorf("failed to query anchor point: %w", err)
-	}
 	err = su.AttachProcessorSource(chainID, src)
 	if err != nil {
 		return nil, fmt.Errorf("failed to attach sync source to processor: %w", err)
@@ -328,18 +374,6 @@ func (su *SupervisorBackend) AttachSyncNode(ctx context.Context, src syncnode.Sy
 		return nil, fmt.Errorf("failed to attach sync source to node: %w", err)
 	}
 	return su.syncNodesController.AttachNodeController(chainID, src, noSubscribe)
-}
-
-func (su *SupervisorBackend) QueryAnchorpoint(chainID eth.ChainID, src syncnode.SyncNode) error {
-	anchor, err := src.AnchorPoint(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to get anchor point: %w", err)
-	}
-	su.emitter.Emit(superevents.AnchorEvent{
-		ChainID: chainID,
-		Anchor:  anchor,
-	})
-	return nil
 }
 
 func (su *SupervisorBackend) AttachProcessorSource(chainID eth.ChainID, src processors.Source) error {
@@ -364,7 +398,7 @@ func (su *SupervisorBackend) attachL1RPC(ctx context.Context, l1RPCAddr string) 
 	su.logger.Info("attaching L1 RPC to L1 processor", "rpc", l1RPCAddr)
 
 	logger := su.logger.New("l1-rpc", l1RPCAddr)
-	l1RPC, err := client.NewRPC(ctx, logger, l1RPCAddr)
+	l1RPC, err := client.NewRPC(ctx, logger, l1RPCAddr, client.WithLazyDial())
 	if err != nil {
 		return fmt.Errorf("failed to setup L1 RPC: %w", err)
 	}
@@ -415,6 +449,7 @@ func (su *SupervisorBackend) Stop(ctx context.Context) error {
 	su.l1Accessor.UnsubscribeFinalityHandler()
 	su.l1Accessor.UnsubscribeLatestHandler()
 
+	su.rewinder.Close()
 	su.chainProcessors.Clear()
 
 	su.syncNodesController.Close()
@@ -523,7 +558,7 @@ func (su *SupervisorBackend) checkSafety(chainID eth.ChainID, blockID eth.BlockI
 }
 
 func (su *SupervisorBackend) CheckAccessList(ctx context.Context, inboxEntries []common.Hash,
-	minSafety types.SafetyLevel, executingDescriptor types.ExecutingDescriptor) error {
+	minSafety types.SafetyLevel, execDescr types.ExecutingDescriptor) error {
 	switch minSafety {
 	case types.LocalUnsafe, types.CrossUnsafe, types.LocalSafe, types.CrossSafe, types.Finalized:
 		// valid safety level
@@ -531,10 +566,10 @@ func (su *SupervisorBackend) CheckAccessList(ctx context.Context, inboxEntries [
 		return ErrUnexpectedMinSafetyLevel
 	}
 
-	su.logger.Debug("Checking access-list",
-		"minSafety", minSafety, "length", len(inboxEntries))
+	su.logger.Debug("Checking access-list", "minSafety", minSafety, "length", len(inboxEntries))
 
-	// TODO(#14800): acquire a rewind-read-lock, so we can ensure the safety of all entries is consistent
+	h := su.chainDBs.AcquireHandle()
+	defer h.Release()
 
 	entries := inboxEntries
 	for len(entries) > 0 {
@@ -547,10 +582,26 @@ func (su *SupervisorBackend) CheckAccessList(ctx context.Context, inboxEntries [
 		}
 		entries = remaining
 
-		// Check if message passes time checks
-		if err := executingDescriptor.AccessCheck(su.cfgSet.MessageExpiryWindow(), acc.Timestamp); err != nil {
-			su.logger.Warn("Access-list time check failed", "err", err)
-			return types.ErrConflict // TODO: Do we want to do this?
+		// Register initiating side as a dependency
+		h.DependOnDerivedTime(acc.Timestamp)
+
+		// TODO(#16245): backwards compat: if user does not specify executing chain, then assume the initiating chain ID.
+		// This supports op-reth, op-rbuilder, proxyd while they are not updated to provide this chain ID.
+		execChainID := execDescr.ChainID
+		if execDescr.ChainID == (eth.ChainID{}) {
+			execChainID = acc.ChainID
+		}
+		// If not specified, assume the same chain as the initiating side.
+		if !su.linker.CanExecute(execChainID, execDescr.Timestamp, acc.ChainID, acc.Timestamp) {
+			su.logger.Debug("Access-list link check failed")
+			return types.ErrConflict
+		}
+		if execDescr.Timeout != 0 {
+			maxTimestamp := safemath.SaturatingAdd(execDescr.Timestamp, execDescr.Timeout)
+			if !su.linker.CanExecute(execChainID, maxTimestamp, acc.ChainID, acc.Timestamp) {
+				su.logger.Debug("Access-list link check at timeout time failed")
+				return types.ErrConflict
+			}
 		}
 
 		msgBlockFromDB, err := su.checkAccessWithDB(acc)
@@ -559,19 +610,17 @@ func (su *SupervisorBackend) CheckAccessList(ctx context.Context, inboxEntries [
 			return types.ErrConflict
 		}
 
+		// Optional & additional, not part of the check-accesslist result. So not protected by the same read-handle.
 		if su.rpcVerificationWarnings {
 			go su.asyncVerifyAccessWithRPC(ctx, acc, msgBlockFromDB)
 		}
 
-		// TODO(#14800) add msgBlockFromDB to rewind lock
-
-		// TODO(#14800): this can be deferred to only check the latest block of all access entries
 		if err := su.checkSafety(acc.ChainID, msgBlockFromDB, minSafety); err != nil {
 			su.logger.Debug("Access-list safety check failed", "err", err)
 			return types.ErrConflict
 		}
 	}
-	return nil
+	return h.Err()
 }
 
 func (su *SupervisorBackend) CrossSafe(ctx context.Context, chainID eth.ChainID) (types.DerivedIDPair, error) {
@@ -632,6 +681,8 @@ func (su *SupervisorBackend) FindSealedBlock(ctx context.Context, chainID eth.Ch
 func (su *SupervisorBackend) AllSafeDerivedAt(ctx context.Context, source eth.BlockID) (map[eth.ChainID]eth.BlockID, error) {
 	chains := su.cfgSet.Chains()
 	ret := map[eth.ChainID]eth.BlockID{}
+
+	// Note: no need to reorg/rewind lock: everything is derived from the same L1 block
 	for _, chainID := range chains {
 		derived, err := su.LocalSafeDerivedAt(ctx, chainID, source)
 		if err != nil {
@@ -658,7 +709,7 @@ func (su *SupervisorBackend) FinalizedL1(ctx context.Context) (eth.BlockRef, err
 	return v, nil
 }
 
-func (su *SupervisorBackend) AnchorPoint(ctx context.Context, chainID eth.ChainID) (types.DerivedBlockSealPair, error) {
+func (su *SupervisorBackend) ActivationBlock(ctx context.Context, chainID eth.ChainID) (types.DerivedBlockSealPair, error) {
 	return su.chainDBs.AnchorPoint(chainID)
 }
 
@@ -693,6 +744,10 @@ func (su *SupervisorBackend) SuperRootAtTimestamp(ctx context.Context, timestamp
 	})
 	chainInfos := make([]eth.ChainRootInfo, len(chains))
 	superRootChains := make([]eth.ChainIDAndOutput, len(chains))
+
+	h := su.chainDBs.AcquireHandle()
+	defer h.Release()
+	h.DependOnDerivedTime(uint64(timestamp))
 
 	var crossSafeSource eth.BlockID
 
@@ -730,9 +785,13 @@ func (su *SupervisorBackend) SuperRootAtTimestamp(ctx context.Context, timestamp
 			}
 			return eth.SuperRootResponse{}, fmt.Errorf("cross-derived-to-source failed for chain %s: %w", chainID, err)
 		}
+		h.DependOnSourceBlock(source.Number)
 		if crossSafeSource.Number == 0 || crossSafeSource.Number < source.Number {
 			crossSafeSource = source.ID()
 		}
+	}
+	if !h.IsValid() {
+		return eth.SuperRootResponse{}, h.Err()
 	}
 	super := eth.SuperV1{
 		Timestamp: uint64(timestamp),

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,29 +9,31 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 
-	"github.com/ethereum-optimism/optimism/op-node/rollup/event"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-service/event"
 	"github.com/ethereum-optimism/optimism/op-service/locks"
 	"github.com/ethereum-optimism/optimism/op-supervisor/metrics"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/db/fromda"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/db/logs"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/depset"
+	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/reads"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/superevents"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
 )
 
-var errRewindFailed = errors.New("rewind failed")
-
 type LogStorage interface {
 	io.Closer
+
+	IsEmpty() bool
 
 	AddLog(logHash common.Hash, parentBlock eth.BlockID,
 		logIdx uint32, execMsg *types.ExecutingMessage) error
 
 	SealBlock(parentHash common.Hash, block eth.BlockID, timestamp uint64) error
 
-	Rewind(newHead eth.BlockID) error
+	Rewind(inv reads.Invalidator, newHead eth.BlockID) error
 
+	// FirstSealedBlock() (block types.BlockSeal, err error)
 	LatestSealedBlock() (id eth.BlockID, ok bool)
 
 	// FindSealedBlock finds the requested block by number, to check if it exists,
@@ -87,12 +90,12 @@ type DerivationStorage interface {
 	// AddDerived adds a derived block to the database. The first entry to be added may
 	// have zero parent hashes.
 	AddDerived(source eth.BlockRef, derived eth.BlockRef, revision types.Revision) error
-	ReplaceInvalidatedBlock(replacementDerived eth.BlockRef, invalidated common.Hash) (out types.DerivedBlockRefPair, err error)
+	ReplaceInvalidatedBlock(inv reads.Invalidator, replacementDerived eth.BlockRef, invalidated common.Hash) (out types.DerivedBlockRefPair, err error)
 
 	// rewinding
-	RewindAndInvalidate(invalidated types.DerivedBlockRefPair) error
-	RewindToScope(scope eth.BlockID) error
-	RewindToFirstDerived(v eth.BlockID, revision types.Revision) error
+	RewindAndInvalidate(inv reads.Invalidator, invalidated types.DerivedBlockRefPair) error
+	RewindToScope(inv reads.Invalidator, scope eth.BlockID) error
+	RewindToFirstDerived(inv reads.Invalidator, v eth.BlockID, revision types.Revision) error
 }
 
 var _ DerivationStorage = (*fromda.DB)(nil)
@@ -100,8 +103,10 @@ var _ DerivationStorage = (*fromda.DB)(nil)
 var _ LogStorage = (*logs.DB)(nil)
 
 type Metrics interface {
-	RecordCrossUnsafeRef(chainID eth.ChainID, ref eth.BlockRef)
-	RecordCrossSafeRef(chainID eth.ChainID, ref eth.BlockRef)
+	RecordCrossUnsafe(chainID eth.ChainID, seal types.BlockSeal)
+	RecordCrossSafe(chainID eth.ChainID, seal types.BlockSeal)
+	RecordLocalSafe(chainID eth.ChainID, seal types.BlockSeal)
+	RecordLocalUnsafe(chainID eth.ChainID, seal types.BlockSeal)
 }
 
 // ChainsDB is a database that stores logs and derived-from data for multiple chains.
@@ -129,7 +134,9 @@ type ChainsDB struct {
 	// an error until it has this L1 finality to work with.
 	finalizedL1 locks.RWValue[eth.L1BlockRef]
 
-	readRegistries locks.RWMap[eth.ChainID, *ReadRegistry]
+	// readRegistry tracks what is actively being read,
+	// so we can invalidate reads that are affected by rewinds/reorgs.
+	readRegistry *reads.Registry
 
 	// depSet is the dependency set, used to determine what may be tracked,
 	// what is missing, and to provide it to DB users.
@@ -141,6 +148,9 @@ type ChainsDB struct {
 	emitter event.Emitter
 
 	m Metrics
+
+	rootCtx       context.Context
+	rootCtxCancel context.CancelFunc
 }
 
 var _ event.AttachEmitter = (*ChainsDB)(nil)
@@ -149,11 +159,14 @@ func NewChainsDB(l log.Logger, depSet depset.DependencySet, m Metrics) *ChainsDB
 	if m == nil {
 		m = metrics.NoopMetrics
 	}
-
+	ctx, cancel := context.WithCancel(context.Background())
 	return &ChainsDB{
-		logger: l,
-		depSet: depSet,
-		m:      m,
+		logger:        l,
+		depSet:        depSet,
+		m:             m,
+		readRegistry:  reads.NewRegistry(l),
+		rootCtx:       ctx,
+		rootCtxCancel: cancel,
 	}
 }
 
@@ -163,11 +176,47 @@ func (db *ChainsDB) AttachEmitter(em event.Emitter) {
 
 func (db *ChainsDB) OnEvent(ev event.Event) bool {
 	switch x := ev.(type) {
-	case superevents.AnchorEvent:
-		db.logger.Info("Received chain anchor information",
-			"chain", x.ChainID, "derived", x.Anchor.Derived, "source", x.Anchor.Source)
-		db.initFromAnchor(x.ChainID, x.Anchor)
+	case superevents.UnsafeActivationBlockEvent:
+		if !db.isInitialized(x.ChainID) {
+			db.logger.Info("Initializing logs DB from unsafe activation block",
+				"chain", x.ChainID, "block", x.Unsafe)
+			// Note that isInitialized is only true after full initialization,
+			// not only the logs db.
+			if err := db.maybeInitFromUnsafe(x.ChainID, x.Unsafe); err != nil {
+				db.logger.Error("Error initializing logs DB from unsafe activation block",
+					"chain", x.ChainID, "block", x.Unsafe, "err", err)
+				return false
+			}
+			return true
+		} else {
+			db.logger.Warn("Received unsafe activation block on initialized DB",
+				"chain", x.ChainID, "block", x.Unsafe)
+			// TODO(#15774): handle reorg
+		}
+		return false
+	case superevents.SafeActivationBlockEvent:
+		if !db.isInitialized(x.ChainID) {
+			db.logger.Info("Initializing full DB from safe activation block",
+				"chain", x.ChainID, "block", x.Safe)
+			// Note that isInitialized is only true after full initialization,
+			// not only the logs db.
+			db.initFromAnchor(x.ChainID, x.Safe)
+			return true
+		} else {
+			db.logger.Warn("Received safe activation block on initialized DB",
+				"chain", x.ChainID, "block", x.Safe)
+			// TODO(#15774): handle reorg
+		}
+		return false
 	case superevents.LocalDerivedEvent:
+		if !db.isInitialized(x.ChainID) {
+			// Initialization is handled by SafeActivationBlockEvent, which will probably only be
+			// received by the ChainsDB after this event here. So we need to skip processing this
+			// event here.
+			db.logger.Debug("Received derived event before DB is initialized (expected for activation block)",
+				"chain", x.ChainID, "derived", x.Derived, "node", x.NodeID)
+			return false
+		}
 		db.UpdateLocalSafe(x.ChainID, x.Derived.Source, x.Derived.Derived, x.NodeID)
 	case superevents.FinalizedL1RequestEvent:
 		db.onFinalizedL1(x.FinalizedL1)
@@ -223,8 +272,8 @@ func (db *ChainsDB) ResumeFromLastSealedBlock() error {
 			return true
 		}
 		db.logger.Info("Resuming, starting from last sealed block", "chain", chain, "head", head)
-		if err := logStore.Rewind(head); err != nil {
-			result = fmt.Errorf("%w: failed to rewind chain %s to sealed block %d", errRewindFailed, chain, head)
+		if err := logStore.Rewind(db.readRegistry, head); err != nil {
+			result = fmt.Errorf("%w: failed to rewind chain %s to sealed block %d", types.ErrRewindFailed, chain, head)
 			return false
 		}
 		return true
@@ -237,6 +286,7 @@ func (db *ChainsDB) DependencySet() depset.DependencySet {
 }
 
 func (db *ChainsDB) Close() error {
+	db.rootCtxCancel()
 	var combined error
 	db.logDBs.Range(func(id eth.ChainID, logDB LogStorage) bool {
 		if err := logDB.Close(); err != nil {
@@ -247,12 +297,8 @@ func (db *ChainsDB) Close() error {
 	return combined
 }
 
-func (db *ChainsDB) AcquireReadHandle(chainID eth.ChainID, blockNum uint64) (*ReadHandle, error) {
-	registry, ok := db.readRegistries.Get(chainID)
-	if !ok {
-		registry = NewReadRegistry(db.logger)
-		db.readRegistries.Set(chainID, registry)
-	}
+var _ reads.Acquirer = (*ChainsDB)(nil)
 
-	return registry.AcquireHandle(blockNum), nil
+func (db *ChainsDB) AcquireHandle() reads.Handle {
+	return db.readRegistry.AcquireHandle()
 }

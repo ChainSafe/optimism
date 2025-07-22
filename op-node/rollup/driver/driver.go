@@ -16,12 +16,12 @@ import (
 	"github.com/ethereum-optimism/optimism/op-node/rollup/confdepth"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/engine"
-	"github.com/ethereum-optimism/optimism/op-node/rollup/event"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/finality"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/sequencing"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/status"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/sync"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-service/event"
 )
 
 // aliases to not disrupt op-conductor code
@@ -161,6 +161,7 @@ func NewDriver(
 	drain Drain,
 	driverCfg *Config,
 	cfg *rollup.Config,
+	depSet derive.DependencySet,
 	l2 L2Chain,
 	l1 L1Chain,
 	l1Blobs derive.L1BlobsFetcher,
@@ -173,7 +174,7 @@ func NewDriver(
 	syncCfg *sync.Config,
 	sequencerConductor conductor.SequencerConductor,
 	altDA AltDAIface,
-	managedMode bool,
+	indexingMode bool,
 ) *Driver {
 	driverCtx, driverCancel := context.WithCancel(context.Background())
 
@@ -206,23 +207,23 @@ func NewDriver(
 	sys.Register("attributes-handler",
 		attributes.NewAttributesHandler(log, cfg, driverCtx, l2))
 
-	derivationPipeline := derive.NewDerivationPipeline(log, cfg, verifConfDepth, l1Blobs, altDA, l2, metrics, managedMode)
+	derivationPipeline := derive.NewDerivationPipeline(log, cfg, depSet, verifConfDepth, l1Blobs, altDA, l2, metrics, indexingMode)
 
 	sys.Register("pipeline",
 		derive.NewPipelineDeriver(driverCtx, derivationPipeline))
 
 	syncDeriver := &SyncDeriver{
-		Derivation:     derivationPipeline,
-		SafeHeadNotifs: safeHeadListener,
-		CLSync:         clSync,
-		Engine:         ec,
-		SyncCfg:        syncCfg,
-		Config:         cfg,
-		L1:             l1,
-		L2:             l2,
-		Log:            log,
-		Ctx:            driverCtx,
-		ManagedMode:    managedMode,
+		Derivation:          derivationPipeline,
+		SafeHeadNotifs:      safeHeadListener,
+		CLSync:              clSync,
+		Engine:              ec,
+		SyncCfg:             syncCfg,
+		Config:              cfg,
+		L1:                  l1,
+		L2:                  l2,
+		Log:                 log,
+		Ctx:                 driverCtx,
+		ManagedBySupervisor: indexingMode,
 	}
 	sys.Register("sync", syncDeriver)
 
@@ -234,7 +235,7 @@ func NewDriver(
 	var sequencer sequencing.SequencerIface
 	if driverCfg.SequencerEnabled {
 		asyncGossiper := async.NewAsyncGossiper(driverCtx, network, log, metrics)
-		attrBuilder := derive.NewFetchingAttributesBuilder(cfg, l1, l2)
+		attrBuilder := derive.NewFetchingAttributesBuilder(cfg, depSet, l1, l2)
 		sequencerConfDepth := confdepth.NewConfDepth(driverCfg.SequencerConfDepth, statusTracker.L1Head, l1)
 		findL1Origin := sequencing.NewL1OriginSelector(driverCtx, log, cfg, sequencerConfDepth)
 		sys.Register("origin-selector", findL1Origin)

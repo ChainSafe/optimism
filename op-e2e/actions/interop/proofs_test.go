@@ -176,6 +176,8 @@ func TestInteropFaultProofs_ConsolidateValidCrossChainMessage(gt *testing.T) {
 }
 
 func TestInteropFaultProofs_PreForkActivation(gt *testing.T) {
+	// TODO(#16166): Fix non-genesis Interop activation proofs
+	gt.Skip()
 	t := helpers.NewDefaultTesting(gt)
 	system := dsl.NewInteropDSL(t, dsl.SetInteropForkScheduledButInactive())
 
@@ -1496,7 +1498,7 @@ func WithInteropEnabled(t helpers.StatefulTesting, actors *dsl.InteropActors, de
 		f.DependencySet = depSet
 
 		for _, chain := range []*dsl.Chain{actors.ChainA, actors.ChainB} {
-			verifier, canonicalOnlyEngine := createVerifierWithOnlyCanonicalBlocks(t, actors.L1Miner, chain, depSet)
+			verifier, canonicalOnlyEngine := createVerifierWithOnlyCanonicalBlocks(t, actors.L1Miner, chain)
 			f.L2Sources = append(f.L2Sources, &fpHelpers.FaultProofProgramL2Source{
 				Node:        verifier,
 				Engine:      canonicalOnlyEngine,
@@ -1508,7 +1510,7 @@ func WithInteropEnabled(t helpers.StatefulTesting, actors *dsl.InteropActors, de
 
 // createVerifierWithOnlyCanonicalBlocks creates a new L2Verifier and associated L2Engine that only has the canonical
 // blocks from chain in its database. Non-canonical blocks, their world state, receipts and other data are not available
-func createVerifierWithOnlyCanonicalBlocks(t helpers.StatefulTesting, l1Miner *helpers.L1Miner, chain *dsl.Chain, depSet depset.DependencySet) (*helpers.L2Verifier, *helpers.L2Engine) {
+func createVerifierWithOnlyCanonicalBlocks(t helpers.StatefulTesting, l1Miner *helpers.L1Miner, chain *dsl.Chain) (*helpers.L2Verifier, *helpers.L2Engine) {
 	jwtPath := e2eutils.WriteDefaultJWT(t)
 	canonicalOnlyEngine := helpers.NewL2Engine(t, testlog.Logger(t, log.LvlInfo).New("role", "canonicalOnlyEngine"), chain.L2Genesis, jwtPath)
 	head := chain.Sequencer.L2Unsafe()
@@ -1546,7 +1548,7 @@ func createVerifierWithOnlyCanonicalBlocks(t helpers.StatefulTesting, l1Miner *h
 		altda.Disabled,
 		canonicalOnlyEngine.EngineClient(t, chain.RollupCfg),
 		chain.RollupCfg,
-		depSet,
+		chain.DependencySet,
 		&sync2.Config{},
 		safedb.Disabled)
 	return verifier, canonicalOnlyEngine

@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/ethereum-optimism/optimism/op-node/rollup/event"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-service/event"
 	"github.com/ethereum-optimism/optimism/op-service/testlog"
 	"github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -36,7 +36,8 @@ func TestFailover(t *testing.T) {
 	require.Equal(t, source, chainProc.activeClient)
 
 	// when no error, the activeClient should be unchanged
-	chainProc.onRequest(2)
+	chainProc.target = 2
+	chainProc.index()
 	require.Equal(t, source, chainProc.activeClient)
 
 	// force the activeClient to be the bad source
@@ -44,7 +45,8 @@ func TestFailover(t *testing.T) {
 	require.Equal(t, badSource, chainProc.activeClient)
 
 	// when the bad source errors, the activeClient should be back to the first source
-	chainProc.onRequest(2)
+	chainProc.target = 2
+	chainProc.index()
 	require.Equal(t, source, chainProc.activeClient)
 }
 

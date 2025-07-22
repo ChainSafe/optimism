@@ -11,8 +11,8 @@ import (
 	gethevent "github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 
-	"github.com/ethereum-optimism/optimism/op-node/rollup/event"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-service/event"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/depset"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/backend/superevents"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
@@ -22,13 +22,14 @@ type mockSyncControl struct {
 	anchorPointFn       func(ctx context.Context) (types.DerivedBlockRefPair, error)
 	provideL1Fn         func(ctx context.Context, ref eth.BlockRef) error
 	resetFn             func(ctx context.Context, unsafe, safe, finalized eth.BlockID) error
+	resetPreInteropFn   func(ctx context.Context) error
 	updateCrossSafeFn   func(ctx context.Context, derived, source eth.BlockID) error
 	updateCrossUnsafeFn func(ctx context.Context, derived eth.BlockID) error
 	updateFinalizedFn   func(ctx context.Context, id eth.BlockID) error
-	pullEventFn         func(ctx context.Context) (*types.ManagedEvent, error)
+	pullEventFn         func(ctx context.Context) (*types.IndexingEvent, error)
 	blockRefByNumFn     func(ctx context.Context, number uint64) (eth.BlockRef, error)
 
-	subscribeEvents gethevent.FeedOf[*types.ManagedEvent]
+	subscribeEvents gethevent.FeedOf[*types.IndexingEvent]
 }
 
 func (m *mockSyncControl) InvalidateBlock(ctx context.Context, seal types.BlockSeal) error {
@@ -56,14 +57,21 @@ func (m *mockSyncControl) Reset(ctx context.Context, lUnsafe, xUnsafe, lSafe, xS
 	return nil
 }
 
-func (m *mockSyncControl) PullEvent(ctx context.Context) (*types.ManagedEvent, error) {
+func (m *mockSyncControl) ResetPreInterop(ctx context.Context) error {
+	if m.resetPreInteropFn != nil {
+		return m.resetPreInteropFn(ctx)
+	}
+	return nil
+}
+
+func (m *mockSyncControl) PullEvent(ctx context.Context) (*types.IndexingEvent, error) {
 	if m.pullEventFn != nil {
 		return m.pullEventFn(ctx)
 	}
 	return nil, nil
 }
 
-func (m *mockSyncControl) SubscribeEvents(ctx context.Context, ch chan *types.ManagedEvent) (ethereum.Subscription, error) {
+func (m *mockSyncControl) SubscribeEvents(ctx context.Context, ch chan *types.IndexingEvent) (ethereum.Subscription, error) {
 	return m.subscribeEvents.Subscribe(ch), nil
 }
 
@@ -116,7 +124,7 @@ type mockBackend struct {
 	isLocalUnsafeFn   func(ctx context.Context, chainID eth.ChainID, blockID eth.BlockID) error
 }
 
-func (m *mockBackend) AnchorPoint(ctx context.Context, chainID eth.ChainID) (types.DerivedBlockSealPair, error) {
+func (m *mockBackend) ActivationBlock(ctx context.Context, chainID eth.ChainID) (types.DerivedBlockSealPair, error) {
 	if m.anchorPointFn != nil {
 		return m.anchorPointFn(ctx, chainID)
 	}
@@ -201,7 +209,6 @@ func sampleDepSet(t *testing.T) depset.DependencySet {
 }
 
 type eventMonitor struct {
-	anchorCalled             int
 	localDerived             int
 	receivedLocalUnsafe      int
 	localDerivedOriginUpdate int
@@ -209,8 +216,6 @@ type eventMonitor struct {
 
 func (m *eventMonitor) OnEvent(ev event.Event) bool {
 	switch ev.(type) {
-	case superevents.AnchorEvent:
-		m.anchorCalled += 1
 	case superevents.LocalDerivedEvent:
 		m.localDerived += 1
 	case superevents.LocalUnsafeReceivedEvent:
