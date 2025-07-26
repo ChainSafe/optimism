@@ -14,25 +14,26 @@ type BinaryTreeIndex struct {
 	pageTable map[Word]*CachedPage
 }
 
-func NewBinaryTreeMemory() *Memory {
+func NewBinaryTreeMemory(codeSize arch.Word) *Memory {
 	pages := make(map[Word]*CachedPage)
 	index := NewBinaryTreeIndex(pages)
 
 	indexedRegions := make([]MappedMemoryRegion, 2)
 	indexedRegions[0] = MappedMemoryRegion{
 		startAddr: 0,
-		endAddr:   1 << 31,
-		Data:      make([]byte, 1<<31),
+		endAddr:   codeSize,
+		Data:      make([]byte, codeSize),
 	}
 	indexedRegions[1] = MappedMemoryRegion{
 		startAddr: arch.ProgramHeapStart,
 		endAddr:   arch.ProgramHeapStart + 1<<31,
 		Data:      make([]byte, 1<<31),
 	}
+
 	return &Memory{
 		merkleIndex:   index,
 		pageTable:     pages,
-		lastPageKeys:  [2]Word{^Word(0), ^Word(0)}, // default to invalid keys, to not match any pages
+		lastPageKeys:  [2]Word{^Word(0), ^Word(0)},
 		MappedRegions: indexedRegions,
 	}
 }

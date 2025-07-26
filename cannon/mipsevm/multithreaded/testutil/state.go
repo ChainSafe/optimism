@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/arch"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/exec"
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm/memory"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil"
 )
@@ -200,4 +201,10 @@ func RandomState(seed int) *multithreaded.State {
 	mut := StateMutator{state}
 	mut.Randomize(int64(seed))
 	return state
+}
+
+func WithCodeRegionSize(size arch.Word) StateOption {
+	return func(state *StateMutator) {
+		state.state.Memory = memory.NewMemory(size)
+	}
 }

@@ -66,8 +66,12 @@ type PageIndex interface {
 	New(pages map[Word]*CachedPage) PageIndex
 }
 
-func NewMemory() *Memory {
-	return NewBinaryTreeMemory()
+func NewMemory(sizes ...arch.Word) *Memory {
+	codeSize := arch.Word(1 << 31) // 2 GiB default
+	if len(sizes) > 0 && sizes[0] != 0 {
+		codeSize = sizes[0]
+	}
+	return NewBinaryTreeMemory(codeSize)
 }
 
 // start end size gap

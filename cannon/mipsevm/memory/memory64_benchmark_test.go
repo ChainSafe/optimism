@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	smallDataset  = 12_500_000
-	mediumDataset = 100_000_000
-	largeDataset  = 400_000_000
+	smallDataset          = 12_500_000
+	mediumDataset         = 100_000_000
+	largeDataset          = 400_000_000
+	defaultCodeRegionSize = 1 << 31
 )
 
 func BenchmarkMemoryOperations(b *testing.B) {
@@ -36,7 +37,7 @@ func BenchmarkMemoryOperations(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run("BinaryTree", func(b *testing.B) {
 			b.Run(bm.name, func(b *testing.B) {
-				m := NewBinaryTreeMemory()
+				m := NewBinaryTreeMemory(defaultCodeRegionSize)
 				b.ResetTimer()
 				bm.fn(b, m)
 			})
