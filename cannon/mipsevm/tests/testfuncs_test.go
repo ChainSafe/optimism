@@ -42,7 +42,7 @@ func testOperators(t *testing.T, cases []operatorTestCase, mips32Insn bool) {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
 				validator := testutil.NewEvmValidator(t, v.StateHashFn, v.Contracts)
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(0), mtutil.WithNextPC(4))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(0), mtutil.WithNextPC(4), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				var insn uint32
 				var baseReg uint32 = 17
@@ -111,7 +111,7 @@ func testMulDiv(t *testing.T, cases []mulDivTestCase, mips32Insn bool) {
 
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(0), mtutil.WithNextPC(4))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(0), mtutil.WithNextPC(4), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				var insn uint32
 				baseReg := uint32(0x9)
@@ -176,7 +176,7 @@ func testLoadStore(t *testing.T, cases []loadStoreTestCase) {
 				addr := tt.base + Word(tt.imm)
 				effAddr := arch.AddressMask & addr
 
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 
 				insn := tt.opcode<<26 | baseReg<<21 | rtReg<<16 | uint32(tt.imm)
@@ -223,7 +223,7 @@ func testBranch(t *testing.T, cases []branchTestCase) {
 		for i, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(tt.pc))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(tt.pc), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				const rsReg = 8 // t0
 				insn := tt.opcode<<26 | rsReg<<21 | tt.regimm<<16 | uint32(tt.offset)
@@ -298,7 +298,7 @@ func testMTStoreOpsClearMemReservation(t *testing.T, cases []testMTStoreOpsClear
 				t.Run(tName, func(t *testing.T) {
 					t.Parallel()
 					insn := uint32((c.opcode << 26) | (baseReg & 0x1F << 21) | (rtReg & 0x1F << 16) | (0xFFFF & c.offset))
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0x08))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0x08), mtutil.WithCodeRegionSize(testCodeRegionSize))
 					state := mtutil.GetMtState(t, goVm)
 					step := state.GetStep()
 
@@ -378,7 +378,7 @@ func testMTSysReadPreimage(t *testing.T, preimageValue []byte, cases []testMTSys
 					effAddr := arch.AddressMask & c.addr
 					preimageKey := preimage.Keccak256Key(crypto.Keccak256Hash(preimageValue)).PreimageKey()
 					oracle := testutil.StaticOracle(t, preimageValue)
-					goVm := ver.VMFactory(oracle, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)))
+					goVm := ver.VMFactory(oracle, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
 					state := mtutil.GetMtState(t, goVm)
 					step := state.GetStep()
 

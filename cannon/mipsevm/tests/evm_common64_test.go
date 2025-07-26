@@ -152,7 +152,7 @@ func TestEVM_SingleStep_Shift64(t *testing.T) {
 			testName := fmt.Sprintf("%v %v", v.Name, tt.name)
 			t.Run(testName, func(t *testing.T) {
 				pc := Word(0x0)
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(pc))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(pc), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				var insn uint32
 				var rtReg uint32
@@ -548,7 +548,7 @@ func TestEVM_SingleStep_DCloDClz64(t *testing.T) {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
 				// Set up state
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				insn := 0b01_1100<<26 | rsReg<<21 | rdReg<<11 | tt.funct
 				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)

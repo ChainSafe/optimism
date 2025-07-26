@@ -25,7 +25,7 @@ func FuzzStateSyscallBrk(f *testing.F) {
 	f.Fuzz(func(t *testing.T, seed int64) {
 		for _, v := range versions {
 			t.Run(v.Name, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(seed))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(seed), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysBrk
 				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
@@ -59,7 +59,7 @@ func FuzzStateSyscallMmap(f *testing.F) {
 		for _, v := range versions {
 			t.Run(v.Name, func(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(),
-					mtutil.WithRandomization(seed), mtutil.WithHeap(heap))
+					mtutil.WithRandomization(seed), mtutil.WithHeap(heap), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				step := state.GetStep()
 
@@ -106,7 +106,7 @@ func FuzzStateSyscallExitGroup(f *testing.F) {
 		for _, v := range versions {
 			t.Run(v.Name, func(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(),
-					mtutil.WithRandomization(seed))
+					mtutil.WithRandomization(seed), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysExitGroup
 				state.GetRegistersRef()[4] = Word(exitCode)
@@ -136,7 +136,7 @@ func FuzzStateSyscallFcntl(f *testing.F) {
 		for _, v := range versions {
 			t.Run(v.Name, func(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(),
-					mtutil.WithRandomization(seed))
+					mtutil.WithRandomization(seed), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysFcntl
 				state.GetRegistersRef()[4] = fd
@@ -194,7 +194,7 @@ func FuzzStateHintRead(f *testing.F) {
 				oracle := testutil.StaticOracle(t, preimageData) // only used for hinting
 
 				goVm := v.VMFactory(oracle, os.Stdout, os.Stderr, testutil.CreateLogger(),
-					mtutil.WithRandomization(seed), mtutil.WithPreimageKey(preimageKey))
+					mtutil.WithRandomization(seed), mtutil.WithPreimageKey(preimageKey), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysRead
 				state.GetRegistersRef()[4] = exec.FdHintRead
@@ -236,7 +236,7 @@ func FuzzStatePreimageRead(f *testing.F) {
 				oracle := testutil.StaticOracle(t, preimageValue)
 
 				goVm := v.VMFactory(oracle, os.Stdout, os.Stderr, testutil.CreateLogger(),
-					mtutil.WithRandomization(seed), mtutil.WithPreimageKey(preimageKey), mtutil.WithPreimageOffset(preimageOffset), mtutil.WithPCAndNextPC(pc))
+					mtutil.WithRandomization(seed), mtutil.WithPreimageKey(preimageKey), mtutil.WithPreimageOffset(preimageOffset), mtutil.WithPCAndNextPC(pc), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysRead
 				state.GetRegistersRef()[4] = exec.FdPreimageRead
@@ -314,7 +314,7 @@ func FuzzStateHintWrite(f *testing.F) {
 				// Set up state
 				oracle := &testutil.HintTrackingOracle{}
 				goVm := v.VMFactory(oracle, os.Stdout, os.Stderr, testutil.CreateLogger(),
-					mtutil.WithRandomization(randSeed), mtutil.WithLastHint(lastHint), mtutil.WithPCAndNextPC(pc))
+					mtutil.WithRandomization(randSeed), mtutil.WithLastHint(lastHint), mtutil.WithPCAndNextPC(pc), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysWrite
 				state.GetRegistersRef()[4] = exec.FdHintWrite
@@ -378,7 +378,7 @@ func FuzzStatePreimageWrite(f *testing.F) {
 				oracle := testutil.StaticOracle(t, preimageData)
 
 				goVm := v.VMFactory(oracle, os.Stdout, os.Stderr, testutil.CreateLogger(),
-					mtutil.WithRandomization(seed), mtutil.WithPreimageKey(preimageKey), mtutil.WithPreimageOffset(128), mtutil.WithPCAndNextPC(pc))
+					mtutil.WithRandomization(seed), mtutil.WithPreimageKey(preimageKey), mtutil.WithPreimageOffset(128), mtutil.WithPCAndNextPC(pc), mtutil.WithCodeRegionSize(testCodeRegionSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysWrite
 				state.GetRegistersRef()[4] = exec.FdPreimageWrite

@@ -12,7 +12,7 @@ const (
 	smallDataset          = 12_500_000
 	mediumDataset         = 100_000_000
 	largeDataset          = 400_000_000
-	defaultCodeRegionSize = 1 << 31
+	defaultCodeRegionSize = 4096
 )
 
 func BenchmarkMemoryOperations(b *testing.B) {
