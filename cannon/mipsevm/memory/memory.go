@@ -67,11 +67,17 @@ type PageIndex interface {
 }
 
 func NewMemory(sizes ...arch.Word) *Memory {
-	codeSize := arch.Word(1 << 31) // 2 GiB default
+	codeSize := arch.Word(1 << 31) // Default: 2 GiB code
+	heapSize := arch.Word(1 << 31) // Default: 2 GiB heap
+
 	if len(sizes) > 0 && sizes[0] != 0 {
 		codeSize = sizes[0]
 	}
-	return NewBinaryTreeMemory(codeSize)
+	if len(sizes) > 1 && sizes[1] != 0 {
+		heapSize = sizes[1]
+	}
+
+	return NewBinaryTreeMemory(codeSize, heapSize)
 }
 
 // start end size gap

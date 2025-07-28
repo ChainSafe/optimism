@@ -55,7 +55,7 @@ func TestEVM_MT64_LL(t *testing.T) {
 					retReg := c.retReg
 					baseReg := 6
 					insn := uint32((0b11_0000 << 26) | (baseReg & 0x1F << 21) | (retReg & 0x1F << 16) | (0xFFFF & c.offset))
-					goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0x40), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0x40), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					step := state.GetStep()
 
@@ -144,7 +144,7 @@ func TestEVM_MT64_SC(t *testing.T) {
 					rtReg := c.rtReg
 					baseReg := 6
 					insn := uint32((0b11_1000 << 26) | (baseReg & 0x1F << 21) | (rtReg & 0x1F << 16) | (0xFFFF & c.offset))
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					mtutil.InitializeSingleThread(i*23456, state, i%2 == 1, mtutil.WithPCAndNextPC(0x40))
 					step := state.GetStep()
@@ -235,7 +235,7 @@ func TestEVM_MT64_LLD(t *testing.T) {
 					retReg := c.retReg
 					baseReg := 6
 					insn := uint32((0b11_0100 << 26) | (baseReg & 0x1F << 21) | (retReg & 0x1F << 16) | (0xFFFF & c.offset))
-					goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0x40), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0x40), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					step := state.GetStep()
 
@@ -325,7 +325,7 @@ func TestEVM_MT64_SCD(t *testing.T) {
 					rtReg := c.rtReg
 					baseReg := 6
 					insn := uint32((0b11_1100 << 26) | (baseReg & 0x1F << 21) | (rtReg & 0x1F << 16) | (0xFFFF & c.offset))
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					mtutil.InitializeSingleThread(i*23456, state, i%2 == 1, mtutil.WithPCAndNextPC(0x40))
 					step := state.GetStep()
@@ -433,7 +433,7 @@ func TestEVM_MT_SysRead_FromEventFd(t *testing.T) {
 			t.Parallel()
 			addr := Word(0x00_00_FF_00)
 			effAddr := arch.AddressMask & addr
-			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 			state := mtutil.GetMtState(t, goVm)
 			step := state.GetStep()
 
@@ -476,7 +476,7 @@ func TestEVM_MT_SysWrite_ToEventFd(t *testing.T) {
 			t.Parallel()
 			addr := Word(0x00_00_FF_00)
 			effAddr := arch.AddressMask & addr
-			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 			state := mtutil.GetMtState(t, goVm)
 			step := state.GetStep()
 

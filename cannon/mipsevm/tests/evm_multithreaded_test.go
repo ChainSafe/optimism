@@ -54,7 +54,7 @@ func TestEVM_MT_LL(t *testing.T) {
 					rtReg := c.rtReg
 					baseReg := 6
 					insn := uint32((0b11_0000 << 26) | (baseReg & 0x1F << 21) | (rtReg & 0x1F << 16) | (0xFFFF & c.offset))
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0x40), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(0x40), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					step := state.GetStep()
 
@@ -138,7 +138,7 @@ func TestEVM_MT_SC(t *testing.T) {
 					rtReg := c.rtReg
 					baseReg := 6
 					insn := uint32((0b11_1000 << 26) | (baseReg & 0x1F << 21) | (rtReg & 0x1F << 16) | (0xFFFF & c.offset))
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					mtutil.InitializeSingleThread(i*23456, state, i%2 == 1, mtutil.WithPCAndNextPC(0x40))
 					step := state.GetStep()
@@ -266,7 +266,7 @@ func TestEVM_SysClone_Successful(t *testing.T) {
 			t.Run(testName, func(t *testing.T) {
 				stackPtr := Word(100)
 
-				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := mtutil.GetMtState(t, goVm)
 				mtutil.InitializeSingleThread(i*333, state, c.traverseRight)
 				testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)
@@ -331,7 +331,7 @@ func TestEVM_SysGetTID(t *testing.T) {
 		for i, c := range cases {
 			testName := fmt.Sprintf("%v (%v)", c.name, ver.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*789)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*789)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := mtutil.GetMtState(t, goVm)
 				mtutil.InitializeSingleThread(i*789, state, false)
 
@@ -379,7 +379,7 @@ func TestEVM_SysExit(t *testing.T) {
 			t.Run(testName, func(t *testing.T) {
 				exitCode := uint8(3)
 
-				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*133)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*133)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := mtutil.GetMtState(t, goVm)
 				mtutil.SetupThreads(int64(i*1111), state, i%2 == 0, c.threadCount, 0)
 
@@ -431,7 +431,7 @@ func TestEVM_PopExitedThread(t *testing.T) {
 		for i, c := range cases {
 			testName := fmt.Sprintf("%v (%v)", c.name, ver.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*133)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*133)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := mtutil.GetMtState(t, goVm)
 				mtutil.SetupThreads(int64(i*222), state, c.traverseRight, c.activeStackThreadCount, 1)
 				step := state.Step
@@ -498,7 +498,7 @@ func TestEVM_SysFutex_WaitPrivate(t *testing.T) {
 			testName := fmt.Sprintf("%v (%v)", c.name, ver.Name)
 			t.Run(testName, func(t *testing.T) {
 				rand := testutil.NewRandHelper(int64(i * 33))
-				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*1234)), mtutil.WithPCAndNextPC(0x04), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*1234)), mtutil.WithPCAndNextPC(0x04), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := mtutil.GetMtState(t, goVm)
 				step := state.GetStep()
 
@@ -570,7 +570,7 @@ func TestEVM_SysFutex_WakePrivate(t *testing.T) {
 		for i, c := range cases {
 			testName := fmt.Sprintf("%v (%v)", c.name, ver.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*1122)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*1122)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := mtutil.GetMtState(t, goVm)
 				mtutil.SetupThreads(int64(i*2244), state, c.traverseRight, c.activeThreadCount, c.inactiveThreadCount)
 				step := state.Step
@@ -650,7 +650,7 @@ func TestEVM_SysFutex_UnsupportedOp(t *testing.T) {
 		for name, op := range unsupportedFutexOps {
 			testName := fmt.Sprintf("%v (%v)", name, ver.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(op)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(op)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := mtutil.GetMtState(t, goVm)
 				step := state.GetStep()
 
@@ -708,7 +708,7 @@ func runPreemptSyscall(t *testing.T, syscallName string, syscallNum uint32) {
 			for _, traverseRight := range []bool{true, false} {
 				testName := fmt.Sprintf("%v: %v (vm = %v, traverseRight = %v)", syscallName, c.name, ver.Name, traverseRight)
 				t.Run(testName, func(t *testing.T) {
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*789)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*789)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					mtutil.SetupThreads(int64(i*3259), state, traverseRight, c.activeThreads, c.inactiveThreads)
 
@@ -742,7 +742,7 @@ func TestEVM_SysOpen(t *testing.T) {
 	vmVersions := GetMipsVersionTestCases(t)
 	for _, ver := range vmVersions {
 		t.Run(ver.Name, func(t *testing.T) {
-			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(5512)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(5512)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 			state := mtutil.GetMtState(t, goVm)
 
 			testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)
@@ -773,7 +773,7 @@ func TestEVM_SysGetPID(t *testing.T) {
 	vmVersions := GetMipsVersionTestCases(t)
 	for _, ver := range vmVersions {
 		t.Run(ver.Name, func(t *testing.T) {
-			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(1929)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(1929)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 			state := mtutil.GetMtState(t, goVm)
 
 			testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)
@@ -842,7 +842,7 @@ func testEVM_SysClockGettime(t *testing.T, clkid Word) {
 			for _, llVar := range llVariations {
 				tName := fmt.Sprintf("%v (%v,%v)", c.name, ver.Name, llVar.name)
 				t.Run(tName, func(t *testing.T) {
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(2101)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(2101)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					mtutil.InitializeSingleThread(2101+i, state, i%2 == 1)
 					effAddr := c.timespecAddr & arch.AddressMask
@@ -908,7 +908,7 @@ func TestEVM_SysClockGettimeNonMonotonic(t *testing.T) {
 	vmVersions := GetMipsVersionTestCases(t)
 	for _, ver := range vmVersions {
 		t.Run(ver.Name, func(t *testing.T) {
-			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(2101)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+			goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(2101)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 			state := mtutil.GetMtState(t, goVm)
 
 			timespecAddr := Word(0x1000)
@@ -995,7 +995,7 @@ func TestEVM_EmptyThreadStacks(t *testing.T) {
 			for _, proofCase := range proofVariations {
 				testName := fmt.Sprintf("%v (vm=%v,proofCase=%v)", c.name, ver.Name, proofCase.Name)
 				t.Run(testName, func(t *testing.T) {
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*123)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*123)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					mtutil.SetupThreads(int64(i*123), state, c.traverseRight, 0, c.otherStackSize)
 
@@ -1026,7 +1026,7 @@ func TestEVM_NormalTraversal_Full(t *testing.T) {
 				testName := fmt.Sprintf("%v (vm = %v, traverseRight = %v)", c.name, ver.Name, traverseRight)
 				t.Run(testName, func(t *testing.T) {
 					// Setup
-					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*789)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+					goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*789)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 					state := mtutil.GetMtState(t, goVm)
 					mtutil.SetupThreads(int64(i*2947), state, traverseRight, c.threadCount, 0)
 					step := state.Step
@@ -1077,7 +1077,7 @@ func TestEVM_SchedQuantumThreshold(t *testing.T) {
 		for i, c := range cases {
 			testName := fmt.Sprintf("%v (%v)", c.name, ver.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*789)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := ver.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i*789)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := mtutil.GetMtState(t, goVm)
 				// Setup basic getThreadId syscall instruction
 				testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)

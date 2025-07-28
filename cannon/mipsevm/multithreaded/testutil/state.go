@@ -203,8 +203,8 @@ func RandomState(seed int) *multithreaded.State {
 	return state
 }
 
-func WithCodeRegionSize(size arch.Word) StateOption {
+func WithRegionSize(codeSize arch.Word, heapSize arch.Word) StateOption {
 	return func(state *StateMutator) {
-		state.state.Memory = memory.NewMemory(size)
+		state.state.Memory = memory.NewMemory(codeSize, heapSize)
 	}
 }

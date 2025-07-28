@@ -25,6 +25,7 @@ import (
 )
 
 const testCodeRegionSize = 4096
+const testHeapSize = 4096
 
 func TestEVM_SingleStep_Jump(t *testing.T) {
 	versions := GetMipsVersionTestCases(t)
@@ -46,7 +47,7 @@ func TestEVM_SingleStep_Jump(t *testing.T) {
 		for i, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(tt.pc), mtutil.WithNextPC(tt.nextPC), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(tt.pc), mtutil.WithNextPC(tt.nextPC), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				testutil.StoreInstruction(state.GetMemory(), tt.pc, tt.insn)
 				step := state.GetStep()
@@ -156,7 +157,7 @@ func TestEVM_SingleStep_Lui(t *testing.T) {
 		for i, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				insn := 0b1111<<26 | uint32(tt.rtReg)<<16 | (tt.imm & 0xFFFF)
 				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
@@ -204,7 +205,7 @@ func TestEVM_SingleStep_CloClz(t *testing.T) {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
 				// Set up state
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				insn := 0b01_1100<<26 | rsReg<<21 | rdReg<<11 | tt.funct
 				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
@@ -245,7 +246,7 @@ func TestEVM_SingleStep_MovzMovn(t *testing.T) {
 		for i, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(0), mtutil.WithNextPC(4), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(0), mtutil.WithNextPC(4), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				rsReg := uint32(9)
 				rtReg := uint32(10)
@@ -292,7 +293,7 @@ func TestEVM_SingleStep_MfhiMflo(t *testing.T) {
 		for i, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithLO(tt.lo), mtutil.WithHI(tt.hi), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithLO(tt.lo), mtutil.WithHI(tt.hi), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				rdReg := uint32(8)
 				insn := rdReg<<11 | tt.funct
@@ -363,7 +364,7 @@ func TestEVM_SingleStep_MthiMtlo(t *testing.T) {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
 
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				rsReg := uint32(8)
 				insn := rsReg<<21 | tt.funct
@@ -415,7 +416,7 @@ func TestEVM_SingleStep_BeqBne(t *testing.T) {
 		for i, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(initialPC), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPCAndNextPC(initialPC), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				rsReg := uint32(9)
 				rtReg := uint32(8)
@@ -476,7 +477,7 @@ func TestEVM_SingleStep_SlSr(t *testing.T) {
 		for i, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(0), mtutil.WithNextPC(4), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(0), mtutil.WithNextPC(4), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				var insn uint32
 				rtReg := uint32(0x9)
@@ -526,7 +527,7 @@ func TestEVM_SingleStep_JrJalr(t *testing.T) {
 		for i, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(tt.pc), mtutil.WithNextPC(tt.nextPC), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(tt.pc), mtutil.WithNextPC(tt.nextPC), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				insn := tt.rsReg<<21 | tt.rdReg<<11 | uint32(tt.funct)
 				state.GetRegistersRef()[tt.rsReg] = tt.jumpTo
@@ -564,7 +565,7 @@ func TestEVM_SingleStep_Sync(t *testing.T) {
 	for _, v := range versions {
 		testName := fmt.Sprintf("Sync (%v)", v.Name)
 		t.Run(testName, func(t *testing.T) {
-			goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(248)), mtutil.WithCodeRegionSize(testCodeRegionSize))
+			goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(248)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 			state := goVm.GetState()
 			testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syncInsn)
 			step := state.GetStep()
@@ -607,7 +608,7 @@ func TestEVM_MMap(t *testing.T) {
 		for i, c := range cases {
 			testName := fmt.Sprintf("%v (%v)", c.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithHeap(c.heap), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithHeap(c.heap), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 
 				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
@@ -703,7 +704,7 @@ func TestEVM_SysGetRandom(t *testing.T) {
 				isNoop := !versions.FeaturesForVersion(v.Version).SupportWorkingSysGetRandom
 				expectedMemory := c.expectedRandDataMask&randomData | ^c.expectedRandDataMask&startingMemory
 
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithStep(step), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithStep(step), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 
 				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
@@ -897,7 +898,7 @@ func TestEVM_SysWriteHint(t *testing.T) {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
 				oracle := testutil.HintTrackingOracle{}
-				goVm := v.VMFactory(&oracle, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithLastHint(tt.lastHint), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(&oracle, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithLastHint(tt.lastHint), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysWrite
 				state.GetRegistersRef()[4] = exec.FdHintWrite
@@ -961,7 +962,7 @@ func TestEVM_Fault(t *testing.T) {
 		for _, tt := range cases {
 			testName := fmt.Sprintf("%v (%v)", tt.name, v.Name)
 			t.Run(testName, func(t *testing.T) {
-				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithPC(tt.pc), mtutil.WithNextPC(tt.nextPC), mtutil.WithCodeRegionSize(testCodeRegionSize))
+				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithPC(tt.pc), mtutil.WithNextPC(tt.nextPC), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				testutil.StoreInstruction(state.GetMemory(), 0, tt.insn)
 				// set the return address ($ra) to jump into when test completes

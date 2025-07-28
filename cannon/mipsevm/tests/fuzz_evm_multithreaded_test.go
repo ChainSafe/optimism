@@ -19,7 +19,7 @@ func FuzzStateSyscallCloneMT(f *testing.F) {
 	require.NotZero(f, len(versions), "must have at least one multithreaded version supported")
 	f.Fuzz(func(t *testing.T, nextThreadId, stackPtr Word, seed int64, version uint) {
 		v := versions[int(version)%len(versions)]
-		goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(seed), mtutil.WithCodeRegionSize(testCodeRegionSize))
+		goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(seed), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 		state := mtutil.GetMtState(t, goVm)
 		// Update existing threads to avoid collision with nextThreadId
 		if mtutil.FindThread(state, nextThreadId) != nil {

@@ -104,7 +104,7 @@ func mulOpConsistencyCheck(
 			}
 
 			insn := opcode<<26 | rsReg<<21 | rtReg<<16 | rdReg<<11 | funct
-			goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(seed), mtutil.WithPCAndNextPC(0), mtutil.WithCodeRegionSize(testCodeRegionSize))
+			goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(seed), mtutil.WithPCAndNextPC(0), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 			state := goVm.GetState()
 			state.GetRegistersRef()[rsReg] = rs
 			state.GetRegistersRef()[rtReg] = rt
