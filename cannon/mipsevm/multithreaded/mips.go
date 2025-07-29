@@ -322,18 +322,9 @@ func (m *InstrumentedState) doMipsStep() error {
 	m.state.StepsSinceLastContextSwitch += 1
 
 	pc := m.state.GetPC()
-	cacheIdx := pc / 4
-
 	var insn, opcode, fun uint32
-	if detail, ok := m.cached_decode[cacheIdx]; ok {
-		insn, opcode, fun = detail.insn, detail.opcode, detail.fun
-	} else {
-		insn, opcode, fun = exec.GetInstructionDetails(pc, m.state.Memory)
-		m.cached_decode[cacheIdx] = InstructionDetails{insn, opcode, fun}
-	}
-
-	//insn, opcode, fun = exec.GetInstructionDetails(pc, m.state.Memory)
-	//m.cached_decode = append(m.cached_decode, InstructionDetails{insn, opcode, fun})
+	insn, opcode, fun = exec.GetInstructionDetails(pc, m.state.Memory)
+	m.cached_decode = append(m.cached_decode, InstructionDetails{insn, opcode, fun})
 
 	// Handle syscall separately
 	// syscall (can read and write)
