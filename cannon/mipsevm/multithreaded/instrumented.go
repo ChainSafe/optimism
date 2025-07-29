@@ -35,6 +35,15 @@ type InstrumentedState struct {
 var _ mipsevm.FPVM = (*InstrumentedState)(nil)
 
 func NewInstrumentedState(state *State, po mipsevm.PreimageOracle, stdOut, stdErr io.Writer, log log.Logger, meta mipsevm.Metadata, features mipsevm.FeatureToggles) *InstrumentedState {
+	memLen := len(state.Memory.MappedRegions[0].Data)
+	cached_decode := make([]InstructionDetails, memLen/4)
+
+	// Perform eager decode of all mapped code
+	for pc := Word(0); pc < Word(memLen); pc += 4 {
+		insn, opcode, fun := exec.GetInstructionDetails(pc, state.Memory)
+		cached_decode[pc/4] = InstructionDetails{insn, opcode, fun}
+	}
+
 	return &InstrumentedState{
 		state:          state,
 		log:            log,
@@ -45,7 +54,7 @@ func NewInstrumentedState(state *State, po mipsevm.PreimageOracle, stdOut, stdEr
 		statsTracker:   NoopStatsTracker(),
 		preimageOracle: exec.NewTrackingPreimageOracleReader(po),
 		meta:           meta,
-		cached_decode:  nil, // Start empty and decode on first access
+		cached_decode:  cached_decode,
 		features:       features,
 	}
 }
