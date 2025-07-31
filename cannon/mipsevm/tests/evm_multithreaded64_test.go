@@ -17,6 +17,7 @@ import (
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/arch"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil"
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil/helpers"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/versions"
 )
 
@@ -60,7 +61,7 @@ func TestEVM_MT64_LL(t *testing.T) {
 					step := state.GetStep()
 
 					// Set up state
-					testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+					helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 					state.GetMemory().SetWord(effAddr, c.memVal)
 					state.GetRegistersRef()[baseReg] = c.base
 					if withExistingReservation {
@@ -164,7 +165,7 @@ func TestEVM_MT64_SC(t *testing.T) {
 
 					// Setup state
 					state.GetCurrentThread().ThreadId = c.threadId
-					testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+					helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 					state.GetRegistersRef()[baseReg] = c.base
 					state.GetRegistersRef()[rtReg] = c.value
 					state.LLReservationStatus = llVar.llReservationStatus
@@ -240,7 +241,7 @@ func TestEVM_MT64_LLD(t *testing.T) {
 					step := state.GetStep()
 
 					// Set up state
-					testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+					helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 					state.GetMemory().SetWord(effAddr, c.memVal)
 					state.GetRegistersRef()[baseReg] = c.base
 					if withExistingReservation {
@@ -345,7 +346,7 @@ func TestEVM_MT64_SCD(t *testing.T) {
 
 					// Setup state
 					state.GetCurrentThread().ThreadId = c.threadId
-					testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+					helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 					state.GetRegistersRef()[baseReg] = c.base
 					state.GetRegistersRef()[rtReg] = value
 					state.LLReservationStatus = llVar.llReservationStatus
@@ -446,7 +447,7 @@ func TestEVM_MT_SysRead_FromEventFd(t *testing.T) {
 			state.GetRegistersRef()[4] = exec.FdEventFd
 			state.GetRegistersRef()[5] = addr
 			state.GetRegistersRef()[6] = 1
-			testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+			helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 			state.LLReservationStatus = multithreaded.LLStatusNone
 			state.LLAddress = llAddress
 			state.LLOwnerThread = llOwnerThread
@@ -489,7 +490,7 @@ func TestEVM_MT_SysWrite_ToEventFd(t *testing.T) {
 			state.GetRegistersRef()[4] = exec.FdEventFd
 			state.GetRegistersRef()[5] = addr
 			state.GetRegistersRef()[6] = 1
-			testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+			helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 			state.LLReservationStatus = multithreaded.LLStatusNone
 			state.LLAddress = llAddress
 			state.LLOwnerThread = llOwnerThread
@@ -628,7 +629,7 @@ func TestEVM_UndefinedSyscall(t *testing.T) {
 			t.Run(fmt.Sprintf("%v-%v", version.Name, name), func(t *testing.T) {
 				t.Parallel()
 				goVm, state, contracts := setupWithTestCase(t, version, int(val), nil)
-				testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.Memory, state.GetPC(), syscallInsn, goVm)
 				state.GetRegistersRef()[2] = Word(val) // Set syscall number
 				proofData := multiThreadedProofGenerator(t, state)
 

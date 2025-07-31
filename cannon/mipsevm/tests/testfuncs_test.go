@@ -14,6 +14,7 @@ import (
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded"
 	mtutil "github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded/testutil"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil"
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil/helpers"
 	preimage "github.com/ethereum-optimism/optimism/op-preimage"
 )
 
@@ -60,7 +61,7 @@ func testOperators(t *testing.T, cases []operatorTestCase, mips32Insn bool) {
 					state.GetRegistersRef()[baseReg] = tt.rs
 					state.GetRegistersRef()[rtReg] = tt.rt
 				}
-				testutil.StoreInstruction(state.GetMemory(), 0, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), 0, insn, goVm)
 				step := state.GetStep()
 
 				// Setup expectations
@@ -120,7 +121,7 @@ func testMulDiv(t *testing.T, cases []mulDivTestCase, mips32Insn bool) {
 				insn = tt.opcode<<26 | baseReg<<21 | rtReg<<16 | tt.rdReg<<11 | tt.funct
 				state.GetRegistersRef()[rtReg] = tt.rt
 				state.GetRegistersRef()[baseReg] = tt.rs
-				testutil.StoreInstruction(state.GetMemory(), 0, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), 0, insn, goVm)
 
 				if tt.panicMsg != "" {
 					proofData := v.ProofGenerator(t, goVm.GetState())
@@ -183,7 +184,7 @@ func testLoadStore(t *testing.T, cases []loadStoreTestCase) {
 				state.GetRegistersRef()[rtReg] = tt.rt
 				state.GetRegistersRef()[baseReg] = tt.base
 
-				testutil.StoreInstruction(state.GetMemory(), 0, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), 0, insn, goVm)
 				state.GetMemory().SetWord(effAddr, tt.memVal)
 				step := state.GetStep()
 
@@ -227,7 +228,7 @@ func testBranch(t *testing.T, cases []branchTestCase) {
 				state := goVm.GetState()
 				const rsReg = 8 // t0
 				insn := tt.opcode<<26 | rsReg<<21 | tt.regimm<<16 | uint32(tt.offset)
-				testutil.StoreInstruction(state.GetMemory(), tt.pc, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), tt.pc, insn, goVm)
 				state.GetRegistersRef()[rsReg] = Word(tt.rs)
 				step := state.GetStep()
 
@@ -312,7 +313,7 @@ func testMTStoreOpsClearMemReservation(t *testing.T, cases []testMTStoreOpsClear
 					// Setup state
 					state.GetRegistersRef()[rtReg] = rt
 					state.GetRegistersRef()[baseReg] = c.base
-					testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+					helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 					state.GetMemory().SetWord(c.effAddr, c.preMem)
 					state.LLReservationStatus = llVariation.llReservationStatus
 					state.LLAddress = llAddress
@@ -396,7 +397,7 @@ func testMTSysReadPreimage(t *testing.T, preimageValue []byte, cases []testMTSys
 					state.GetRegistersRef()[4] = exec.FdPreimageRead
 					state.GetRegistersRef()[5] = c.addr
 					state.GetRegistersRef()[6] = c.count
-					testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+					helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 					state.LLReservationStatus = llVariation.llReservationStatus
 					state.LLAddress = llAddress
 					state.LLOwnerThread = llOwnerThread
@@ -438,7 +439,7 @@ func testNoopSyscall(t *testing.T, version VersionedVMTestCase, syscalls map[str
 			t.Parallel()
 			goVm, state, contracts := setupWithTestCase(t, version, int(noopVal), nil)
 
-			testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)
+			helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 			state.GetRegistersRef()[2] = Word(noopVal) // Set syscall number
 			step := state.Step
 
@@ -468,7 +469,7 @@ func testUnsupportedSyscall(t *testing.T, version VersionedVMTestCase, unsupport
 			t.Parallel()
 			goVm, state, contracts := setupWithTestCase(t, version, i*3434, nil)
 			// Setup basic getThreadId syscall instruction
-			testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)
+			helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 			state.GetRegistersRef()[2] = Word(syscallNum)
 			proofData := multiThreadedProofGenerator(t, state)
 			// Set up post-state expectations

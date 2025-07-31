@@ -15,6 +15,7 @@ import (
 	mtutil "github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded/testutil"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/program"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil"
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil/helpers"
 	preimage "github.com/ethereum-optimism/optimism/op-preimage"
 )
 
@@ -28,7 +29,7 @@ func FuzzStateSyscallBrk(f *testing.F) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(seed), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysBrk
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 				step := state.GetStep()
 
 				expected := mtutil.NewExpectedState(t, state)
@@ -66,7 +67,7 @@ func FuzzStateSyscallMmap(f *testing.F) {
 				state.GetRegistersRef()[2] = arch.SysMmap
 				state.GetRegistersRef()[4] = addr
 				state.GetRegistersRef()[5] = siz
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 
 				expected := mtutil.NewExpectedState(t, state)
 				expected.ExpectStep()
@@ -110,7 +111,7 @@ func FuzzStateSyscallExitGroup(f *testing.F) {
 				state := goVm.GetState()
 				state.GetRegistersRef()[2] = arch.SysExitGroup
 				state.GetRegistersRef()[4] = Word(exitCode)
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 				step := state.GetStep()
 
 				expected := mtutil.NewExpectedState(t, state)
@@ -141,7 +142,7 @@ func FuzzStateSyscallFcntl(f *testing.F) {
 				state.GetRegistersRef()[2] = arch.SysFcntl
 				state.GetRegistersRef()[4] = fd
 				state.GetRegistersRef()[5] = cmd
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 				step := state.GetStep()
 
 				expected := mtutil.NewExpectedState(t, state)
@@ -200,7 +201,7 @@ func FuzzStateHintRead(f *testing.F) {
 				state.GetRegistersRef()[4] = exec.FdHintRead
 				state.GetRegistersRef()[5] = addr
 				state.GetRegistersRef()[6] = count
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 				step := state.GetStep()
 
 				expected := mtutil.NewExpectedState(t, state)
@@ -242,7 +243,7 @@ func FuzzStatePreimageRead(f *testing.F) {
 				state.GetRegistersRef()[4] = exec.FdPreimageRead
 				state.GetRegistersRef()[5] = addr
 				state.GetRegistersRef()[6] = count
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 				state.GetMemory().SetWord(effAddr, preexistingMemoryVal)
 				step := state.GetStep()
 
@@ -323,7 +324,7 @@ func FuzzStateHintWrite(f *testing.F) {
 				step := state.GetStep()
 				err := state.GetMemory().SetMemoryRange(addr, bytes.NewReader(hintData[int(lastHintLen):]))
 				require.NoError(t, err)
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 
 				// Set up expectations
 				expected := mtutil.NewExpectedState(t, state)
@@ -384,7 +385,7 @@ func FuzzStatePreimageWrite(f *testing.F) {
 				state.GetRegistersRef()[4] = exec.FdPreimageWrite
 				state.GetRegistersRef()[5] = addr
 				state.GetRegistersRef()[6] = count
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 				state.GetMemory().SetWord(effAddr, arch.ByteOrderWord.Word(preexistingMemoryVal[:]))
 				step := state.GetStep()
 

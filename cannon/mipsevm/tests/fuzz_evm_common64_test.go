@@ -8,6 +8,7 @@ import (
 
 	mtutil "github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded/testutil"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil"
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil/helpers"
 )
 
 func FuzzStateConsistencyMulOp(f *testing.F) {
@@ -108,7 +109,7 @@ func mulOpConsistencyCheck(
 			state := goVm.GetState()
 			state.GetRegistersRef()[rsReg] = rs
 			state.GetRegistersRef()[rtReg] = rt
-			testutil.StoreInstruction(state.GetMemory(), 0, insn)
+			helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), 0, insn, goVm)
 			step := state.GetStep()
 
 			// mere sanity checks

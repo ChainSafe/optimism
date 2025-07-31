@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/program"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/register"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil"
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil/helpers"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/versions"
 )
 
@@ -49,7 +50,7 @@ func TestEVM_SingleStep_Jump(t *testing.T) {
 			t.Run(testName, func(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithPC(tt.pc), mtutil.WithNextPC(tt.nextPC), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
-				testutil.StoreInstruction(state.GetMemory(), tt.pc, tt.insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), tt.pc, tt.insn, goVm)
 				step := state.GetStep()
 
 				// Setup expectations
@@ -160,7 +161,7 @@ func TestEVM_SingleStep_Lui(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				insn := 0b1111<<26 | uint32(tt.rtReg)<<16 | (tt.imm & 0xFFFF)
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 				step := state.GetStep()
 
 				// Setup expectations
@@ -208,7 +209,7 @@ func TestEVM_SingleStep_CloClz(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				insn := 0b01_1100<<26 | rsReg<<21 | rdReg<<11 | tt.funct
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 				state.GetRegistersRef()[rsReg] = tt.rs
 				step := state.GetStep()
 
@@ -256,7 +257,7 @@ func TestEVM_SingleStep_MovzMovn(t *testing.T) {
 				state.GetRegistersRef()[rtReg] = tt.testValue
 				state.GetRegistersRef()[rsReg] = Word(0xb)
 				state.GetRegistersRef()[rdReg] = Word(0xa)
-				testutil.StoreInstruction(state.GetMemory(), 0, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), 0, insn, goVm)
 				step := state.GetStep()
 
 				// Setup expectations
@@ -297,7 +298,7 @@ func TestEVM_SingleStep_MfhiMflo(t *testing.T) {
 				state := goVm.GetState()
 				rdReg := uint32(8)
 				insn := rdReg<<11 | tt.funct
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 				step := state.GetStep()
 				// Setup expectations
 				expected := mtutil.NewExpectedState(t, state)
@@ -368,7 +369,7 @@ func TestEVM_SingleStep_MthiMtlo(t *testing.T) {
 				state := goVm.GetState()
 				rsReg := uint32(8)
 				insn := rsReg<<21 | tt.funct
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 				state.GetRegistersRef()[rsReg] = val
 				step := state.GetStep()
 				// Setup expectations
@@ -423,7 +424,7 @@ func TestEVM_SingleStep_BeqBne(t *testing.T) {
 				insn := tt.opcode<<26 | rsReg<<21 | rtReg<<16 | uint32(tt.imm)
 				state.GetRegistersRef()[rtReg] = tt.rt
 				state.GetRegistersRef()[rsReg] = tt.rs
-				testutil.StoreInstruction(state.GetMemory(), initialPC, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), initialPC, insn, goVm)
 				step := state.GetStep()
 
 				// Setup expectations
@@ -485,7 +486,7 @@ func TestEVM_SingleStep_SlSr(t *testing.T) {
 				insn = tt.rsReg<<21 | rtReg<<16 | rdReg<<11 | uint32(tt.funct)
 				state.GetRegistersRef()[rtReg] = tt.rt
 				state.GetRegistersRef()[tt.rsReg] = tt.rs
-				testutil.StoreInstruction(state.GetMemory(), 0, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), 0, insn, goVm)
 				step := state.GetStep()
 
 				// Setup expectations
@@ -531,7 +532,7 @@ func TestEVM_SingleStep_JrJalr(t *testing.T) {
 				state := goVm.GetState()
 				insn := tt.rsReg<<21 | tt.rdReg<<11 | uint32(tt.funct)
 				state.GetRegistersRef()[tt.rsReg] = tt.jumpTo
-				testutil.StoreInstruction(state.GetMemory(), 0, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), 0, insn, goVm)
 				step := state.GetStep()
 
 				if tt.errorMsg != "" {
@@ -567,7 +568,7 @@ func TestEVM_SingleStep_Sync(t *testing.T) {
 		t.Run(testName, func(t *testing.T) {
 			goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(248)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 			state := goVm.GetState()
-			testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syncInsn)
+			helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syncInsn, goVm)
 			step := state.GetStep()
 
 			// Setup expectations
@@ -610,8 +611,7 @@ func TestEVM_MMap(t *testing.T) {
 			t.Run(testName, func(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithHeap(c.heap), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
-
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 				state.GetRegistersRef()[2] = arch.SysMmap
 				state.GetRegistersRef()[4] = c.address
 				state.GetRegistersRef()[5] = c.size
@@ -706,8 +706,7 @@ func TestEVM_SysGetRandom(t *testing.T) {
 
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithStep(step), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
-
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 				state.GetMemory().SetWord(effAddr, startingMemory)
 				state.GetRegistersRef()[register.RegV0] = arch.SysGetRandom
 				state.GetRegistersRef()[register.RegA0] = effAddr + c.bufAddrOffset
@@ -907,7 +906,7 @@ func TestEVM_SysWriteHint(t *testing.T) {
 
 				err := state.GetMemory().SetMemoryRange(arch.Word(tt.memOffset), bytes.NewReader(tt.hintData))
 				require.NoError(t, err)
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 				step := state.GetStep()
 
 				expected := mtutil.NewExpectedState(t, state)
@@ -964,7 +963,9 @@ func TestEVM_Fault(t *testing.T) {
 			t.Run(testName, func(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithPC(tt.pc), mtutil.WithNextPC(tt.nextPC), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
-				testutil.StoreInstruction(state.GetMemory(), 0, tt.insn)
+				if tt.pc&0x3 == 0 {
+					helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), 0, tt.insn, goVm)
+				}
 				// set the return address ($ra) to jump into when test completes
 				state.GetRegistersRef()[31] = testutil.EndAddr
 

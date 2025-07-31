@@ -12,6 +12,7 @@ import (
 	mtutil "github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded/testutil"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/register"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil"
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil/helpers"
 )
 
 func FuzzStateSyscallCloneMT(f *testing.F) {
@@ -30,7 +31,7 @@ func FuzzStateSyscallCloneMT(f *testing.F) {
 
 		// Setup
 		state.NextThreadId = nextThreadId
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), syscallInsn, goVm)
 		state.GetRegistersRef()[2] = arch.SysClone
 		state.GetRegistersRef()[4] = exec.ValidCloneFlags
 		state.GetRegistersRef()[5] = stackPtr

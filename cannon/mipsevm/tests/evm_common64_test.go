@@ -11,6 +11,7 @@ import (
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm"
 	mtutil "github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded/testutil"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil"
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm/testutil/helpers"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/versions"
 )
 
@@ -162,7 +163,7 @@ func TestEVM_SingleStep_Shift64(t *testing.T) {
 				insn = rtReg<<16 | rdReg<<11 | tt.sa<<6 | tt.funct
 				state.GetRegistersRef()[rdReg] = tt.rd
 				state.GetRegistersRef()[rtReg] = tt.rt
-				testutil.StoreInstruction(state.GetMemory(), pc, insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), pc, insn, goVm)
 				step := state.GetStep()
 
 				// Setup expectations
@@ -551,7 +552,7 @@ func TestEVM_SingleStep_DCloDClz64(t *testing.T) {
 				goVm := v.VMFactory(nil, os.Stdout, os.Stderr, testutil.CreateLogger(), mtutil.WithRandomization(int64(i)), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize))
 				state := goVm.GetState()
 				insn := 0b01_1100<<26 | rsReg<<21 | rdReg<<11 | tt.funct
-				testutil.StoreInstruction(state.GetMemory(), state.GetPC(), insn)
+				helpers.StoreInstructionWithCacheUpdate(state.GetMemory(), state.GetPC(), insn, goVm)
 				state.GetRegistersRef()[rsReg] = tt.rs
 				step := state.GetStep()
 

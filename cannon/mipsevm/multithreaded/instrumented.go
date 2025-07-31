@@ -144,3 +144,11 @@ func (m *InstrumentedState) LookupSymbol(addr arch.Word) string {
 	}
 	return m.meta.LookupSymbol(addr)
 }
+
+func (m *InstrumentedState) UpdateInstructionCache(pc arch.Word) {
+	idx := pc / 4
+	if int(idx) < len(m.cached_decode) {
+		insn, opcode, fun := exec.GetInstructionDetails(pc, m.state.Memory)
+		m.cached_decode[idx] = InstructionDetails{insn, opcode, fun}
+	}
+}
