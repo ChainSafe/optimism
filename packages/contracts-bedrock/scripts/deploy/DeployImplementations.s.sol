@@ -6,15 +6,14 @@ import { Script } from "forge-std/Script.sol";
 // Libraries
 import { Chains } from "scripts/libraries/Chains.sol";
 import { LibString } from "@solady/utils/LibString.sol";
+import { Types } from "scripts/libraries/Types.sol";
 
 // Interfaces
-import { IResourceMetering } from "interfaces/L1/IResourceMetering.sol";
 import { ISuperchainConfig } from "interfaces/L1/ISuperchainConfig.sol";
 import { IProtocolVersions } from "interfaces/L1/IProtocolVersions.sol";
 import { IDelayedWETH } from "interfaces/dispute/IDelayedWETH.sol";
 import { IPreimageOracle } from "interfaces/cannon/IPreimageOracle.sol";
-import { IMIPS } from "interfaces/cannon/IMIPS.sol";
-import { IMIPS2 } from "interfaces/cannon/IMIPS2.sol";
+import { IMIPS64 } from "interfaces/cannon/IMIPS64.sol";
 import { IDisputeGameFactory } from "interfaces/dispute/IDisputeGameFactory.sol";
 import { IAnchorStateRegistry } from "interfaces/dispute/IAnchorStateRegistry.sol";
 import {
@@ -23,7 +22,8 @@ import {
     IOPContractsManagerDeployer,
     IOPContractsManagerUpgrader,
     IOPContractsManagerContractsContainer,
-    IOPContractsManagerInteropMigrator
+    IOPContractsManagerInteropMigrator,
+    IOPContractsManagerStandardValidator
 } from "interfaces/L1/IOPContractsManager.sol";
 import { IOptimismPortal2 as IOptimismPortal } from "interfaces/L1/IOptimismPortal2.sol";
 import { IETHLockbox } from "interfaces/L1/IETHLockbox.sol";
@@ -33,8 +33,11 @@ import { IL1ERC721Bridge } from "interfaces/L1/IL1ERC721Bridge.sol";
 import { IL1StandardBridge } from "interfaces/L1/IL1StandardBridge.sol";
 import { IOptimismMintableERC20Factory } from "interfaces/universal/IOptimismMintableERC20Factory.sol";
 import { IProxyAdmin } from "interfaces/universal/IProxyAdmin.sol";
+import { IOPContractsManagerStandardValidator } from "interfaces/L1/IOPContractsManagerStandardValidator.sol";
 import { DeployUtils } from "scripts/libraries/DeployUtils.sol";
 import { Solarray } from "scripts/libraries/Solarray.sol";
+import { ChainAssertions } from "scripts/deploy/ChainAssertions.sol";
+import { DeployOPChainInput } from "scripts/deploy/DeployOPChain.s.sol";
 
 contract DeployImplementations is Script {
     struct Input {
@@ -52,6 +55,7 @@ contract DeployImplementations is Script {
         IProtocolVersions protocolVersionsProxy;
         IProxyAdmin superchainProxyAdmin;
         address upgradeController;
+        address challenger;
     }
 
     struct Output {
@@ -61,11 +65,12 @@ contract DeployImplementations is Script {
         IOPContractsManagerDeployer opcmDeployer;
         IOPContractsManagerUpgrader opcmUpgrader;
         IOPContractsManagerInteropMigrator opcmInteropMigrator;
+        IOPContractsManagerStandardValidator opcmStandardValidator;
         IDelayedWETH delayedWETHImpl;
         IOptimismPortal optimismPortalImpl;
         IETHLockbox ethLockboxImpl;
         IPreimageOracle preimageOracleSingleton;
-        IMIPS mipsSingleton;
+        IMIPS64 mipsSingleton;
         ISystemConfig systemConfigImpl;
         IL1CrossDomainMessenger l1CrossDomainMessengerImpl;
         IL1ERC721Bridge l1ERC721BridgeImpl;
@@ -140,6 +145,7 @@ contract DeployImplementations is Script {
         deployOPCMDeployer(_input, _output);
         deployOPCMUpgrader(_output);
         deployOPCMInteropMigrator(_output);
+        deployOPCMStandardValidator(_input, _output, implementations);
 
         // Semgrep rule will fail because the arguments are encoded inside of a separate function.
         opcm_ = IOPContractsManager(
@@ -178,6 +184,7 @@ contract DeployImplementations is Script {
                     _output.opcmDeployer,
                     _output.opcmUpgrader,
                     _output.opcmInteropMigrator,
+                    _output.opcmStandardValidator,
                     _input.superchainConfigProxy,
                     _input.protocolVersionsProxy,
                     _input.superchainProxyAdmin,
@@ -411,10 +418,10 @@ contract DeployImplementations is Script {
             }
         }
 
-        IMIPS singleton = IMIPS(
+        IMIPS64 singleton = IMIPS64(
             DeployUtils.createDeterministic({
                 _name: "MIPS64",
-                _args: DeployUtils.encodeConstructor(abi.encodeCall(IMIPS2.__constructor__, (preimageOracle, mipsVersion))),
+                _args: DeployUtils.encodeConstructor(abi.encodeCall(IMIPS64.__constructor__, (preimageOracle, mipsVersion))),
                 _salt: DeployUtils.DEFAULT_SALT
             })
         );
@@ -525,6 +532,48 @@ contract DeployImplementations is Script {
         _output.opcmInteropMigrator = impl;
     }
 
+    function deployOPCMStandardValidator(
+        Input memory _input,
+        Output memory _output,
+        IOPContractsManager.Implementations memory _implementations
+    )
+        private
+    {
+        IOPContractsManagerStandardValidator.Implementations memory opcmImplementations;
+        opcmImplementations.l1ERC721BridgeImpl = _implementations.l1ERC721BridgeImpl;
+        opcmImplementations.optimismPortalImpl = _implementations.optimismPortalImpl;
+        opcmImplementations.ethLockboxImpl = _implementations.ethLockboxImpl;
+        opcmImplementations.systemConfigImpl = _implementations.systemConfigImpl;
+        opcmImplementations.optimismMintableERC20FactoryImpl = _implementations.optimismMintableERC20FactoryImpl;
+        opcmImplementations.l1CrossDomainMessengerImpl = _implementations.l1CrossDomainMessengerImpl;
+        opcmImplementations.l1StandardBridgeImpl = _implementations.l1StandardBridgeImpl;
+        opcmImplementations.disputeGameFactoryImpl = _implementations.disputeGameFactoryImpl;
+        opcmImplementations.anchorStateRegistryImpl = _implementations.anchorStateRegistryImpl;
+        opcmImplementations.delayedWETHImpl = _implementations.delayedWETHImpl;
+        opcmImplementations.mipsImpl = _implementations.mipsImpl;
+
+        IOPContractsManagerStandardValidator impl = IOPContractsManagerStandardValidator(
+            DeployUtils.createDeterministic({
+                _name: "OPContractsManagerStandardValidator.sol:OPContractsManagerStandardValidator",
+                _args: DeployUtils.encodeConstructor(
+                    abi.encodeCall(
+                        IOPContractsManagerStandardValidator.__constructor__,
+                        (
+                            opcmImplementations,
+                            _input.superchainConfigProxy,
+                            _input.upgradeController, // Proxy admin owner
+                            _input.challenger,
+                            _input.withdrawalDelaySeconds
+                        )
+                    )
+                ),
+                _salt: _salt
+            })
+        );
+        vm.label(address(impl), "OPContractsManagerStandardValidatorImpl");
+        _output.opcmStandardValidator = impl;
+    }
+
     function assertValidInput(Input memory _input) private pure {
         require(_input.withdrawalDelaySeconds != 0, "DeployImplementations: withdrawalDelaySeconds not set");
         require(_input.minProposalSizeBytes != 0, "DeployImplementations: minProposalSizeBytes not set");
@@ -577,164 +626,42 @@ contract DeployImplementations is Script {
 
         DeployUtils.assertValidContractAddresses(Solarray.extend(addrs1, addrs2));
 
-        assertValidDelayedWETHImpl(_input, _output);
-        assertValidDisputeGameFactoryImpl(_input, _output);
-        assertValidAnchorStateRegistryImpl(_input, _output);
-        assertValidL1CrossDomainMessengerImpl(_input, _output);
-        assertValidL1ERC721BridgeImpl(_input, _output);
-        assertValidL1StandardBridgeImpl(_input, _output);
-        assertValidMipsSingleton(_input, _output);
-        assertValidOpcm(_input, _output);
-        assertValidOptimismMintableERC20FactoryImpl(_input, _output);
-        assertValidOptimismPortalImpl(_input, _output);
-        assertValidETHLockboxImpl(_input, _output);
-        assertValidPreimageOracleSingleton(_input, _output);
-        assertValidSystemConfigImpl(_input, _output);
-    }
+        Types.ContractSet memory impls = ChainAssertions.dioToContractSet(_output);
 
-    function assertValidOpcm(Input memory _input, Output memory _output) private view {
-        IOPContractsManager impl = IOPContractsManager(address(_output.opcm));
-        require(address(impl.superchainConfig()) == address(_input.superchainConfigProxy), "OPCMI-10");
-        require(address(impl.protocolVersions()) == address(_input.protocolVersionsProxy), "OPCMI-20");
-        require(impl.upgradeController() == _input.upgradeController, "OPCMI-30");
-    }
+        ChainAssertions.checkDelayedWETHImpl(_output.delayedWETHImpl, _input.withdrawalDelaySeconds);
+        ChainAssertions.checkDisputeGameFactory(_output.disputeGameFactoryImpl, address(0), address(0), false);
+        DeployUtils.assertInitialized({
+            _contractAddress: address(_output.anchorStateRegistryImpl),
+            _isProxy: false,
+            _slot: 0,
+            _offset: 0
+        });
+        ChainAssertions.checkL1CrossDomainMessenger(IL1CrossDomainMessenger(impls.L1CrossDomainMessenger), vm, false);
+        ChainAssertions.checkL1ERC721BridgeImpl(_output.l1ERC721BridgeImpl);
+        ChainAssertions.checkL1StandardBridgeImpl(_output.l1StandardBridgeImpl);
+        ChainAssertions.checkMIPS(_output.mipsSingleton, _output.preimageOracleSingleton);
 
-    function assertValidOptimismPortalImpl(Input memory, Output memory _output) private view {
-        IOptimismPortal portal = _output.optimismPortalImpl;
+        Types.ContractSet memory proxies;
+        proxies.SuperchainConfig = address(_input.superchainConfigProxy);
+        proxies.ProtocolVersions = address(_input.protocolVersionsProxy);
+        ChainAssertions.checkOPContractsManager({
+            _impls: impls,
+            _proxies: proxies,
+            _opcm: IOPContractsManager(address(_output.opcm)),
+            _mips: IMIPS64(address(_output.mipsSingleton)),
+            _superchainProxyAdmin: _input.superchainProxyAdmin
+        });
 
-        DeployUtils.assertInitialized({ _contractAddress: address(portal), _isProxy: false, _slot: 0, _offset: 0 });
-
-        require(address(portal.anchorStateRegistry()) == address(0), "PORTAL-10");
-        require(address(portal.systemConfig()) == address(0), "PORTAL-20");
-        require(portal.l2Sender() == address(0), "PORTAL-30");
-
-        // This slot is the custom gas token _balance and this check ensures
-        // that it stays unset for forwards compatibility with custom gas token.
-        require(vm.load(address(portal), bytes32(uint256(61))) == bytes32(0), "PORTAL-40");
-
-        require(address(portal.ethLockbox()) == address(0), "PORTAL-50");
-    }
-
-    function assertValidETHLockboxImpl(Input memory, Output memory _output) private view {
-        IETHLockbox lockbox = _output.ethLockboxImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(lockbox), _isProxy: false, _slot: 0, _offset: 0 });
-
-        require(address(lockbox.systemConfig()) == address(0), "ELB-10");
-        require(lockbox.authorizedPortals(_output.optimismPortalImpl) == false, "ELB-20");
-    }
-
-    function assertValidDelayedWETHImpl(Input memory _input, Output memory _output) private view {
-        IDelayedWETH delayedWETH = _output.delayedWETHImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(delayedWETH), _isProxy: false, _slot: 0, _offset: 0 });
-
-        require(delayedWETH.delay() == _input.withdrawalDelaySeconds, "DW-10");
-        require(delayedWETH.systemConfig() == ISystemConfig(address(0)), "DW-20");
-    }
-
-    function assertValidPreimageOracleSingleton(Input memory _input, Output memory _output) private view {
-        IPreimageOracle oracle = _output.preimageOracleSingleton;
-
-        require(oracle.minProposalSize() == _input.minProposalSizeBytes, "PO-10");
-        require(oracle.challengePeriod() == _input.challengePeriodSeconds, "PO-20");
-    }
-
-    function assertValidMipsSingleton(Input memory, Output memory _output) private view {
-        IMIPS mips = _output.mipsSingleton;
-        require(address(mips.oracle()) == address(_output.preimageOracleSingleton), "MIPS-10");
-    }
-
-    function assertValidSystemConfigImpl(Input memory, Output memory _output) private view {
-        ISystemConfig systemConfig = _output.systemConfigImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(systemConfig), _isProxy: false, _slot: 0, _offset: 0 });
-
-        require(systemConfig.owner() == address(0), "SYSCON-10");
-        require(systemConfig.overhead() == 0, "SYSCON-20");
-        require(systemConfig.scalar() == 0, "SYSCON-30");
-        require(systemConfig.basefeeScalar() == 0, "SYSCON-40");
-        require(systemConfig.blobbasefeeScalar() == 0, "SYSCON-50");
-        require(systemConfig.batcherHash() == bytes32(0), "SYSCON-60");
-        require(systemConfig.gasLimit() == 0, "SYSCON-70");
-        require(systemConfig.unsafeBlockSigner() == address(0), "SYSCON-80");
-
-        IResourceMetering.ResourceConfig memory resourceConfig = systemConfig.resourceConfig();
-        require(resourceConfig.maxResourceLimit == 0, "SYSCON-90");
-        require(resourceConfig.elasticityMultiplier == 0, "SYSCON-100");
-        require(resourceConfig.baseFeeMaxChangeDenominator == 0, "SYSCON-110");
-        require(resourceConfig.systemTxMaxGas == 0, "SYSCON-120");
-        require(resourceConfig.minimumBaseFee == 0, "SYSCON-130");
-        require(resourceConfig.maximumBaseFee == 0, "SYSCON-140");
-
-        require(systemConfig.startBlock() == type(uint256).max, "SYSCON-150");
-        require(systemConfig.batchInbox() == address(0), "SYSCON-160");
-        require(systemConfig.l1CrossDomainMessenger() == address(0), "SYSCON-170");
-        require(systemConfig.l1ERC721Bridge() == address(0), "SYSCON-180");
-        require(systemConfig.l1StandardBridge() == address(0), "SYSCON-190");
-        require(systemConfig.optimismPortal() == address(0), "SYSCON-200");
-        require(systemConfig.optimismMintableERC20Factory() == address(0), "SYSCON-210");
-    }
-
-    function assertValidL1CrossDomainMessengerImpl(Input memory, Output memory _output) private view {
-        IL1CrossDomainMessenger messenger = _output.l1CrossDomainMessengerImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(messenger), _isProxy: false, _slot: 0, _offset: 20 });
-
-        require(address(messenger.OTHER_MESSENGER()) == address(0), "L1xDM-10");
-        require(address(messenger.otherMessenger()) == address(0), "L1xDM-20");
-        require(address(messenger.PORTAL()) == address(0), "L1xDM-30");
-        require(address(messenger.portal()) == address(0), "L1xDM-40");
-        require(address(messenger.systemConfig()) == address(0), "L1xDM-50");
-
-        bytes32 xdmSenderSlot = vm.load(address(messenger), bytes32(uint256(204)));
-        require(address(uint160(uint256(xdmSenderSlot))) == address(0), "L1xDM-60");
-    }
-
-    function assertValidL1ERC721BridgeImpl(Input memory, Output memory _output) private view {
-        IL1ERC721Bridge bridge = _output.l1ERC721BridgeImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(bridge), _isProxy: false, _slot: 0, _offset: 0 });
-
-        require(address(bridge.OTHER_BRIDGE()) == address(0), "L721B-10");
-        require(address(bridge.otherBridge()) == address(0), "L721B-20");
-        require(address(bridge.MESSENGER()) == address(0), "L721B-30");
-        require(address(bridge.messenger()) == address(0), "L721B-40");
-        require(address(bridge.systemConfig()) == address(0), "L721B-50");
-    }
-
-    function assertValidL1StandardBridgeImpl(Input memory, Output memory _output) private view {
-        IL1StandardBridge bridge = _output.l1StandardBridgeImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(bridge), _isProxy: false, _slot: 0, _offset: 0 });
-
-        require(address(bridge.MESSENGER()) == address(0), "L1SB-10");
-        require(address(bridge.messenger()) == address(0), "L1SB-20");
-        require(address(bridge.OTHER_BRIDGE()) == address(0), "L1SB-30");
-        require(address(bridge.otherBridge()) == address(0), "L1SB-40");
-        require(address(bridge.systemConfig()) == address(0), "L1SB-50");
-    }
-
-    function assertValidOptimismMintableERC20FactoryImpl(Input memory, Output memory _output) private view {
-        IOptimismMintableERC20Factory factory = _output.optimismMintableERC20FactoryImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(factory), _isProxy: false, _slot: 0, _offset: 0 });
-
-        require(address(factory.BRIDGE()) == address(0), "MERC20F-10");
-        require(address(factory.bridge()) == address(0), "MERC20F-20");
-    }
-
-    function assertValidDisputeGameFactoryImpl(Input memory, Output memory _output) private view {
-        IDisputeGameFactory factory = _output.disputeGameFactoryImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(factory), _isProxy: false, _slot: 0, _offset: 0 });
-
-        require(address(factory.owner()) == address(0), "DG-10");
-    }
-
-    function assertValidAnchorStateRegistryImpl(Input memory, Output memory _output) private view {
-        IAnchorStateRegistry registry = _output.anchorStateRegistryImpl;
-
-        DeployUtils.assertInitialized({ _contractAddress: address(registry), _isProxy: false, _slot: 0, _offset: 0 });
+        ChainAssertions.checkOptimismMintableERC20FactoryImpl(_output.optimismMintableERC20FactoryImpl);
+        ChainAssertions.checkOptimismPortal2({
+            _contracts: impls,
+            _superchainConfig: ISuperchainConfig(address(_input.superchainConfigProxy)),
+            _opChainProxyAdminOwner: address(0),
+            _isProxy: false
+        });
+        ChainAssertions.checkETHLockboxImpl(_output.ethLockboxImpl, _output.optimismPortalImpl);
+        // We can use DeployOPChainInput(address(0)) here because no method will be called on _doi when isProxy is false
+        ChainAssertions.checkSystemConfig(impls, DeployOPChainInput(address(0)), false);
+        ChainAssertions.checkAnchorStateRegistryProxy(IAnchorStateRegistry(impls.AnchorStateRegistry), false);
     }
 }

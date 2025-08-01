@@ -5,7 +5,6 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/ethereum-optimism/optimism/op-node/p2p"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/status"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 	"github.com/ethereum-optimism/optimism/op-service/event"
@@ -20,7 +19,6 @@ type Tracer interface {
 
 type TracePublishBlockEvent struct {
 	Envelope *eth.ExecutionPayloadEnvelope
-	event.Ctx
 }
 
 func (ev TracePublishBlockEvent) String() string {
@@ -46,12 +44,12 @@ func NewTracerDeriver(tracer Tracer) *TracerDeriver {
 	}
 }
 
-func (t *TracerDeriver) OnEvent(ev event.Event) bool {
+func (t *TracerDeriver) OnEvent(ctx context.Context, ev event.Event) bool {
+	// TODO(#16917) Remove Event System Refactor Comments
+	//  ReceivedBlockEvent is removed and tracer.OnUnsafeL2Payload is synchronously called at NewBlockReceiver
 	switch x := ev.(type) {
 	case status.L1UnsafeEvent:
 		t.tracer.OnNewL1Head(t.ctx, x.L1Unsafe)
-	case p2p.ReceivedBlockEvent:
-		t.tracer.OnUnsafeL2Payload(t.ctx, x.From, x.Envelope)
 	case TracePublishBlockEvent:
 		t.tracer.OnPublishL2Payload(t.ctx, x.Envelope)
 	default:

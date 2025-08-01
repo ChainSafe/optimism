@@ -94,7 +94,7 @@ type DerivationStorage interface {
 
 	// rewinding
 	RewindAndInvalidate(inv reads.Invalidator, invalidated types.DerivedBlockRefPair) error
-	RewindToScope(inv reads.Invalidator, scope eth.BlockID) error
+	RewindToSource(inv reads.Invalidator, scope eth.BlockID) error
 	RewindToFirstDerived(inv reads.Invalidator, v eth.BlockID, revision types.Revision) error
 }
 
@@ -174,7 +174,7 @@ func (db *ChainsDB) AttachEmitter(em event.Emitter) {
 	db.emitter = em
 }
 
-func (db *ChainsDB) OnEvent(ev event.Event) bool {
+func (db *ChainsDB) OnEvent(ctx context.Context, ev event.Event) bool {
 	switch x := ev.(type) {
 	case superevents.UnsafeActivationBlockEvent:
 		if !db.isInitialized(x.ChainID) {
@@ -191,7 +191,7 @@ func (db *ChainsDB) OnEvent(ev event.Event) bool {
 		} else {
 			db.logger.Warn("Received unsafe activation block on initialized DB",
 				"chain", x.ChainID, "block", x.Unsafe)
-			// TODO(#15774): handle reorg
+			// TODO: handle reorg
 		}
 		return false
 	case superevents.SafeActivationBlockEvent:
@@ -205,7 +205,7 @@ func (db *ChainsDB) OnEvent(ev event.Event) bool {
 		} else {
 			db.logger.Warn("Received safe activation block on initialized DB",
 				"chain", x.ChainID, "block", x.Safe)
-			// TODO(#15774): handle reorg
+			// TODO: handle reorg
 		}
 		return false
 	case superevents.LocalDerivedEvent:

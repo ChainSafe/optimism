@@ -30,7 +30,7 @@ import { IL1ERC721Bridge } from "interfaces/L1/IL1ERC721Bridge.sol";
 import { IL1StandardBridge } from "interfaces/L1/IL1StandardBridge.sol";
 import { IOptimismMintableERC20Factory } from "interfaces/universal/IOptimismMintableERC20Factory.sol";
 import { IL1CrossDomainMessenger } from "interfaces/L1/IL1CrossDomainMessenger.sol";
-import { IMIPS2 } from "interfaces/cannon/IMIPS2.sol";
+import { IMIPS64 } from "interfaces/cannon/IMIPS64.sol";
 import { IOptimismPortal2 } from "interfaces/L1/IOptimismPortal2.sol";
 import { IProxy } from "interfaces/universal/IProxy.sol";
 import { IProxyAdmin } from "interfaces/universal/IProxyAdmin.sol";
@@ -50,7 +50,8 @@ import {
     IOPContractsManagerDeployer,
     IOPContractsManagerUpgrader,
     IOPContractsManagerContractsContainer,
-    IOPContractsManagerInteropMigrator
+    IOPContractsManagerInteropMigrator,
+    IOPContractsManagerStandardValidator
 } from "interfaces/L1/IOPContractsManager.sol";
 import { IOPContractsManager200 } from "interfaces/L1/IOPContractsManager200.sol";
 import { ISemver } from "interfaces/universal/ISemver.sol";
@@ -58,6 +59,7 @@ import { IETHLockbox } from "interfaces/L1/IETHLockbox.sol";
 import { IBigStepper } from "interfaces/dispute/IBigStepper.sol";
 import { ISuperFaultDisputeGame } from "interfaces/dispute/ISuperFaultDisputeGame.sol";
 import { ISuperPermissionedDisputeGame } from "interfaces/dispute/ISuperPermissionedDisputeGame.sol";
+import { IOPContractsManagerStandardValidator } from "interfaces/L1/IOPContractsManagerStandardValidator.sol";
 
 // Contracts
 import {
@@ -66,8 +68,10 @@ import {
     OPContractsManagerDeployer,
     OPContractsManagerUpgrader,
     OPContractsManagerContractsContainer,
-    OPContractsManagerInteropMigrator
+    OPContractsManagerInteropMigrator,
+    OPContractsManagerStandardValidator
 } from "src/L1/OPContractsManager.sol";
+import { OPContractsManagerStandardValidator } from "src/L1/OPContractsManagerStandardValidator.sol";
 
 /// @title OPContractsManager_Harness
 /// @notice Exposes internal functions for testing.
@@ -77,6 +81,7 @@ contract OPContractsManager_Harness is OPContractsManager {
         OPContractsManagerDeployer _opcmDeployer,
         OPContractsManagerUpgrader _opcmUpgrader,
         OPContractsManagerInteropMigrator _opcmInteropMigrator,
+        OPContractsManagerStandardValidator _opcmStandardValidator,
         ISuperchainConfig _superchainConfig,
         IProtocolVersions _protocolVersions,
         IProxyAdmin _superchainProxyAdmin,
@@ -88,6 +93,7 @@ contract OPContractsManager_Harness is OPContractsManager {
             _opcmDeployer,
             _opcmUpgrader,
             _opcmInteropMigrator,
+            _opcmStandardValidator,
             _superchainConfig,
             _protocolVersions,
             _superchainProxyAdmin,
@@ -514,11 +520,12 @@ contract OPContractsManager_TestInit is Test {
     IOPContractsManager internal opcm;
     IOPContractsManager.DeployOutput internal chainDeployOutput1;
     IOPContractsManager.DeployOutput internal chainDeployOutput2;
+    address challenger = makeAddr("challenger");
+    ISuperchainConfig superchainConfigProxy = ISuperchainConfig(makeAddr("superchainConfig"));
+    IProtocolVersions protocolVersionsProxy = IProtocolVersions(makeAddr("protocolVersions"));
+    IProxyAdmin superchainProxyAdmin = IProxyAdmin(makeAddr("superchainProxyAdmin"));
 
     function setUp() public virtual {
-        ISuperchainConfig superchainConfigProxy = ISuperchainConfig(makeAddr("superchainConfig"));
-        IProtocolVersions protocolVersionsProxy = IProtocolVersions(makeAddr("protocolVersions"));
-        IProxyAdmin superchainProxyAdmin = IProxyAdmin(makeAddr("superchainProxyAdmin"));
         bytes32 salt = hex"01";
         IOPContractsManager.Blueprints memory blueprints;
         (blueprints.addressManager,) = Blueprint.create(vm.getCode("AddressManager"), salt);
@@ -594,7 +601,7 @@ contract OPContractsManager_TestInit is Test {
             mipsImpl: DeployUtils.create1({
                 _name: "MIPS64",
                 _args: DeployUtils.encodeConstructor(
-                    abi.encodeCall(IMIPS2.__constructor__, (oracle, StandardConstants.MIPS_VERSION))
+                    abi.encodeCall(IMIPS64.__constructor__, (oracle, StandardConstants.MIPS_VERSION))
                 )
             })
         });
@@ -611,6 +618,12 @@ contract OPContractsManager_TestInit is Test {
                 _salt: DeployUtils.DEFAULT_SALT
             })
         );
+
+        IOPContractsManager.Implementations memory __opcmImplementations = container.implementations();
+        IOPContractsManagerStandardValidator.Implementations memory opcmImplementations;
+        assembly {
+            opcmImplementations := __opcmImplementations
+        }
 
         opcm = IOPContractsManager(
             DeployUtils.createDeterministic({
@@ -655,6 +668,24 @@ contract OPContractsManager_TestInit is Test {
                                     _salt: DeployUtils.DEFAULT_SALT
                                 })
                             ),
+                            IOPContractsManagerStandardValidator(
+                                DeployUtils.createDeterministic({
+                                    _name: "OPContractsManagerStandardValidator",
+                                    _args: DeployUtils.encodeConstructor(
+                                        abi.encodeCall(
+                                            IOPContractsManagerStandardValidator.__constructor__,
+                                            (
+                                                opcmImplementations,
+                                                superchainConfigProxy,
+                                                address(superchainProxyAdmin),
+                                                challenger,
+                                                100
+                                            )
+                                        )
+                                    ),
+                                    _salt: DeployUtils.DEFAULT_SALT
+                                })
+                            ),
                             superchainConfigProxy,
                             protocolVersionsProxy,
                             superchainProxyAdmin,
@@ -679,6 +710,14 @@ contract OPContractsManager_TestInit is Test {
         // Fund the lockboxes for testing.
         vm.deal(address(chainDeployOutput1.ethLockboxProxy), 100 ether);
         vm.deal(address(chainDeployOutput2.ethLockboxProxy), 100 ether);
+    }
+
+    /// @notice Sets up the environment variables for the VerifyOPCM test.
+    function setupEnvVars() public {
+        vm.setEnv("EXPECTED_SUPERCHAIN_CONFIG", vm.toString(address(opcm.superchainConfig())));
+        vm.setEnv("EXPECTED_PROTOCOL_VERSIONS", vm.toString(address(opcm.protocolVersions())));
+        vm.setEnv("EXPECTED_SUPERCHAIN_PROXY_ADMIN", vm.toString(address(opcm.superchainProxyAdmin())));
+        vm.setEnv("EXPECTED_UPGRADE_CONTROLLER", vm.toString(opcm.upgradeController()));
     }
 
     /// @notice Helper function to deploy a new set of L1 contracts via OPCM.
@@ -724,6 +763,7 @@ contract OPContractsManager_TestInit is Test {
 /// @dev These tests use the harness which exposes internal functions for testing.
 contract OPContractsManager_ChainIdToBatchInboxAddress_Test is Test {
     OPContractsManager_Harness opcmHarness;
+    address challenger = makeAddr("challenger");
 
     function setUp() public {
         ISuperchainConfig superchainConfigProxy = ISuperchainConfig(makeAddr("superchainConfig"));
@@ -738,11 +778,20 @@ contract OPContractsManager_ChainIdToBatchInboxAddress_Test is Test {
         OPContractsManagerContractsContainer container =
             new OPContractsManagerContractsContainer(emptyBlueprints, emptyImpls);
 
+        OPContractsManager.Implementations memory __opcmImplementations = container.implementations();
+        OPContractsManagerStandardValidator.Implementations memory opcmImplementations;
+        assembly {
+            opcmImplementations := __opcmImplementations
+        }
+
         opcmHarness = new OPContractsManager_Harness({
             _opcmGameTypeAdder: new OPContractsManagerGameTypeAdder(container),
             _opcmDeployer: new OPContractsManagerDeployer(container),
             _opcmUpgrader: new OPContractsManagerUpgrader(container),
             _opcmInteropMigrator: new OPContractsManagerInteropMigrator(container),
+            _opcmStandardValidator: new OPContractsManagerStandardValidator(
+                opcmImplementations, superchainConfigProxy, address(superchainProxyAdmin), challenger, 100
+            ),
             _superchainConfig: superchainConfigProxy,
             _protocolVersions: protocolVersionsProxy,
             _superchainProxyAdmin: superchainProxyAdmin,
@@ -1320,6 +1369,12 @@ contract OPContractsManager_Upgrade_Test is OPContractsManager_Upgrade_Harness {
 
     function test_verifyOpcmCorrectness_succeeds() public {
         skipIfCoverage(); // Coverage changes bytecode and breaks the verification script.
+
+        // Set up environment variables with the actual OPCM addresses for tests that need themqq
+        vm.setEnv("EXPECTED_SUPERCHAIN_CONFIG", vm.toString(address(opcm.superchainConfig())));
+        vm.setEnv("EXPECTED_PROTOCOL_VERSIONS", vm.toString(address(opcm.protocolVersions())));
+        vm.setEnv("EXPECTED_SUPERCHAIN_PROXY_ADMIN", vm.toString(address(opcm.superchainProxyAdmin())));
+        vm.setEnv("EXPECTED_UPGRADE_CONTROLLER", vm.toString(opcm.upgradeController()));
 
         // Run the upgrade test and checks
         runUpgradeTestAndChecks(upgrader);

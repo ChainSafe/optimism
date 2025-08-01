@@ -3,12 +3,14 @@ package metrics
 import (
 	"io"
 	"math"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/log"
 
+	"github.com/ethereum-optimism/optimism/op-batcher/config"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 	opmetrics "github.com/ethereum-optimism/optimism/op-service/metrics"
@@ -34,12 +36,24 @@ func (*noopMetrics) RecordChannelOpened(derive.ChannelID, int)              {}
 func (*noopMetrics) RecordL2BlocksAdded(eth.L2BlockRef, int, int, int, int) {}
 func (*noopMetrics) RecordL2BlockInPendingQueue(*types.Block)               {}
 func (*noopMetrics) RecordL2BlockInChannel(*types.Block)                    {}
+func (*noopMetrics) RecordPendingBlockPruned(*types.Block)                  {}
 
 func (*noopMetrics) RecordChannelClosed(derive.ChannelID, int, int, int, int, error) {}
 
 func (*noopMetrics) RecordChannelFullySubmitted(derive.ChannelID) {}
 func (*noopMetrics) RecordChannelTimedOut(derive.ChannelID)       {}
 func (*noopMetrics) RecordChannelQueueLength(int)                 {}
+
+func (*noopMetrics) RecordThrottleIntensity(intensity float64, controllerType config.ThrottleControllerType) {
+}
+func (*noopMetrics) RecordThrottleParams(maxTxSize, maxBlockSize uint64)                       {}
+func (*noopMetrics) RecordThrottleControllerType(controllerType config.ThrottleControllerType) {}
+func (*noopMetrics) RecordPendingBytesVsThreshold(pendingBytes, threshold uint64, controllerType config.ThrottleControllerType) {
+}
+
+// PID Controller specific metrics
+func (*noopMetrics) RecordThrottleControllerState(error, integral, derivative float64) {}
+func (*noopMetrics) RecordThrottleResponseTime(duration time.Duration)                 {}
 
 func (*noopMetrics) RecordBatchTxSubmitted() {}
 func (*noopMetrics) RecordBatchTxSuccess()   {}

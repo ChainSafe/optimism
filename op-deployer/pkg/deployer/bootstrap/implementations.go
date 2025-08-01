@@ -12,7 +12,6 @@ import (
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/artifacts"
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/broadcaster"
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/opcm"
-	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/standard"
 	"github.com/ethereum-optimism/optimism/op-deployer/pkg/env"
 	"github.com/ethereum-optimism/optimism/op-service/cliutil"
 	opcrypto "github.com/ethereum-optimism/optimism/op-service/crypto"
@@ -43,6 +42,7 @@ type ImplementationsConfig struct {
 	ProtocolVersionsProxy           common.Address     `cli:"protocol-versions-proxy"`
 	UpgradeController               common.Address     `cli:"upgrade-controller"`
 	SuperchainProxyAdmin            common.Address     `cli:"superchain-proxy-admin"`
+	Challenger                      common.Address     `cli:"challenger"`
 	CacheDir                        string             `cli:"cache-dir"`
 
 	Logger log.Logger
@@ -70,13 +70,7 @@ func (c *ImplementationsConfig) Check() error {
 	if c.ArtifactsLocator == nil {
 		return errors.New("artifacts locator must be specified")
 	}
-	if c.ArtifactsLocator.IsTag() {
-		if c.L1ContractsRelease != "" {
-			return errors.New("l1 contracts release cannot be specified if using an artifacts tag")
-		}
-
-		c.L1ContractsRelease = c.ArtifactsLocator.Tag
-	} else if c.L1ContractsRelease == "" {
+	if c.L1ContractsRelease == "" {
 		return errors.New("l1 contracts release must be specified if not using an artifacts tag")
 	}
 	if !mipsVersion.IsSupported(c.MIPSVersion) {
@@ -108,6 +102,9 @@ func (c *ImplementationsConfig) Check() error {
 	}
 	if c.SuperchainProxyAdmin == (common.Address{}) {
 		return errors.New("superchain proxy admin must be specified")
+	}
+	if c.Challenger == (common.Address{}) {
+		return errors.New("challenger must be specified")
 	}
 	return nil
 }
@@ -142,10 +139,6 @@ func Implementations(ctx context.Context, cfg ImplementationsConfig) (opcm.Deplo
 	}
 
 	lgr := cfg.Logger
-
-	if cfg.ArtifactsLocator.IsTag() && !standard.IsSupportedL1Version(cfg.ArtifactsLocator.Tag) {
-		return dio, fmt.Errorf("unsupported L1 version: %s", cfg.ArtifactsLocator.Tag)
-	}
 
 	artifactsFS, err := artifacts.Download(ctx, cfg.ArtifactsLocator, artifacts.BarProgressor(), cfg.CacheDir)
 	if err != nil {
@@ -211,6 +204,7 @@ func Implementations(ctx context.Context, cfg ImplementationsConfig) (opcm.Deplo
 			ProtocolVersionsProxy:           cfg.ProtocolVersionsProxy,
 			SuperchainProxyAdmin:            cfg.SuperchainProxyAdmin,
 			UpgradeController:               cfg.UpgradeController,
+			Challenger:                      cfg.Challenger,
 		},
 	); err != nil {
 		return dio, fmt.Errorf("error deploying implementations: %w", err)

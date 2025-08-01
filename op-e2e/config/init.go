@@ -144,6 +144,10 @@ func DeployConfig(allocType AllocType) *genesis.DeployConfig {
 }
 
 func init() {
+	// Used by the rust team, to skip legacy op-e2e init. Not used by devstack acceptance tests.
+	if os.Getenv("DISABLE_OP_E2E_LEGACY") == "true" {
+		return
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		panic(err)
@@ -372,6 +376,7 @@ func defaultIntent(root string, loc *artifacts.Locator, deployer common.Address,
 			SuperchainProxyAdminOwner: deployer,
 			ProtocolVersionsOwner:     deployer,
 			SuperchainGuardian:        deployer,
+			Challenger:                common.HexToAddress("0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65"),
 		},
 		FundDevAccounts:    true,
 		L1ContractsLocator: loc,
