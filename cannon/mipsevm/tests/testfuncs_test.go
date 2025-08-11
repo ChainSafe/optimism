@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/ethereum-optimism/optimism/cannon/mipsevm"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/arch"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/exec"
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/multithreaded"
@@ -43,7 +44,7 @@ func testOperators(t *testing.T, testCases []operatorTestCase, mips32Insn bool) 
 	rtReg := uint32(8)
 	rdReg := uint32(18)
 
-	initState := func(t require.TestingT, tt operatorTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, tt operatorTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		var insn uint32
 		var baseReg uint32 = 17
 		if tt.isImm {
@@ -55,7 +56,7 @@ func testOperators(t *testing.T, testCases []operatorTestCase, mips32Insn bool) 
 			state.GetRegistersRef()[baseReg] = tt.rs
 			state.GetRegistersRef()[rtReg] = tt.rt
 		}
-		testutil.StoreInstruction(state.GetMemory(), pc, insn)
+		storeInsnWithCache(state, goVm, pc, insn)
 	}
 
 	setExpectations := func(t require.TestingT, tt operatorTestCase, expected *mtutil.ExpectedState, vm VersionedVMTestCase) ExpectedExecResult {
@@ -69,7 +70,7 @@ func testOperators(t *testing.T, testCases []operatorTestCase, mips32Insn bool) 
 	}
 
 	NewDiffTester((operatorTestCase).Name).
-		InitState(initState, mtutil.WithPCAndNextPC(pc)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -110,11 +111,11 @@ func testMulDiv(t *testing.T, templateCases []mulDivTestCase, mips32Insn bool) {
 	rtReg := uint32(0xa)
 	pc := arch.Word(0)
 
-	initState := func(t require.TestingT, tt mulDivTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, tt mulDivTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		insn := tt.opcode<<26 | baseReg<<21 | rtReg<<16 | tt.rdReg<<11 | tt.funct
 		state.GetRegistersRef()[rtReg] = tt.rt
 		state.GetRegistersRef()[baseReg] = tt.rs
-		testutil.StoreInstruction(state.GetMemory(), pc, insn)
+		storeInsnWithCache(state, goVm, pc, insn)
 	}
 
 	setExpectations := func(t require.TestingT, tt mulDivTestCase, expected *mtutil.ExpectedState, vm VersionedVMTestCase) ExpectedExecResult {
@@ -133,7 +134,7 @@ func testMulDiv(t *testing.T, templateCases []mulDivTestCase, mips32Insn bool) {
 	}
 
 	NewDiffTester((mulDivTestCase).Name).
-		InitState(initState, mtutil.WithPCAndNextPC(pc)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -163,10 +164,10 @@ func testLoadStore(t *testing.T, cases []loadStoreTestCase) {
 	rtReg := uint32(8)
 	pc := arch.Word(0)
 
-	initState := func(t require.TestingT, tt loadStoreTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, tt loadStoreTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		insn := tt.opcode<<26 | baseReg<<21 | rtReg<<16 | tt.imm
 
-		testutil.StoreInstruction(state.GetMemory(), pc, insn)
+		storeInsnWithCache(state, goVm, pc, insn)
 		state.GetMemory().SetWord(tt.effAddr(), tt.memVal)
 		state.GetRegistersRef()[rtReg] = tt.rt
 		state.GetRegistersRef()[baseReg] = tt.base
@@ -183,7 +184,7 @@ func testLoadStore(t *testing.T, cases []loadStoreTestCase) {
 	}
 
 	NewDiffTester((loadStoreTestCase).Name).
-		InitState(initState, mtutil.WithPCAndNextPC(pc)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -204,13 +205,13 @@ func (t branchTestCase) Name() string {
 }
 
 func testBranch(t *testing.T, cases []branchTestCase) {
-	initState := func(t require.TestingT, tt branchTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, tt branchTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		const rsReg = 8 // t0
 		insn := tt.opcode<<26 | rsReg<<21 | tt.regimm<<16 | uint32(tt.offset)
 
 		state.GetCurrentThread().Cpu.PC = tt.pc
 		state.GetCurrentThread().Cpu.NextPC = tt.pc + 4
-		testutil.StoreInstruction(state.GetMemory(), tt.pc, insn)
+		storeInsnWithCache(state, goVm, tt.pc, insn)
 		state.GetRegistersRef()[rsReg] = Word(tt.rs)
 	}
 
@@ -225,7 +226,7 @@ func testBranch(t *testing.T, cases []branchTestCase) {
 	}
 
 	NewDiffTester((branchTestCase).Name).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -245,8 +246,8 @@ func testNoopSyscall(t *testing.T, vm VersionedVMTestCase, syscalls map[string]u
 		cases = append(cases, testCase{name: name, sycallNum: arch.Word(syscallNum)})
 	}
 
-	initState := func(t require.TestingT, tt testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
-		testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)
+	initState := func(t require.TestingT, tt testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 		state.GetRegistersRef()[2] = tt.sycallNum // Set syscall number
 	}
 
@@ -259,7 +260,7 @@ func testNoopSyscall(t *testing.T, vm VersionedVMTestCase, syscalls map[string]u
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		Run(t, cases, WithVm(vm))
 }
@@ -280,8 +281,8 @@ func testUnsupportedSyscall(t *testing.T, vm VersionedVMTestCase, unsupportedSys
 		cases = append(cases, testCase{name: name, sycallNum: arch.Word(syscallNum)})
 	}
 
-	initState := func(t require.TestingT, tt testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
-		testutil.StoreInstruction(state.Memory, state.GetPC(), syscallInsn)
+	initState := func(t require.TestingT, tt testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 		state.GetRegistersRef()[2] = tt.sycallNum // Set syscall number
 	}
 
@@ -291,7 +292,7 @@ func testUnsupportedSyscall(t *testing.T, vm VersionedVMTestCase, unsupportedSys
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		Run(t, cases, WithVm(vm))
 }

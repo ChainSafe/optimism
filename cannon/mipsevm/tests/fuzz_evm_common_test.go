@@ -24,7 +24,7 @@ const syscallInsn = uint32(0x00_00_00_0c)
 func FuzzStateSyscallBrk(f *testing.F) {
 	vms := GetMipsVersionTestCases(f)
 
-	initState := func(t require.TestingT, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.GetRegistersRef()[2] = arch.SysBrk
 		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
 	}
@@ -37,7 +37,7 @@ func FuzzStateSyscallBrk(f *testing.F) {
 	}
 
 	diffTester := NewSimpleDiffTester().
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, seed int64) {
@@ -59,7 +59,7 @@ func FuzzStateSyscallMmap(f *testing.F) {
 		heap Word
 	}
 
-	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.Heap = c.heap
 		state.GetRegistersRef()[2] = arch.SysMmap
 		state.GetRegistersRef()[4] = c.addr
@@ -91,7 +91,7 @@ func FuzzStateSyscallMmap(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, addr Word, siz Word, heap Word, seed int64) {
@@ -106,7 +106,7 @@ func FuzzStateSyscallExitGroup(f *testing.F) {
 		exitCode uint8
 	}
 
-	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.GetRegistersRef()[2] = arch.SysExitGroup
 		state.GetRegistersRef()[4] = Word(c.exitCode)
 		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
@@ -121,7 +121,7 @@ func FuzzStateSyscallExitGroup(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, exitCode uint8, seed int64) {
@@ -137,7 +137,7 @@ func FuzzStateSyscallFcntl(f *testing.F) {
 		cmd Word
 	}
 
-	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.GetRegistersRef()[2] = arch.SysFcntl
 		state.GetRegistersRef()[4] = c.fd
 		state.GetRegistersRef()[5] = c.cmd
@@ -176,7 +176,7 @@ func FuzzStateSyscallFcntl(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, fd Word, cmd Word, seed int64) {
@@ -194,7 +194,7 @@ func FuzzStateHintRead(f *testing.F) {
 
 	preimageData := []byte("hello world")
 	preimageKey := preimage.Keccak256Key(crypto.Keccak256Hash(preimageData)).PreimageKey()
-	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.PreimageKey = preimageKey
 		state.GetRegistersRef()[2] = arch.SysRead
 		state.GetRegistersRef()[4] = exec.FdHintRead
@@ -215,7 +215,7 @@ func FuzzStateHintRead(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck)
 
@@ -242,7 +242,7 @@ func FuzzStatePreimageRead(f *testing.F) {
 	preimageValue := []byte("hello world")
 	preimageData := mtutil.AddPreimageLengthPrefix(preimageValue)
 	preimageKey := preimage.Keccak256Key(crypto.Keccak256Hash(preimageValue)).PreimageKey()
-	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.PreimageKey = preimageKey
 		state.PreimageOffset = c.preimageOffset
 		state.GetCurrentThread().Cpu.PC = c.pc
@@ -286,7 +286,7 @@ func FuzzStatePreimageRead(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck)
 
@@ -361,7 +361,7 @@ func FuzzStateHintWrite(f *testing.F) {
 		}
 	}
 
-	initState := func(t require.TestingT, c *testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, c *testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		cacheHintCalculations(t, c)
 		state.LastHint = c.lastHint
 		state.GetRegistersRef()[2] = arch.SysWrite
@@ -389,7 +389,7 @@ func FuzzStateHintWrite(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[*testCase]).
-		InitState(initState, mtutil.WithPCAndNextPC(0)).
+		InitState(initState, mtutil.WithPCAndNextPC(0), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck)
 
@@ -426,7 +426,7 @@ func FuzzStatePreimageWrite(f *testing.F) {
 	preexistingMemoryVal := [8]byte{0x12, 0x34, 0x56, 0x78, 0x87, 0x65, 0x43, 0x21}
 	preimageData := []byte("hello world")
 	preimageKey := preimage.Keccak256Key(crypto.Keccak256Hash(preimageData)).PreimageKey()
-	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper) {
+	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.GetRegistersRef()[2] = arch.SysWrite
 		state.GetRegistersRef()[4] = exec.FdPreimageWrite
 		state.GetRegistersRef()[5] = c.addr
@@ -462,7 +462,7 @@ func FuzzStatePreimageWrite(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithPCAndNextPC(0), mtutil.WithPreimageKey(preimageKey), mtutil.WithPreimageOffset(128)).
+		InitState(initState, mtutil.WithPCAndNextPC(0), mtutil.WithPreimageKey(preimageKey), mtutil.WithPreimageOffset(128), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck)
 
