@@ -2050,9 +2050,26 @@ workflows:
           module: op-deployer
           context:
             - oplabs-gcr-release
+            - circleci-repo-readonly-authenticated-github-token
           requires:
             - contracts-bedrock-build
 
+  go-release-op-up:
+    jobs:
+      - contracts-bedrock-build:
+          filters:
+            tags:
+              only: /^op-up.*/
+            branches:
+              ignore: /.*/
+          build_args: --skip test
+      - go-release:
+          module: op-up
+          context:
+            - oplabs-gcr-release
+            - circleci-repo-readonly-authenticated-github-token
+          requires:
+            - contracts-bedrock-build
   release:
     when:
       not:
@@ -2083,6 +2100,7 @@ workflows:
                 - op-supervisor
                 - op-test-sequencer
                 - op-deployer
+                - op-up
                 - cannon
                 - op-dripper
                 - op-interop-mon
