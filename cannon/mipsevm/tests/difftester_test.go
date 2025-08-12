@@ -48,7 +48,7 @@ func TestDiffTester_Run_SimpleTest(t *testing.T) {
 			// Run tests
 			tRunner := newMockTestRunner(t)
 			NewDiffTester(testNamer).
-				InitState(initState).
+				InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 				SetExpectations(setExpectations).
 				run(tRunner, testCases)
 
@@ -109,7 +109,7 @@ func TestDiffTester_Run_WithSteps(t *testing.T) {
 			// Run tests
 			tRunner := newMockTestRunner(t)
 			NewDiffTester(testNamer).
-				InitState(initState).
+				InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 				SetExpectations(setExpectations).
 				run(tRunner, cases, WithSteps(oc.steps))
 
@@ -155,7 +155,7 @@ func TestDiffTester_Run_WithMemModifications(t *testing.T) {
 			initStateCalled := make(map[string]int)
 			initState := func(t require.TestingT, tt simpleTestCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 				initStateCalled[tt.name] += 1
-				testutil.StoreInstruction(state.GetMemory(), pc, tt.insn)
+				storeInsnWithCache(state, goVm, pc, tt.insn)
 				state.GetMemory().SetWord(effAddr, 0xAA_BB_CC_DD_A1_B1_C1_D1)
 				state.GetRegistersRef()[rtReg] = 0x11_22_33_44_55_66_77_88
 				state.GetRegistersRef()[baseReg] = base
@@ -187,7 +187,7 @@ func TestDiffTester_Run_WithMemModifications(t *testing.T) {
 
 			tRunner := newMockTestRunner(t)
 			NewDiffTester(testNamer).
-				InitState(initState, mtutil.WithPCAndNextPC(pc)).
+				InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 				SetExpectations(setExpectations).
 				run(tRunner, testCases, opts...)
 
@@ -244,7 +244,7 @@ func TestDiffTester_Run_WithPanic(t *testing.T) {
 			// Run tests
 			tRunner := newMockTestRunner(t)
 			NewDiffTester(testNamer).
-				InitState(initState).
+				InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 				SetExpectations(setExpectations).
 				run(tRunner, testCases)
 
@@ -300,7 +300,7 @@ func TestDiffTester_Run_WithVm(t *testing.T) {
 	// Run tests
 	tRunner := newMockTestRunner(t)
 	NewDiffTester(testNamer).
-		InitState(initState).
+		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
 		SetExpectations(setExpectations).
 		run(tRunner, testCases, WithVm(vm))
 
