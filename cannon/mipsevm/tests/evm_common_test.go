@@ -2,7 +2,6 @@ package tests
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"math/big"
 	"os"
@@ -941,10 +940,11 @@ func TestEVM_Fault(t *testing.T) {
 		{name: "illegal instruction", nextPC: 0, insn: 0b111110 << 26, evmErrStr: "invalid instruction", goPanicValue: "invalid instruction: f8000000"},
 		{name: "branch in delay-slot", nextPC: 8, insn: 0x11_02_00_03, evmErrStr: "branch in delay slot", goPanicValue: "branch in delay slot"},
 		{name: "jump in delay-slot", nextPC: 8, insn: 0x0c_00_00_0c, evmErrStr: "jump in delay slot", goPanicValue: "jump in delay slot"},
-		{name: "misaligned instruction", pc: 1, nextPC: 4, insn: 0b110111_00001_00001 << 16, evmErrSig: "InvalidPC()", goPanicValue: fmt.Errorf("invalid pc: 1")},
-		{name: "misaligned instruction", pc: 2, nextPC: 4, insn: 0b110111_00001_00001 << 16, evmErrSig: "InvalidPC()", goPanicValue: fmt.Errorf("invalid pc: 2")},
-		{name: "misaligned instruction", pc: 3, nextPC: 4, insn: 0b110111_00001_00001 << 16, evmErrSig: "InvalidPC()", goPanicValue: fmt.Errorf("invalid pc: 3")},
-		{name: "misaligned instruction", pc: 5, nextPC: 4, insn: 0b110111_00001_00001 << 16, evmErrSig: "InvalidPC()", goPanicValue: fmt.Errorf("invalid pc: 5")},
+
+		{name: "misaligned instruction", pc: 1, nextPC: 4, insn: 0b110111_00001_00001 << 16, evmErrSig: "InvalidPC()", goPanicValue: "unaligned instruction fetch: PC = 0x1"},
+		{name: "misaligned instruction", pc: 2, nextPC: 4, insn: 0b110111_00001_00001 << 16, evmErrSig: "InvalidPC()", goPanicValue: "unaligned instruction fetch: PC = 0x2"},
+		{name: "misaligned instruction", pc: 3, nextPC: 4, insn: 0b110111_00001_00001 << 16, evmErrSig: "InvalidPC()", goPanicValue: "unaligned instruction fetch: PC = 0x3"},
+		{name: "misaligned instruction", pc: 5, nextPC: 4, insn: 0b110111_00001_00001 << 16, evmErrSig: "InvalidPC()", goPanicValue: "unaligned instruction fetch: PC = 0x5"},
 	}
 
 	initState := func(t require.TestingT, tt testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
@@ -1077,7 +1077,7 @@ func TestEVM_SyscallEventFdProgram(t *testing.T) {
 			state := goVm.GetState()
 
 			start := time.Now()
-			for i := 0; i < 500_000; i++ {
+			for i := 0; i < 550_000; i++ {
 				step := goVm.GetState().GetStep()
 				if goVm.GetState().GetExited() {
 					break
@@ -1145,7 +1145,7 @@ func TestEVM_HelloProgram(t *testing.T) {
 			state := goVm.GetState()
 
 			start := time.Now()
-			for i := 0; i < 450_000; i++ {
+			for i := 0; i < 500_000; i++ {
 				step := goVm.GetState().GetStep()
 				if goVm.GetState().GetExited() {
 					break
