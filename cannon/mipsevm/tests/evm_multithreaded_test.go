@@ -92,7 +92,7 @@ func TestEVM_MT_LL(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithPCAndNextPC(0x40), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(0x40)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -192,7 +192,7 @@ func TestEVM_MT_SC(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases, SkipAutomaticMemoryReservationTests())
 }
@@ -244,7 +244,7 @@ func TestEVM_SysClone_FlagHandling(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -281,7 +281,7 @@ func TestEVM_SysClone_Successful(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -340,7 +340,7 @@ func TestEVM_SysGetTID(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -395,7 +395,7 @@ func TestEVM_SysExit(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -435,7 +435,7 @@ func TestEVM_PopExitedThread(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -498,7 +498,7 @@ func TestEVM_SysFutex_WaitPrivate(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -552,7 +552,7 @@ func TestEVM_SysFutex_WakePrivate(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -626,7 +626,7 @@ func TestEVM_SysFutex_UnsupportedOp(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -683,7 +683,7 @@ func runPreemptSyscall(t *testing.T, syscallName string, syscallNum uint32) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -702,7 +702,7 @@ func TestEVM_SysOpen(t *testing.T) {
 	}
 
 	NewSimpleDiffTester().
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t)
 }
@@ -721,7 +721,7 @@ func TestEVM_SysGetPID(t *testing.T) {
 	}
 
 	NewSimpleDiffTester().
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t)
 }
@@ -830,7 +830,7 @@ func testEVM_SysClockGettime(t *testing.T, clkid Word) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases, SkipAutomaticMemoryReservationTests())
 }
@@ -852,7 +852,7 @@ func TestEVM_SysClockGettimeNonMonotonic(t *testing.T) {
 	}
 
 	NewSimpleDiffTester().
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t)
 }
@@ -893,7 +893,7 @@ func TestEVM_EmptyThreadStacks(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -965,7 +965,7 @@ func TestEVM_NormalTraversal_Full(t *testing.T) {
 	}
 
 	diffTester := NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations)
 
 	for _, bt := range baseTests {
@@ -1016,7 +1016,7 @@ func TestEVM_SchedQuantumThreshold(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }

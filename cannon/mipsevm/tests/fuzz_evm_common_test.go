@@ -26,7 +26,7 @@ func FuzzStateSyscallBrk(f *testing.F) {
 
 	initState := func(t require.TestingT, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.GetRegistersRef()[2] = arch.SysBrk
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 	}
 
 	setExpectations := func(t require.TestingT, expected *mtutil.ExpectedState, vm VersionedVMTestCase) ExpectedExecResult {
@@ -37,7 +37,7 @@ func FuzzStateSyscallBrk(f *testing.F) {
 	}
 
 	diffTester := NewSimpleDiffTester().
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, seed int64) {
@@ -64,7 +64,7 @@ func FuzzStateSyscallMmap(f *testing.F) {
 		state.GetRegistersRef()[2] = arch.SysMmap
 		state.GetRegistersRef()[4] = c.addr
 		state.GetRegistersRef()[5] = c.siz
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 	}
 
 	setExpectations := func(t require.TestingT, c testCase, expected *mtutil.ExpectedState, vm VersionedVMTestCase) ExpectedExecResult {
@@ -91,7 +91,7 @@ func FuzzStateSyscallMmap(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, addr Word, siz Word, heap Word, seed int64) {
@@ -109,7 +109,7 @@ func FuzzStateSyscallExitGroup(f *testing.F) {
 	initState := func(t require.TestingT, c testCase, state *multithreaded.State, vm VersionedVMTestCase, r *testutil.RandHelper, goVm mipsevm.FPVM) {
 		state.GetRegistersRef()[2] = arch.SysExitGroup
 		state.GetRegistersRef()[4] = Word(c.exitCode)
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 	}
 
 	setExpectations := func(t require.TestingT, c testCase, expected *mtutil.ExpectedState, vm VersionedVMTestCase) ExpectedExecResult {
@@ -121,7 +121,7 @@ func FuzzStateSyscallExitGroup(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, exitCode uint8, seed int64) {
@@ -141,7 +141,7 @@ func FuzzStateSyscallFcntl(f *testing.F) {
 		state.GetRegistersRef()[2] = arch.SysFcntl
 		state.GetRegistersRef()[4] = c.fd
 		state.GetRegistersRef()[5] = c.cmd
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 	}
 
 	setExpectations := func(t require.TestingT, c testCase, expected *mtutil.ExpectedState, vm VersionedVMTestCase) ExpectedExecResult {
@@ -176,7 +176,7 @@ func FuzzStateSyscallFcntl(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, fd Word, cmd Word, seed int64) {
@@ -200,7 +200,7 @@ func FuzzStateHintRead(f *testing.F) {
 		state.GetRegistersRef()[4] = exec.FdHintRead
 		state.GetRegistersRef()[5] = c.addr
 		state.GetRegistersRef()[6] = c.count
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 	}
 
 	setExpectations := func(t require.TestingT, c testCase, expected *mtutil.ExpectedState, vm VersionedVMTestCase) ExpectedExecResult {
@@ -215,7 +215,7 @@ func FuzzStateHintRead(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck)
 
@@ -251,7 +251,7 @@ func FuzzStatePreimageRead(f *testing.F) {
 		state.GetRegistersRef()[4] = exec.FdPreimageRead
 		state.GetRegistersRef()[5] = c.addr
 		state.GetRegistersRef()[6] = c.count
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 		state.GetMemory().SetWord(testutil.EffAddr(c.addr), preexistingMemoryVal)
 	}
 
@@ -286,7 +286,7 @@ func FuzzStatePreimageRead(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck)
 
@@ -368,7 +368,7 @@ func FuzzStateHintWrite(f *testing.F) {
 		state.GetRegistersRef()[4] = exec.FdHintWrite
 		state.GetRegistersRef()[5] = c.addr
 		state.GetRegistersRef()[6] = c.count
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 		err := state.GetMemory().SetMemoryRange(c.addr, bytes.NewReader(c.hintData[int(len(c.lastHint)):]))
 		require.NoError(t, err)
 	}
@@ -389,7 +389,7 @@ func FuzzStateHintWrite(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[*testCase]).
-		InitState(initState, mtutil.WithPCAndNextPC(0), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(0)).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck)
 
@@ -431,7 +431,7 @@ func FuzzStatePreimageWrite(f *testing.F) {
 		state.GetRegistersRef()[4] = exec.FdPreimageWrite
 		state.GetRegistersRef()[5] = c.addr
 		state.GetRegistersRef()[6] = c.count
-		testutil.StoreInstruction(state.GetMemory(), state.GetPC(), syscallInsn)
+		storeInsnWithCache(state, goVm, state.GetPC(), syscallInsn)
 		state.GetMemory().SetWord(testutil.EffAddr(c.addr), arch.ByteOrderWord.Word(preexistingMemoryVal[:]))
 	}
 
@@ -462,7 +462,7 @@ func FuzzStatePreimageWrite(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithPCAndNextPC(0), mtutil.WithPreimageKey(preimageKey), mtutil.WithPreimageOffset(128), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(0), mtutil.WithPreimageKey(preimageKey), mtutil.WithPreimageOffset(128)).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck)
 

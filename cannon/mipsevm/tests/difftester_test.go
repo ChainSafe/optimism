@@ -48,7 +48,7 @@ func TestDiffTester_Run_SimpleTest(t *testing.T) {
 			// Run tests
 			tRunner := newMockTestRunner(t)
 			NewDiffTester(testNamer).
-				InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+				InitState(initState).
 				SetExpectations(setExpectations).
 				run(tRunner, testCases)
 
@@ -109,7 +109,7 @@ func TestDiffTester_Run_WithSteps(t *testing.T) {
 			// Run tests
 			tRunner := newMockTestRunner(t)
 			NewDiffTester(testNamer).
-				InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+				InitState(initState).
 				SetExpectations(setExpectations).
 				run(tRunner, cases, WithSteps(oc.steps))
 
@@ -187,7 +187,7 @@ func TestDiffTester_Run_WithMemModifications(t *testing.T) {
 
 			tRunner := newMockTestRunner(t)
 			NewDiffTester(testNamer).
-				InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+				InitState(initState, mtutil.WithPCAndNextPC(pc)).
 				SetExpectations(setExpectations).
 				run(tRunner, testCases, opts...)
 
@@ -244,7 +244,7 @@ func TestDiffTester_Run_WithPanic(t *testing.T) {
 			// Run tests
 			tRunner := newMockTestRunner(t)
 			NewDiffTester(testNamer).
-				InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+				InitState(initState).
 				SetExpectations(setExpectations).
 				run(tRunner, testCases)
 
@@ -300,7 +300,7 @@ func TestDiffTester_Run_WithVm(t *testing.T) {
 	// Run tests
 	tRunner := newMockTestRunner(t)
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		run(tRunner, testCases, WithVm(vm))
 

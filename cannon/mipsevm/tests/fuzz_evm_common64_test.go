@@ -89,7 +89,7 @@ func mulOpCheck(f *testing.F, multiplier multiplierFn, opcode uint32, expectRdRe
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithPCAndNextPC(0), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(0)).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, rs, rt, seed int64) {

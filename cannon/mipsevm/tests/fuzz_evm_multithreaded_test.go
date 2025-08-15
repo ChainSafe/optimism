@@ -58,7 +58,7 @@ func FuzzStateSyscallCloneMT(f *testing.F) {
 	}
 
 	diffTester := NewDiffTester(NoopTestNamer[testCase]).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations)
 
 	f.Fuzz(func(t *testing.T, nextThreadId, stackPtr Word, seed int64) {

@@ -171,7 +171,7 @@ func TestEVM_SingleStep_Shift64(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -567,7 +567,7 @@ func TestEVM_SingleStep_DCloDClz64(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
