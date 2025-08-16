@@ -234,7 +234,7 @@ func initExecutorLimiter() {
 		} else {
 			// faultproof tests may use 6 GiB of memory. So let's be very conservative and aggressively limit the number of test executions
 			// considering other processes running on the same machine.
-			executorLimit = 4
+			executorLimit = 8
 		}
 		limiter = executorLimiter{ch: make(chan struct{}, executorLimit)}
 	})
