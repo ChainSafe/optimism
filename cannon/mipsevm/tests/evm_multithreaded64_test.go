@@ -95,7 +95,7 @@ func TestEVM_MT64_LL(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithPCAndNextPC(0x40), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(0x40)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -200,7 +200,7 @@ func TestEVM_MT64_SC(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases, SkipAutomaticMemoryReservationTests())
 }
@@ -279,7 +279,7 @@ func TestEVM_MT64_LLD(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithPCAndNextPC(0x40), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(0x40)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -385,7 +385,7 @@ func TestEVM_MT64_SCD(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases, SkipAutomaticMemoryReservationTests())
 }
@@ -477,7 +477,7 @@ func TestEVM_MT_SysRead_Preimage64(t *testing.T) {
 
 	po := func() mipsevm.PreimageOracle { return testutil.StaticOracle(t, preimageValue) }
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases, WithPreimageOracle(po))
 }
@@ -518,7 +518,7 @@ func TestEVM_MT_SysReadWrite_WithEventFd(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -581,7 +581,7 @@ func TestEVM_MT_StoreOpsClearMemReservation64(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -702,7 +702,7 @@ func TestEVM_UndefinedSyscall(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }

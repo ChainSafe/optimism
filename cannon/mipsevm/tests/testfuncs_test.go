@@ -70,7 +70,7 @@ func testOperators(t *testing.T, testCases []operatorTestCase, mips32Insn bool) 
 	}
 
 	NewDiffTester((operatorTestCase).Name).
-		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -134,7 +134,7 @@ func testMulDiv(t *testing.T, templateCases []mulDivTestCase, mips32Insn bool) {
 	}
 
 	NewDiffTester((mulDivTestCase).Name).
-		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -184,7 +184,7 @@ func testLoadStore(t *testing.T, cases []loadStoreTestCase) {
 	}
 
 	NewDiffTester((loadStoreTestCase).Name).
-		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -226,7 +226,7 @@ func testBranch(t *testing.T, cases []branchTestCase) {
 	}
 
 	NewDiffTester((branchTestCase).Name).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -260,7 +260,7 @@ func testNoopSyscall(t *testing.T, vm VersionedVMTestCase, syscalls map[string]u
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases, WithVm(vm))
 }
@@ -292,7 +292,7 @@ func testUnsupportedSyscall(t *testing.T, vm VersionedVMTestCase, unsupportedSys
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases, WithVm(vm))
 }

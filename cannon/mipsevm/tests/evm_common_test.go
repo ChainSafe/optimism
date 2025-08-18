@@ -24,9 +24,6 @@ import (
 	"github.com/ethereum-optimism/optimism/cannon/mipsevm/versions"
 )
 
-const testCodeRegionSize = 4096
-const testHeapSize = 4096
-
 type insnCache interface {
 	UpdateInstructionCache(pc arch.Word)
 }
@@ -75,7 +72,7 @@ func TestEVM_SingleStep_Jump(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -178,7 +175,7 @@ func TestEVM_SingleStep_Lui(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -222,7 +219,7 @@ func TestEVM_SingleStep_CloClz(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -271,7 +268,7 @@ func TestEVM_SingleStep_MovzMovn(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -309,7 +306,7 @@ func TestEVM_SingleStep_MfhiMflo(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -384,7 +381,7 @@ func TestEVM_SingleStep_MthiMtlo(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -429,7 +426,7 @@ func TestEVM_SingleStep_BeqBne(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -492,7 +489,7 @@ func TestEVM_SingleStep_SlSr(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithPCAndNextPC(pc), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithPCAndNextPC(pc)).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -543,7 +540,7 @@ func TestEVM_SingleStep_JrJalr(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -572,7 +569,7 @@ func TestEVM_SingleStep_Sync(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -630,7 +627,7 @@ func TestEVM_MMap(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
@@ -721,7 +718,7 @@ func TestEVM_SysGetRandom(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithStep(step), mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState, mtutil.WithStep(step)).
 		SetExpectations(setExpectations).
 		Run(t, cases, SkipAutomaticMemoryReservationTests())
 	//Was getting failure from the “automatic memory reservation” modifier that the DiffTester adds.
@@ -915,7 +912,7 @@ func TestEVM_SysWriteHint(t *testing.T) {
 
 	po := func() mipsevm.PreimageOracle { return &testutil.HintTrackingOracle{} }
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		PostCheck(postCheck).
 		Run(t, cases, WithPreimageOracle(po))
@@ -970,7 +967,7 @@ func TestEVM_Fault(t *testing.T) {
 	}
 
 	NewDiffTester(testNamer).
-		InitState(initState, mtutil.WithRegionSize(testCodeRegionSize, testHeapSize)).
+		InitState(initState).
 		SetExpectations(setExpectations).
 		Run(t, cases)
 }
