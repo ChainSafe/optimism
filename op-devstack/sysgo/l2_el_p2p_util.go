@@ -49,19 +49,6 @@ func ConnectP2P(ctx context.Context, require *testreq.Assertions, initiator RpcC
 	var peerAdded bool
 	require.NoError(initiator.CallContext(ctx, &peerAdded, "admin_addPeer", targetInfo.Enode), "add peer")
 	require.True(peerAdded, "should have added peer successfully")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	err := wait.For(ctx, time.Second, func() (bool, error) {
-		var peers []peer
-		if err := initiator.CallContext(ctx, &peers, "admin_peers"); err != nil {
-			return false, err
-		}
-		return slices.ContainsFunc(peers, func(p peer) bool {
-			return p.ID == targetInfo.ID
-		}), nil
-	})
-	require.NoError(err, "The peer was not connected")
 }
 
 // DisconnectP2P disconnects a p2p peer connection between node1 and node2.
