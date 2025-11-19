@@ -217,6 +217,9 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 		dataDirPath := filepath.Join(tempDir, "data")
 		p.Require().NoError(os.MkdirAll(dataDirPath, 0o755), "must create datadir")
 
+		proofDirPath := filepath.Join(tempDir, "proofs")
+		p.Require().NoError(os.MkdirAll(proofDirPath, 0o755), "must create proofs dir")
+
 		// reth writes logs not just to stdout, but also to file,
 		// and to global user-cache by default, rather than the datadir.
 		// So we customize this to temp-dir too, to not pollute the user-cache dir.
@@ -243,6 +246,7 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 			"--chain=" + chainConfigPath,
 			"--color=never",
 			"--datadir=" + dataDirPath,
+			"--proofs-history.storage-path=" + proofDirPath,
 			"--disable-discovery",
 			"--http",
 			"--http.api=admin,debug,eth,net,trace,txpool,web3,rpc,reth,miner",
