@@ -40,7 +40,7 @@ func DefaultSingleChainMultiNodeSystem(dest *DefaultSingleChainMultiNodeSystemID
 	opt := stack.Combine[*Orchestrator]()
 	opt.Add(DefaultMinimalSystem(&dest.DefaultMinimalSystemIDs))
 
-	opt.Add(WithL2ELNode(ids.L2ELB))
+	opt.Add(WithL2ELOpReth(ids.L2ELB))
 	opt.Add(WithL2CLNode(ids.L2CLB, ids.L1CL, ids.L1EL, ids.L2ELB))
 
 	// P2P connect L2CL nodes

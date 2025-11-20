@@ -74,6 +74,10 @@ func WithL2ELNode(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchest
 	}
 }
 
+func WithL2ELOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestrator] {
+	return WithOpReth(id, opts...)
+}
+
 func WithExtL2Node(id stack.L2ELNodeID, elRPCEndpoint string) stack.Option[*Orchestrator] {
 	return stack.AfterDeploy(func(orch *Orchestrator) {
 		require := orch.P().Require()

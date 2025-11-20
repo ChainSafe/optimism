@@ -9,8 +9,10 @@ import (
 	"github.com/ethereum-optimism/optimism/op-devstack/devtest"
 	"github.com/ethereum-optimism/optimism/op-devstack/presets"
 	"github.com/ethereum-optimism/optimism/op-service/eth"
+	"github.com/ethereum-optimism/optimism/op-service/sources"
 	"github.com/ethereum-optimism/optimism/op-service/txplan"
 	"github.com/ethereum-optimism/optimism/op-supervisor/supervisor/types"
+	"github.com/ethereum-optimism/optimism/op-wheel/engine"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	gethTypes "github.com/ethereum/go-ethereum/core/types"
@@ -18,7 +20,7 @@ import (
 )
 
 // TestChainRevert tests that the L2ELB (op-reth) correctly handles chain reverts.
-// It creates blocks with state changes, reverts the chain using debug_setHead
+// It creates blocks with state changes, reverts the chain using engine.Rewind and ForkChoiceUpdate
 // and then verifies that L2ELB correctly handles the chain revert.
 //
 // The test verifies that:
@@ -30,7 +32,7 @@ import (
 func TestChainRevert(gt *testing.T) {
 	t := devtest.SerialT(gt)
 	ctx := t.Ctx()
-	sys := presets.NewSingleChainMultiNodeWithoutCheck(t)
+	sys := presets.NewSingleChainMultiNode(t)
 
 	sys.L2CLB.Stop()
 
@@ -72,20 +74,18 @@ func TestChainRevert(gt *testing.T) {
 
 	// Rewind to block 2 (index 1)
 	rewindToBlock := blockNumbers[1]
-	t.Logf("Triggering chain revert to block %d using debug_setHead", rewindToBlock)
+	t.Logf("Triggering chain revert to block %d", rewindToBlock)
 
 	time.Sleep(2 * time.Second)
 
-	rpcGethClient := sys.L2EL.Escape().L2EthClient().RPC()
-	err = rpcGethClient.CallContext(ctx, nil, "debug_setHead", hexutil.Uint64(rewindToBlock))
-	require.NoError(gt, err, "Failed to rewind L2EL chain using debug_setHead")
-	t.Logf("Successfully called debug_setHead(%d) on L2EL", rewindToBlock)
+	engineClientEL := sys.L2EL.Escape().L2EngineClient().(*sources.EngineAPIClient)
+	rpcEL := sys.L2EL.Escape().L2EthClient().RPC()
+	engine.Rewind(ctx, t.Logger(), engineClientEL, rpcEL, rewindToBlock, true)
 
 	time.Sleep(2 * time.Second)
 
-	sys.L2ELB.ForkchoiceUpdate(sys.L2EL, rewindToBlock, 0, 0, nil).IsSyncing()
-
-	sys.L2ELB.WaitForBlock()
+	sys.L2ELB.ForkchoiceUpdate(sys.L2EL, rewindToBlock, 0, 0, nil)
+	sys.L2CLB.Start()
 
 	// Verify L2EL has rewound correctly
 	t.Logf("Verifying L2EL has rewound to block %d", rewindToBlock)
@@ -114,20 +114,10 @@ func TestChainRevert(gt *testing.T) {
 		// Try to get proof from L2ELB - should fail or return error
 		_, err := sys.L2ELB.Escape().L2EthClient().GetProof(ctx, contractAddress, []common.Hash{common.HexToHash("0x0")}, hexutil.Uint64(blockNumbers[i]).String())
 		require.Error(t, err)
-		// if err == nil {
-		// 	t.Logf("WARNING: GetProof succeeded for removed block %d - block may not have been fully removed", blockNumbers[i])
-		// } else {
-		// 	t.Logf("Expected error for removed block %d: %v", blockNumbers[i], err)
-		// }
 
 		// Try to get block info - should also fail
 		_, err = sys.L2ELB.Escape().L2EthClient().BlockRefByNumber(ctx, blockNumbers[i])
 		require.Error(t, err)
-		// if err != nil {
-		// 	t.Logf("Confirmed: Block %d is not accessible (error: %v)", blockNumbers[i], err)
-		// } else {
-		// 	t.Logf("WARNING: Block %d is still accessible after revert", blockNumbers[i])
-		// }
 	}
 
 	// sys.L2Batcher.Start()
