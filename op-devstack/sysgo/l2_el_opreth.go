@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -100,8 +101,8 @@ func (n *OpReth) Start() {
 		})
 		n.userRPC = "ws://" + n.userProxy.Addr()
 	}
-	logOut := logpipe.ToLogger(n.p.Logger().New("component", "op-reth", "src", "stdout"))
-	logErr := logpipe.ToLogger(n.p.Logger().New("component", "op-reth", "src", "stderr"))
+	logOut := logpipe.ToLogger(n.p.Logger().New("component", "op-reth", "src", "stdout", "id", n.id.String()))
+	logErr := logpipe.ToLogger(n.p.Logger().New("component", "op-reth", "src", "stderr", "id", n.id.String()))
 
 	authRPCChan := make(chan string, 1)
 	defer close(authRPCChan)
@@ -230,6 +231,11 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 		_, err = os.Stat(execPath)
 		p.Require().NotErrorIs(err, os.ErrNotExist, "executable must exist")
 
+		var proofHistoryEnabled bool
+		if os.Getenv("OP_RETH_ENABLE_PROOF_HISTORY") == "true" {
+			proofHistoryEnabled = true
+		}
+
 		// reth does not support env-var configuration like the Go services,
 		// so we use the CLI flags instead.
 		args := []string{
@@ -276,6 +282,37 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 
 		if supervisorRPC != "" {
 			args = append(args, "--rollup.supervisor-http="+supervisorRPC)
+		}
+
+		// initialise op-reth
+		initArgs := []string{
+			"init",
+			"--datadir=" + dataDirPath,
+			"--chain=" + chainConfigPath,
+		}
+		err = exec.Command(execPath, initArgs...).Run()
+		p.Require().NoError(err, "must init op-reth node")
+
+		if proofHistoryEnabled {
+			proofHistoryDir := filepath.Join(tempDir, "proof-history")
+
+			// initialise proof history
+			initProofsArgs := []string{
+				"initialize-op-proofs",
+				"--datadir=" + dataDirPath,
+				"--proofs-history.storage-path=" + proofHistoryDir,
+			}
+			err = exec.Command(execPath, initProofsArgs...).Run()
+			p.Require().NoError(err, "must init op-reth proof history")
+
+			args = append(
+				args,
+				"--proofs-history",
+				// todo: make these configurable via env-vars
+				"--proofs-history.window=200",
+				"--proofs-history.prune-interval=1m",
+				"--proofs-history.storage-path="+proofHistoryDir,
+			)
 		}
 
 		l2EL := &OpReth{
