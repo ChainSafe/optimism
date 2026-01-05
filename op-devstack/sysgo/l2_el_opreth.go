@@ -300,6 +300,7 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 			initProofsArgs := []string{
 				"initialize-op-proofs",
 				"--datadir=" + dataDirPath,
+				"--chain=" + chainConfigPath,
 				"--proofs-history.storage-path=" + proofHistoryDir,
 			}
 			err = exec.Command(execPath, initProofsArgs...).Run()
