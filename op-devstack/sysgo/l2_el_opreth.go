@@ -302,7 +302,7 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 				"init",
 				"--datadir=" + dataDirPath,
 				"--chain=" + chainConfigPath,
-				"--storage-path=" + proofHistoryDir,
+				"--proofs-history.storage-path=" + proofHistoryDir,
 			}
 			err = exec.Command(execPath, initProofsArgs...).Run()
 			p.Require().NoError(err, "must init op-reth proof history")
