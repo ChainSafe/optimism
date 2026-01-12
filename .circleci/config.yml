@@ -2503,437 +2503,6 @@ jobs:
           name: All Rust binaries ready
           command: echo "All Rust binaries built and persisted to workspace"
 
-  publish-cannon-prestates:
-    resource_class: medium
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - attach_workspace:
-          at: "."
-      - gcp-cli/install
-      - gcp-oidc-authenticate:
-          gcp_cred_config_file_path: /tmp/gcp_cred_config.json
-          oidc_token_file_path: /tmp/oidc_token.json
-      - run:
-          no_output_timeout: 30m
-          name: Upload cannon prestates
-          command: |
-            # Use the actual hash for tags (hash can be found by reading releases.json)
-            PRESTATE_MT64_HASH=$(jq -r .pre ./op-program/bin/prestate-proof-mt64.json)
-            PRESTATE_MT64NEXT_HASH=$(jq -r .pre ./op-program/bin/prestate-proof-mt64Next.json)
-            PRESTATE_INTEROP_HASH=$(jq -r .pre ./op-program/bin/prestate-proof-interop.json)
-            PRESTATE_INTEROP_NEXT_HASH=$(jq -r .pre ./op-program/bin/prestate-proof-interopNext.json)
-
-            BRANCH_NAME=$(echo "<< pipeline.git.branch >>" | tr '/' '-')
-            echo "Publishing ${PRESTATE_MT64_HASH}, ${PRESTATE_MT64NEXT_HASH}, ${PRESTATE_INTEROP_HASH}, ${PRESTATE_INTEROP_NEXT_HASH} as ${BRANCH_NAME}"
-            if [[ "" != "<< pipeline.git.branch >>" ]]
-            then
-              echo "Publishing commit hash data"
-              INFO_FILE=$(mktemp)
-              # Upload the git commit info for each prestate since this won't be recorded in releases.json
-              (echo "Commit=<< pipeline.git.revision >>" && echo "Prestate: ${PRESTATE_MT64_HASH}") > "${INFO_FILE}"
-              gsutil cp "${INFO_FILE}" "gs://oplabs-network-data/proofs/op-program/cannon/${BRANCH_NAME}-mt64.bin.gz.txt"
-              echo "Published commit hash data successfully" # So we know if any uploads worked
-              (echo "Commit=<< pipeline.git.revision >>" && echo "Prestate: ${PRESTATE_MT64NEXT_HASH}") > "${INFO_FILE}"
-              gsutil cp "${INFO_FILE}" "gs://oplabs-network-data/proofs/op-program/cannon/${BRANCH_NAME}-mt64Next.bin.gz.txt"
-              (echo "Commit=<< pipeline.git.revision >>" && echo "Prestate: ${PRESTATE_INTEROP_HASH}")  > "${INFO_FILE}"
-              gsutil cp "${INFO_FILE}" "gs://oplabs-network-data/proofs/op-program/cannon/${BRANCH_NAME}-interop.bin.gz.txt"
-              (echo "Commit=<< pipeline.git.revision >>" && echo "Prestate: ${PRESTATE_INTEROP_NEXT_HASH}")  > "${INFO_FILE}"
-              gsutil cp "${INFO_FILE}" "gs://oplabs-network-data/proofs/op-program/cannon/${BRANCH_NAME}-interopNext.bin.gz.txt"
-              rm "${INFO_FILE}" # keep things tidy
-              echo "All commit info published"
-
-              # Use the branch name for branches to provide a consistent URL
-              PRESTATE_MT64_HASH="${BRANCH_NAME}-mt64"
-              PRESTATE_MT64NEXT_HASH="${BRANCH_NAME}-mt64Next"
-              PRESTATE_INTEROP_HASH="${BRANCH_NAME}-interop"
-              PRESTATE_INTEROP_NEXT_HASH="${BRANCH_NAME}-interopNext"
-            fi
-            gsutil cp ./op-program/bin/prestate-mt64.bin.gz \
-              "gs://oplabs-network-data/proofs/op-program/cannon/${PRESTATE_MT64_HASH}.bin.gz"
-
-            gsutil cp ./op-program/bin/prestate-mt64Next.bin.gz \
-              "gs://oplabs-network-data/proofs/op-program/cannon/${PRESTATE_MT64NEXT_HASH}.bin.gz"
-
-            gsutil cp ./op-program/bin/prestate-interop.bin.gz \
-              "gs://oplabs-network-data/proofs/op-program/cannon/${PRESTATE_INTEROP_HASH}.bin.gz"
-
-            gsutil cp ./op-program/bin/prestate-interopNext.bin.gz \
-              "gs://oplabs-network-data/proofs/op-program/cannon/${PRESTATE_INTEROP_NEXT_HASH}.bin.gz"
-      - notify-failures-on-develop:
-          mentions: "@proofs-team"
-
-  preimage-reproducibility:
-    machine: true
-    resource_class: large
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - run:
-          name: Verify reproducibility
-          command: make -C op-program verify-reproducibility
-      - store_artifacts:
-          path: ./op-program/temp/logs
-          when: always
-      - notify-failures-on-develop:
-          mentions: "@proofs-team"
-
-  cannon-stf-verify:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - setup_remote_docker
-      - run:
-          name: Build cannon
-          command: make cannon
-      - run:
-          name: Verify the Cannon STF
-          command: make -C ./cannon cannon-stf-verify
-      - notify-failures-on-develop:
-          mentions: "@proofs-team"
-
-  semgrep-scan:
-    parameters:
-      diff_branch:
-        type: string
-        default: develop
-      scan_command:
-        type: string
-        default: semgrep ci --timeout=100
-    environment:
-      TEMPORARY_BASELINE_REF: << parameters.diff_branch >>
-      SEMGREP_REPO_URL: << pipeline.project.git_url >>
-      SEMGREP_BRANCH: << pipeline.git.branch >>
-      SEMGREP_COMMIT: << pipeline.git.revision >>
-    docker:
-      - image: returntocorp/semgrep
-    resource_class: xlarge
-    steps:
-      - checkout # no need to use mise here since the docker image contains the only dependency
-      - unless:
-          condition:
-            equal: ["develop", << pipeline.git.branch >>]
-          steps:
-            - run:
-                # Scan changed files in PRs, block on new issues only (existing issues ignored)
-                # Do a full scan when scanning develop, otherwise do an incremental scan.
-                name: "Conditionally set BASELINE env var"
-                command: |
-                  echo 'export SEMGREP_BASELINE_REF=${TEMPORARY_BASELINE_REF}' >> $BASH_ENV
-      - run:
-          name: "Set environment variables" # for PR comments and in-app hyperlinks to findings
-          command: |
-            echo 'export SEMGREP_PR_ID=${CIRCLE_PULL_REQUEST##*/}' >> $BASH_ENV
-            echo 'export SEMGREP_JOB_URL=$CIRCLE_BUILD_URL' >> $BASH_ENV
-            echo 'export SEMGREP_REPO_NAME=$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME' >> $BASH_ENV
-      - run:
-          name: "Semgrep scan"
-          # --timeout (in seconds) limits the time per rule and file.
-          #   SEMGREP_TIMEOUT is the same, but docs have conflicting defaults (5s in CLI flag, 1800 in some places)
-          #    https://semgrep.dev/docs/troubleshooting/semgrep-app#if-the-job-is-aborted-due-to-taking-too-long
-          command: << parameters.scan_command >>
-          # If semgrep hangs, stop the scan after 20m, to prevent a useless 5h job
-          no_output_timeout: 20m
-      - notify-failures-on-develop
-
-  bedrock-go-tests: # just a helper, that depends on all the actual test jobs
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: medium
-    steps:
-      - run: echo Done
-
-  analyze-op-program-client:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: xlarge
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - setup_remote_docker
-      - run:
-          name: Run Analyzer
-          command: |
-            make run-vm-compat
-          working_directory: op-program
-
-  op-program-compat:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: large
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - run:
-          name: Verify Compatibility
-          command: |
-            make verify-compat
-          working_directory: op-program
-
-  check-generated-mocks-op-node:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: large
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - check-changed:
-          patterns: op-node
-      - run:
-          name: check-generated-mocks
-          command: make generate-mocks-op-node && git diff --exit-code
-
-  check-generated-mocks-op-service:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: large
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - check-changed:
-          patterns: op-service
-      - run:
-          name: check-generated-mocks
-          command: make generate-mocks-op-service && git diff --exit-code
-
-  op-deployer-forge-version:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - run:
-          command: just check-forge-version
-          working_directory: op-deployer
-
-  kontrol-tests:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: xlarge
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - install-contracts-dependencies
-      - check-changed:
-          no_go_deps: "true"
-          patterns: contracts-bedrock/test/kontrol,contracts-bedrock/src/L1/OptimismPortal\.sol,contracts-bedrock/src/L1/OptimismPortal2\.sol,contracts-bedrock/src/L1/L1CrossDomainMessenger\.sol,contracts-bedrock/src/L1/L1ERC721Bridge\.sol,contracts-bedrock/src/L1/L1StandardBridge\.sol,contracts-bedrock/src/L1/ResourceMetering\.sol,contracts-bedrock/src/universal/StandardBridge\.sol,contracts-bedrock/src/universal/ERC721Bridge\.sol,contracts-bedrock/src/universal/CrossDomainMessenger\.sol
-      - setup_remote_docker:
-          docker_layer_caching: true
-      - run:
-          name: Run Kontrol Tests
-          command: |
-            curl -X POST \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $RV_COMPUTE_TOKEN" \
-              https://api.github.com/repos/runtimeverification/optimism-ci/actions/workflows/optimism-ci.yaml/dispatches \
-              -d '{
-                "ref": "master",
-                "inputs": {
-                  "branch_name": "<<pipeline.git.branch>>",
-                  "extra_args": "script",
-                  "statuses_sha": "<< pipeline.git.revision >>",
-                  "org": "ethereum-optimism",
-                  "repository": "optimism"
-                }
-              }'
-          working_directory: ./packages/contracts-bedrock
-      - notify-failures-on-develop
-
-  publish-contract-artifacts:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: 2xlarge
-    steps:
-      - gcp-cli/install
-      - gcp-oidc-authenticate:
-          gcp_cred_config_file_path: /tmp/gcp_cred_config.json
-          oidc_token_file_path: /tmp/oidc_token.json
-          project_id: GCP_TOOLS_ARTIFACTS_PROJECT_ID
-          service_account_email: GCP_CONTRACTS_PUBLISHER_SERVICE_ACCOUNT_EMAIL
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - install-contracts-dependencies
-      - install-zstd
-      - run:
-          name: Pull artifacts
-          command: bash scripts/ops/pull-artifacts.sh
-          working_directory: packages/contracts-bedrock
-      - run:
-          name: Build contracts
-          environment:
-            FOUNDRY_PROFILE: ci
-          command: just forge-build
-          working_directory: packages/contracts-bedrock
-      - run:
-          name: Publish artifacts
-          command: bash scripts/ops/publish-artifacts.sh
-          working_directory: packages/contracts-bedrock
-
-  go-release:
-    parameters:
-      module:
-        description: Go Module Name
-        type: string
-      filename:
-        description: Goreleaser config file
-        default: .goreleaser.yaml
-        type: string
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: large
-    steps:
-      - setup_remote_docker:
-          docker_layer_caching: true
-      - gcp-cli/install
-      - gcp-oidc-authenticate:
-          gcp_cred_config_file_path: /tmp/gcp_cred_config.json
-          oidc_token_file_path: /tmp/oidc_token.json
-      - utils/checkout-with-mise:
-          enable-mise-cache: true
-      - attach_workspace: { at: "." }
-      - run:
-          name: Configure Docker
-          command: |
-            gcloud auth configure-docker us-docker.pkg.dev
-      - run:
-          name: Run goreleaser
-          command: |
-            goreleaser release --clean -f ./<<parameters.module>>/<<parameters.filename>>
-
-  diff-fetcher-forge-artifacts:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: medium
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - install-contracts-dependencies
-      - run:
-          name: Build contracts
-          command: |
-            just build-contracts
-          working_directory: op-fetcher
-      - run:
-          name: Compare forge artifacts
-          command: |
-            diff -qr "packages/contracts-bedrock/forge-artifacts/FetchChainInfo.s.sol" \
-                    "op-fetcher/pkg/fetcher/fetch/forge-artifacts/FetchChainInfo.s.sol"
-
-            if [ $? -ne 0 ]; then
-              echo "ERROR: The checked-in forge artifacts for FetchChainInfo.s.sol do not match the ci build."
-              echo "Please run 'just build-contracts' in the op-fetcher directory and commit the changes."
-              exit 1
-            fi
-
-            echo "✅ Checked-in forge artifacts match the ci build"
-
-  stale-check:
-    machine:
-      image: ubuntu-2204:2024.08.1
-    steps:
-      - utils/github-stale:
-          stale-issue-message: "This issue has been automatically marked as stale and will be closed in 5 days if no updates"
-          stale-pr-message: "This pr has been automatically marked as stale and will be closed in 5 days if no updates"
-          close-issue-message: "This issue was closed as stale.  Please reopen if this is a mistake"
-          close-pr-message: "This PR was closed as stale.  Please reopen if this is a mistake"
-          days-before-issue-stale: 999
-          days-before-pr-stale: 14
-          days-before-issue-close: 5
-          days-before-pr-close: 5
-
-  close-issue:
-    machine:
-      image: ubuntu-2204:2024.08.1
-    parameters:
-      label_name:
-        type: string
-      message:
-        type: string
-    steps:
-      - github-cli/install
-      - utils/github-event-handler-setup:
-          github_event_base64: << pipeline.parameters.github-event-base64 >>
-          env_prefix: "github_"
-      - run:
-          name: Close issue if label is added
-          command: |
-            if [ ! -z "$github_pull_request_number" ] && [ "$github_label_name" = "$LABEL_NAME" ]; then
-                echo "Closing issue $github_pull_request_number as label $LABEL_NAME is added on repository ${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME} "
-                export GH_TOKEN=$GITHUB_TOKEN_GOVERNANCE
-                gh issue close --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" "$github_pull_request_number" --comment "$MESSAGE"
-            fi
-          environment:
-            MESSAGE: << parameters.message >>
-            LABEL_NAME: << parameters.label_name >>
-
-  devnet-metrics-collect-authorship:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - run:
-          name: Collect devnet metrics for op-acceptance-tests
-          command: |
-            ./devnet-sdk/scripts/metrics-collect-authorship.sh op-acceptance-tests/tests > .metrics--authorship--op-acceptance-tests
-            echo "Wrote file .metrics--authorship--op-acceptance-tests"
-      - gcp-cli/install
-      - gcp-oidc-authenticate:
-          gcp_cred_config_file_path: /tmp/gcp_cred_config.json
-          oidc_token_file_path: /tmp/oidc_token.json
-      - run:
-          name: Store artifact in Bucket
-          command: |
-            CURRENT_DATE=$(date '+%Y-%m-%d')
-            FOLDER_NAME="dt=$CURRENT_DATE"
-
-            # Upload to the date-partitioned folder structure
-            gsutil cp .metrics--authorship--op-acceptance-tests gs://oplabs-tools-data-public-metrics/metrics-authorship/$FOLDER_NAME/metrics-$CIRCLE_SHA1.csv
-
-  generate-flaky-report:
-    machine: true
-    resource_class: medium
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-          enable-mise-cache: true
-      - run:
-          name: Generate flaky acceptance tests report
-          command: |
-            # Create reports directory
-            mkdir -p ./op-acceptance-tests/reports
-
-            # Make the script executable
-            chmod +x ./op-acceptance-tests/scripts/generate-flaky-tests-report.sh
-
-            # Run the script
-            ./op-acceptance-tests/scripts/generate-flaky-tests-report.sh \
-              --branch "${CIRCLE_BRANCH:-develop}" \
-              --org "${CIRCLE_PROJECT_USERNAME}" \
-              --repo "${CIRCLE_PROJECT_REPONAME}" \
-              --token "${CIRCLE_API_TOKEN}" \
-              --output-dir "./op-acceptance-tests/reports"
-
-      # Store the flaky test reports
-      - store_artifacts:
-          path: ./op-acceptance-tests/reports
-          destination: flaky-test-reports
 
   # ============================================================================
   # Kona Jobs (migrated from kona/.github/workflows)
@@ -3570,6 +3139,441 @@ jobs:
             fi
             gsutil cp ./prestate-artifacts-<<parameters.kind>>/prestate.bin.gz "gs://kona-proof-prestates/<<parameters.kind>>/${PRESTATE_HASH}.bin.gz"
             echo "Successfully published prestates artifacts to GCS"
+
+  ### END KONA JOBS ###
+
+  publish-cannon-prestates:
+    resource_class: medium
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - attach_workspace:
+          at: "."
+      - gcp-cli/install
+      - gcp-oidc-authenticate:
+          gcp_cred_config_file_path: /tmp/gcp_cred_config.json
+          oidc_token_file_path: /tmp/oidc_token.json
+      - run:
+          no_output_timeout: 30m
+          name: Upload cannon prestates
+          command: |
+            # Use the actual hash for tags (hash can be found by reading releases.json)
+            PRESTATE_MT64_HASH=$(jq -r .pre ./op-program/bin/prestate-proof-mt64.json)
+            PRESTATE_MT64NEXT_HASH=$(jq -r .pre ./op-program/bin/prestate-proof-mt64Next.json)
+            PRESTATE_INTEROP_HASH=$(jq -r .pre ./op-program/bin/prestate-proof-interop.json)
+            PRESTATE_INTEROP_NEXT_HASH=$(jq -r .pre ./op-program/bin/prestate-proof-interopNext.json)
+
+            BRANCH_NAME=$(echo "<< pipeline.git.branch >>" | tr '/' '-')
+            echo "Publishing ${PRESTATE_MT64_HASH}, ${PRESTATE_MT64NEXT_HASH}, ${PRESTATE_INTEROP_HASH}, ${PRESTATE_INTEROP_NEXT_HASH} as ${BRANCH_NAME}"
+            if [[ "" != "<< pipeline.git.branch >>" ]]
+            then
+              echo "Publishing commit hash data"
+              INFO_FILE=$(mktemp)
+              # Upload the git commit info for each prestate since this won't be recorded in releases.json
+              (echo "Commit=<< pipeline.git.revision >>" && echo "Prestate: ${PRESTATE_MT64_HASH}") > "${INFO_FILE}"
+              gsutil cp "${INFO_FILE}" "gs://oplabs-network-data/proofs/op-program/cannon/${BRANCH_NAME}-mt64.bin.gz.txt"
+              echo "Published commit hash data successfully" # So we know if any uploads worked
+              (echo "Commit=<< pipeline.git.revision >>" && echo "Prestate: ${PRESTATE_MT64NEXT_HASH}") > "${INFO_FILE}"
+              gsutil cp "${INFO_FILE}" "gs://oplabs-network-data/proofs/op-program/cannon/${BRANCH_NAME}-mt64Next.bin.gz.txt"
+              (echo "Commit=<< pipeline.git.revision >>" && echo "Prestate: ${PRESTATE_INTEROP_HASH}")  > "${INFO_FILE}"
+              gsutil cp "${INFO_FILE}" "gs://oplabs-network-data/proofs/op-program/cannon/${BRANCH_NAME}-interop.bin.gz.txt"
+              (echo "Commit=<< pipeline.git.revision >>" && echo "Prestate: ${PRESTATE_INTEROP_NEXT_HASH}")  > "${INFO_FILE}"
+              gsutil cp "${INFO_FILE}" "gs://oplabs-network-data/proofs/op-program/cannon/${BRANCH_NAME}-interopNext.bin.gz.txt"
+              rm "${INFO_FILE}" # keep things tidy
+              echo "All commit info published"
+
+              # Use the branch name for branches to provide a consistent URL
+              PRESTATE_MT64_HASH="${BRANCH_NAME}-mt64"
+              PRESTATE_MT64NEXT_HASH="${BRANCH_NAME}-mt64Next"
+              PRESTATE_INTEROP_HASH="${BRANCH_NAME}-interop"
+              PRESTATE_INTEROP_NEXT_HASH="${BRANCH_NAME}-interopNext"
+            fi
+            gsutil cp ./op-program/bin/prestate-mt64.bin.gz \
+              "gs://oplabs-network-data/proofs/op-program/cannon/${PRESTATE_MT64_HASH}.bin.gz"
+
+            gsutil cp ./op-program/bin/prestate-mt64Next.bin.gz \
+              "gs://oplabs-network-data/proofs/op-program/cannon/${PRESTATE_MT64NEXT_HASH}.bin.gz"
+
+            gsutil cp ./op-program/bin/prestate-interop.bin.gz \
+              "gs://oplabs-network-data/proofs/op-program/cannon/${PRESTATE_INTEROP_HASH}.bin.gz"
+
+            gsutil cp ./op-program/bin/prestate-interopNext.bin.gz \
+              "gs://oplabs-network-data/proofs/op-program/cannon/${PRESTATE_INTEROP_NEXT_HASH}.bin.gz"
+      - notify-failures-on-develop:
+          mentions: "@proofs-team"
+
+  preimage-reproducibility:
+    machine: true
+    resource_class: large
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - run:
+          name: Verify reproducibility
+          command: make -C op-program verify-reproducibility
+      - store_artifacts:
+          path: ./op-program/temp/logs
+          when: always
+      - notify-failures-on-develop:
+          mentions: "@proofs-team"
+
+  cannon-stf-verify:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - setup_remote_docker
+      - run:
+          name: Build cannon
+          command: make cannon
+      - run:
+          name: Verify the Cannon STF
+          command: make -C ./cannon cannon-stf-verify
+      - notify-failures-on-develop:
+          mentions: "@proofs-team"
+
+  semgrep-scan:
+    parameters:
+      diff_branch:
+        type: string
+        default: develop
+      scan_command:
+        type: string
+        default: semgrep ci --timeout=100
+    environment:
+      TEMPORARY_BASELINE_REF: << parameters.diff_branch >>
+      SEMGREP_REPO_URL: << pipeline.project.git_url >>
+      SEMGREP_BRANCH: << pipeline.git.branch >>
+      SEMGREP_COMMIT: << pipeline.git.revision >>
+    docker:
+      - image: returntocorp/semgrep
+    resource_class: xlarge
+    steps:
+      - checkout # no need to use mise here since the docker image contains the only dependency
+      - unless:
+          condition:
+            equal: ["develop", << pipeline.git.branch >>]
+          steps:
+            - run:
+                # Scan changed files in PRs, block on new issues only (existing issues ignored)
+                # Do a full scan when scanning develop, otherwise do an incremental scan.
+                name: "Conditionally set BASELINE env var"
+                command: |
+                  echo 'export SEMGREP_BASELINE_REF=${TEMPORARY_BASELINE_REF}' >> $BASH_ENV
+      - run:
+          name: "Set environment variables" # for PR comments and in-app hyperlinks to findings
+          command: |
+            echo 'export SEMGREP_PR_ID=${CIRCLE_PULL_REQUEST##*/}' >> $BASH_ENV
+            echo 'export SEMGREP_JOB_URL=$CIRCLE_BUILD_URL' >> $BASH_ENV
+            echo 'export SEMGREP_REPO_NAME=$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME' >> $BASH_ENV
+      - run:
+          name: "Semgrep scan"
+          # --timeout (in seconds) limits the time per rule and file.
+          #   SEMGREP_TIMEOUT is the same, but docs have conflicting defaults (5s in CLI flag, 1800 in some places)
+          #    https://semgrep.dev/docs/troubleshooting/semgrep-app#if-the-job-is-aborted-due-to-taking-too-long
+          command: << parameters.scan_command >>
+          # If semgrep hangs, stop the scan after 20m, to prevent a useless 5h job
+          no_output_timeout: 20m
+      - notify-failures-on-develop
+
+  bedrock-go-tests: # just a helper, that depends on all the actual test jobs
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: medium
+    steps:
+      - run: echo Done
+
+  analyze-op-program-client:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: xlarge
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - setup_remote_docker
+      - run:
+          name: Run Analyzer
+          command: |
+            make run-vm-compat
+          working_directory: op-program
+
+  op-program-compat:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: large
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - run:
+          name: Verify Compatibility
+          command: |
+            make verify-compat
+          working_directory: op-program
+
+  check-generated-mocks-op-node:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: large
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - check-changed:
+          patterns: op-node
+      - run:
+          name: check-generated-mocks
+          command: make generate-mocks-op-node && git diff --exit-code
+
+  check-generated-mocks-op-service:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: large
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - check-changed:
+          patterns: op-service
+      - run:
+          name: check-generated-mocks
+          command: make generate-mocks-op-service && git diff --exit-code
+
+  op-deployer-forge-version:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - run:
+          command: just check-forge-version
+          working_directory: op-deployer
+
+  kontrol-tests:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: xlarge
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - install-contracts-dependencies
+      - check-changed:
+          no_go_deps: "true"
+          patterns: contracts-bedrock/test/kontrol,contracts-bedrock/src/L1/OptimismPortal\.sol,contracts-bedrock/src/L1/OptimismPortal2\.sol,contracts-bedrock/src/L1/L1CrossDomainMessenger\.sol,contracts-bedrock/src/L1/L1ERC721Bridge\.sol,contracts-bedrock/src/L1/L1StandardBridge\.sol,contracts-bedrock/src/L1/ResourceMetering\.sol,contracts-bedrock/src/universal/StandardBridge\.sol,contracts-bedrock/src/universal/ERC721Bridge\.sol,contracts-bedrock/src/universal/CrossDomainMessenger\.sol
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - run:
+          name: Run Kontrol Tests
+          command: |
+            curl -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $RV_COMPUTE_TOKEN" \
+              https://api.github.com/repos/runtimeverification/optimism-ci/actions/workflows/optimism-ci.yaml/dispatches \
+              -d '{
+                "ref": "master",
+                "inputs": {
+                  "branch_name": "<<pipeline.git.branch>>",
+                  "extra_args": "script",
+                  "statuses_sha": "<< pipeline.git.revision >>",
+                  "org": "ethereum-optimism",
+                  "repository": "optimism"
+                }
+              }'
+          working_directory: ./packages/contracts-bedrock
+      - notify-failures-on-develop
+
+  publish-contract-artifacts:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: 2xlarge
+    steps:
+      - gcp-cli/install
+      - gcp-oidc-authenticate:
+          gcp_cred_config_file_path: /tmp/gcp_cred_config.json
+          oidc_token_file_path: /tmp/oidc_token.json
+          project_id: GCP_TOOLS_ARTIFACTS_PROJECT_ID
+          service_account_email: GCP_CONTRACTS_PUBLISHER_SERVICE_ACCOUNT_EMAIL
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - install-contracts-dependencies
+      - install-zstd
+      - run:
+          name: Pull artifacts
+          command: bash scripts/ops/pull-artifacts.sh
+          working_directory: packages/contracts-bedrock
+      - run:
+          name: Build contracts
+          environment:
+            FOUNDRY_PROFILE: ci
+          command: just forge-build
+          working_directory: packages/contracts-bedrock
+      - run:
+          name: Publish artifacts
+          command: bash scripts/ops/publish-artifacts.sh
+          working_directory: packages/contracts-bedrock
+
+
+  go-release:
+    parameters:
+      module:
+        description: Go Module Name
+        type: string
+      filename:
+        description: Goreleaser config file
+        default: .goreleaser.yaml
+        type: string
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: large
+    steps:
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - gcp-cli/install
+      - gcp-oidc-authenticate:
+          gcp_cred_config_file_path: /tmp/gcp_cred_config.json
+          oidc_token_file_path: /tmp/oidc_token.json
+      - utils/checkout-with-mise:
+          enable-mise-cache: true
+      - attach_workspace: { at: "." }
+      - run:
+          name: Configure Docker
+          command: |
+            gcloud auth configure-docker us-docker.pkg.dev
+      - run:
+          name: Run goreleaser
+          command: |
+            goreleaser release --clean -f ./<<parameters.module>>/<<parameters.filename>>
+
+  diff-fetcher-forge-artifacts:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    resource_class: medium
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - install-contracts-dependencies
+      - run:
+          name: Build contracts
+          command: |
+            just build-contracts
+          working_directory: op-fetcher
+      - run:
+          name: Compare forge artifacts
+          command: |
+            diff -qr "packages/contracts-bedrock/forge-artifacts/FetchChainInfo.s.sol" \
+                    "op-fetcher/pkg/fetcher/fetch/forge-artifacts/FetchChainInfo.s.sol"
+
+            if [ $? -ne 0 ]; then
+              echo "ERROR: The checked-in forge artifacts for FetchChainInfo.s.sol do not match the ci build."
+              echo "Please run 'just build-contracts' in the op-fetcher directory and commit the changes."
+              exit 1
+            fi
+
+            echo "✅ Checked-in forge artifacts match the ci build"
+
+  stale-check:
+    machine:
+      image: ubuntu-2204:2024.08.1
+    steps:
+      - utils/github-stale:
+          stale-issue-message: "This issue has been automatically marked as stale and will be closed in 5 days if no updates"
+          stale-pr-message: "This pr has been automatically marked as stale and will be closed in 5 days if no updates"
+          close-issue-message: "This issue was closed as stale.  Please reopen if this is a mistake"
+          close-pr-message: "This PR was closed as stale.  Please reopen if this is a mistake"
+          days-before-issue-stale: 999
+          days-before-pr-stale: 14
+          days-before-issue-close: 5
+          days-before-pr-close: 5
+
+  close-issue:
+    machine:
+      image: ubuntu-2204:2024.08.1
+    parameters:
+      label_name:
+        type: string
+      message:
+        type: string
+    steps:
+      - github-cli/install
+      - utils/github-event-handler-setup:
+          github_event_base64: << pipeline.parameters.github-event-base64 >>
+          env_prefix: "github_"
+      - run:
+          name: Close issue if label is added
+          command: |
+            if [ ! -z "$github_pull_request_number" ] && [ "$github_label_name" = "$LABEL_NAME" ]; then
+                echo "Closing issue $github_pull_request_number as label $LABEL_NAME is added on repository ${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME} "
+                export GH_TOKEN=$GITHUB_TOKEN_GOVERNANCE
+                gh issue close --repo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" "$github_pull_request_number" --comment "$MESSAGE"
+            fi
+          environment:
+            MESSAGE: << parameters.message >>
+            LABEL_NAME: << parameters.label_name >>
+
+  devnet-metrics-collect-authorship:
+    docker:
+      - image: <<pipeline.parameters.default_docker_image>>
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - run:
+          name: Collect devnet metrics for op-acceptance-tests
+          command: |
+            ./devnet-sdk/scripts/metrics-collect-authorship.sh op-acceptance-tests/tests > .metrics--authorship--op-acceptance-tests
+            echo "Wrote file .metrics--authorship--op-acceptance-tests"
+      - gcp-cli/install
+      - gcp-oidc-authenticate:
+          gcp_cred_config_file_path: /tmp/gcp_cred_config.json
+          oidc_token_file_path: /tmp/oidc_token.json
+      - run:
+          name: Store artifact in Bucket
+          command: |
+            CURRENT_DATE=$(date '+%Y-%m-%d')
+            FOLDER_NAME="dt=$CURRENT_DATE"
+
+            # Upload to the date-partitioned folder structure
+            gsutil cp .metrics--authorship--op-acceptance-tests gs://oplabs-tools-data-public-metrics/metrics-authorship/$FOLDER_NAME/metrics-$CIRCLE_SHA1.csv
+
+  generate-flaky-report:
+    machine: true
+    resource_class: medium
+    steps:
+      - utils/checkout-with-mise:
+          checkout-method: blobless
+          enable-mise-cache: true
+      - run:
+          name: Generate flaky acceptance tests report
+          command: |
+            # Create reports directory
+            mkdir -p ./op-acceptance-tests/reports
+
+            # Make the script executable
+            chmod +x ./op-acceptance-tests/scripts/generate-flaky-tests-report.sh
+
+            # Run the script
+            ./op-acceptance-tests/scripts/generate-flaky-tests-report.sh \
+              --branch "${CIRCLE_BRANCH:-develop}" \
+              --org "${CIRCLE_PROJECT_USERNAME}" \
+              --repo "${CIRCLE_PROJECT_REPONAME}" \
+              --token "${CIRCLE_API_TOKEN}" \
+              --output-dir "./op-acceptance-tests/reports"
+
+      # Store the flaky test reports
+      - store_artifacts:
+          path: ./op-acceptance-tests/reports
+          destination: flaky-test-reports
 
 workflows:
   # Nightly Kurtosis acceptance tests
