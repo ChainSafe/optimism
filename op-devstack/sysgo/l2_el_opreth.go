@@ -310,6 +310,7 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 				"--proofs-history.window=200",
 				"--proofs-history.prune-interval=1m",
 				"--proofs-history.storage-path="+proofHistoryDir,
+				"--proofs-history.verification-interval=2",
 			)
 		}
 
