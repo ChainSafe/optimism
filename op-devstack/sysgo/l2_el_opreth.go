@@ -230,11 +230,6 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 		_, err = os.Stat(execPath)
 		p.Require().NotErrorIs(err, os.ErrNotExist, "executable must exist")
 
-		var proofHistoryEnabled bool
-		if os.Getenv("OP_RETH_ENABLE_PROOF_HISTORY") == "true" {
-			proofHistoryEnabled = true
-		}
-
 		// reth does not support env-var configuration like the Go services,
 		// so we use the CLI flags instead.
 		args := []string{
@@ -289,7 +284,7 @@ func WithOpReth(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchestra
 		err = exec.Command(execPath, initArgs...).Run()
 		p.Require().NoError(err, "must init op-reth node")
 
-		if proofHistoryEnabled {
+		if cfg.ProofHistory {
 			proofHistoryDir := filepath.Join(tempDir, "proof-history")
 
 			// initialise proof history
