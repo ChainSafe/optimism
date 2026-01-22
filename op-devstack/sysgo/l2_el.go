@@ -98,9 +98,6 @@ func WithL2ELNode(id stack.L2ELNodeID, opts ...L2ELOption) stack.Option[*Orchest
 	switch os.Getenv("DEVSTACK_L2EL_KIND") {
 	case "op-reth":
 		return WithOpReth(id, opts...)
-	case "op-reth-with-proof":
-		opts = append(opts, L2ELWithProofHistory(true))
-		return WithOpReth(id, opts...)
 	default:
 		return WithOpGeth(id, opts...)
 	}
