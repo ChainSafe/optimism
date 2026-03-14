@@ -693,6 +693,29 @@ impl OpProofsStore for MdbxProofsStorage {
             .update(|tx| self.store_trie_updates_append_only(tx, block_ref, block_state_diff))?
     }
 
+    fn store_trie_updates_batch(
+        &self,
+        updates: Vec<(BlockWithParent, BlockStateDiff)>,
+    ) -> OpProofsStorageResult<WriteCounts> {
+        self.env.update(|tx| {
+            let mut total_counts = WriteCounts::default();
+            for (block_ref, block_state_diff) in updates {
+                // store_trie_updates_append_only updates the "latest block" cursor within the tx,
+                // so subsequent calls in this loop will correctly pass validation.
+                let counts =
+                    self.store_trie_updates_append_only(tx, block_ref, block_state_diff)?;
+
+                total_counts.account_trie_updates_written_total +=
+                    counts.account_trie_updates_written_total;
+                total_counts.storage_trie_updates_written_total +=
+                    counts.storage_trie_updates_written_total;
+                total_counts.hashed_accounts_written_total += counts.hashed_accounts_written_total;
+                total_counts.hashed_storages_written_total += counts.hashed_storages_written_total;
+            }
+            Ok(total_counts)
+        })?
+    }
+
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         self.env.view(|tx| {
             let mut change_set_cursor = tx.cursor_read::<BlockChangeSet>()?;

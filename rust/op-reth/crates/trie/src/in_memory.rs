@@ -589,6 +589,17 @@ impl OpProofsStore for InMemoryProofsStorage {
         Ok(inner.store_trie_updates(block_ref.block.number, block_state_diff))
     }
 
+    fn store_trie_updates_batch(&self,updates:Vec<(BlockWithParent,BlockStateDiff)> ,) -> OpProofsStorageResult<WriteCounts> {
+        let mut inner = self.inner.write();
+        let mut total_write_count = WriteCounts::default();
+
+        for (block_ref, block_state_diff) in updates {
+            total_write_count += inner.store_trie_updates(block_ref.block.number, block_state_diff);
+        }
+
+        Ok(total_write_count)
+    }
+
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
         let inner = self.inner.read();
 

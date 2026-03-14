@@ -15,10 +15,10 @@ use reth_execution_types::Chain;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
-    OpProofStoragePrunerTask, OpProofsStorage, OpProofsStore, live::LiveTrieCollector,
+    live::LiveTrieCollector, OpProofStoragePrunerTask, OpProofsStorage, OpProofsStore,
 };
 use reth_provider::{BlockNumReader, BlockReader, TransactionVariant};
-use reth_trie::{HashedPostStateSorted, SortedTrieData, updates::TrieUpdatesSorted};
+use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted, SortedTrieData};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::watch, task, time};
 use tracing::{debug, error, info};
@@ -123,8 +123,8 @@ where
 /// use reth_node_builder::{NodeBuilder, NodeConfig};
 /// use reth_optimism_chainspec::BASE_MAINNET;
 /// use reth_optimism_exex::OpProofsExEx;
-/// use reth_optimism_node::{OpNode, args::RollupArgs};
-/// use reth_optimism_trie::{InMemoryProofsStorage, OpProofsStorage, db::MdbxProofsStorage};
+/// use reth_optimism_node::{args::RollupArgs, OpNode};
+/// use reth_optimism_trie::{db::MdbxProofsStorage, InMemoryProofsStorage, OpProofsStorage};
 /// use reth_provider::providers::BlockchainProvider;
 /// use std::{sync::Arc, time::Duration};
 ///
@@ -218,8 +218,14 @@ where
     /// Main execution loop for the ExEx
     pub async fn run(mut self) -> eyre::Result<()> {
         self.ensure_initialized()?;
-        let sync_target_tx = self.spawn_sync_task();
 
+        let collector = Arc::new(LiveTrieCollector::new(
+            self.ctx.evm_config().clone(),
+            self.ctx.provider().clone(),
+            self.storage.clone(),
+        ));
+
+        let sync_target_tx = self.spawn_sync_task(collector.clone());
         let prune_task = OpProofStoragePrunerTask::new(
             self.storage.clone(),
             self.ctx.provider().clone(),
@@ -230,11 +236,6 @@ where
             .task_executor()
             .spawn_with_graceful_shutdown_signal(|signal| Box::pin(prune_task.run(signal)));
 
-        let collector = LiveTrieCollector::new(
-            self.ctx.evm_config().clone(),
-            self.ctx.provider().clone(),
-            &self.storage,
-        );
 
         while let Some(notification) = self.ctx.notifications.try_next().await? {
             self.handle_notification(notification, &collector, &sync_target_tx)?;
@@ -275,8 +276,8 @@ where
                     "Configuration requires pruning {} blocks, which exceeds the safety threshold of {}. \
                      Huge prune operations can stall the node. \
                      Please run 'op-reth proofs prune' manually before starting the node.",
-                    blocks_to_prune,
-                    MAX_PRUNE_BLOCKS_STARTUP
+                        blocks_to_prune,
+                        MAX_PRUNE_BLOCKS_STARTUP
                 ));
             }
         }
@@ -296,20 +297,16 @@ where
     }
 
     /// Spawn the background sync task and return the target sender
-    fn spawn_sync_task(&self) -> watch::Sender<u64> {
+    fn spawn_sync_task(
+        &self,
+        collector: Arc<LiveTrieCollector<Node::Evm, Node::Provider, Storage>>,
+    ) -> watch::Sender<u64> {
         let (sync_target_tx, sync_target_rx) = watch::channel(0u64);
-
-        let task_storage = self.storage.clone();
         let task_provider = self.ctx.provider().clone();
-        let task_evm_config = self.ctx.evm_config().clone();
-
         self.ctx.task_executor().spawn_critical_task(
             "optimism::exex::proofs_storage_sync_loop",
             async move {
-                let storage = task_storage.clone();
-                let task_collector =
-                    LiveTrieCollector::new(task_evm_config, task_provider.clone(), &storage);
-                Self::sync_loop(sync_target_rx, task_storage, task_provider, &task_collector).await;
+                Self::sync_loop(sync_target_rx, task_provider, &collector).await;
             },
         );
 
@@ -319,22 +316,19 @@ where
     /// Background sync loop that processes blocks up to the target
     async fn sync_loop(
         mut sync_target_rx: watch::Receiver<u64>,
-        storage: OpProofsStorage<Storage>,
         provider: Node::Provider,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
     ) {
         debug!(target: "optimism::exex", "Starting proofs storage sync loop");
 
         loop {
             let target = *sync_target_rx.borrow_and_update();
-            let latest = match storage.get_latest_block_number() {
-                Ok(Some((n, _))) => n,
-                Ok(None) => {
-                    error!(target: "optimism::exex", "No blocks stored in proofs storage during sync loop");
-                    continue;
-                }
+            let latest = match collector.get_tip_block_number() {
+                Ok(n) => n,
                 Err(e) => {
-                    error!(target: "optimism::exex", error = ?e, "Failed to get latest block");
+                    error!(target: "optimism::exex", error = ?e, "Failed to get collector tip block");
+                    // If we can't read the tip, simple retry backoff or continue
+                    time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
             };
@@ -362,7 +356,7 @@ where
         start: u64,
         target: u64,
         provider: &Node::Provider,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
         batch_size: usize,
     ) -> eyre::Result<()> {
         let end = (start + batch_size as u64).min(target);
@@ -387,12 +381,12 @@ where
     fn handle_notification(
         &self,
         notification: ExExNotification<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
         sync_target_tx: &watch::Sender<u64>,
     ) -> eyre::Result<()> {
-        let latest_stored = match self.storage.get_latest_block_number()? {
-            Some((n, _)) => n,
-            None => {
+        let latest_stored = match collector.get_tip_block_number() {
+            Ok(n) => n,
+            Err(_) => {
                 return Err(eyre::eyre!("No blocks stored in proofs storage"));
             }
         };
@@ -420,7 +414,7 @@ where
         &self,
         new: Arc<Chain<Primitives>>,
         latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
         sync_target_tx: &watch::Sender<u64>,
     ) -> eyre::Result<()> {
         debug!(
@@ -483,7 +477,7 @@ where
         &self,
         block_number: u64,
         chain: &Chain<Primitives>,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
         // Check if this block should be verified via full execution
         let should_verify = self.verification_interval > 0 &&
@@ -552,7 +546,7 @@ where
         old: Arc<Chain<Primitives>>,
         new: Arc<Chain<Primitives>>,
         latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
         info!(
             old_block_number = old.tip().number(),
@@ -612,7 +606,7 @@ where
         &self,
         old: Arc<Chain<Primitives>>,
         latest_stored: u64,
-        collector: &LiveTrieCollector<'_, Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
     ) -> eyre::Result<()> {
         info!(
             target: "optimism::exex",
@@ -640,15 +634,15 @@ where
 mod tests {
     use super::*;
     use alloy_consensus::private::alloy_primitives::B256;
-    use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
+    use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
     use reth_db::test_utils::tempdir_path;
     use reth_ethereum_primitives::{Block, Receipt};
     use reth_execution_types::{Chain, ExecutionOutcome};
     use reth_optimism_trie::{
-        BlockStateDiff, OpProofsStorage, OpProofsStore, db::MdbxProofsStorage,
+        db::MdbxProofsStorage, BlockStateDiff, OpProofsStorage, OpProofsStore,
     };
     use reth_primitives_traits::RecoveredBlock;
-    use reth_trie::{HashedPostStateSorted, LazyTrieData, updates::TrieUpdatesSorted};
+    use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted, LazyTrieData};
     use std::{collections::BTreeMap, default::Default, sync::Arc, time::Duration};
 
     // -------------------------------------------------------------------------
@@ -754,7 +748,7 @@ mod tests {
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
-            &proofs,
+            proofs.clone(),
         );
         let exex = build_test_exex(ctx, proofs.clone());
 
@@ -785,7 +779,7 @@ mod tests {
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
-            &proofs,
+            proofs.clone(),
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -826,7 +820,7 @@ mod tests {
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
-            &proofs,
+            proofs.clone(),
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -871,7 +865,7 @@ mod tests {
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
-            &proofs,
+            proofs.clone(),
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -917,7 +911,7 @@ mod tests {
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
-            &proofs,
+            proofs.clone(),
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -962,7 +956,7 @@ mod tests {
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
-            &proofs,
+            proofs.clone(),
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -1063,7 +1057,7 @@ mod tests {
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
-            &proofs,
+            proofs.clone(),
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -1092,7 +1086,7 @@ mod tests {
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
-            &proofs,
+            proofs.clone(),
         );
         let exex = build_test_exex(ctx, proofs.clone());
 

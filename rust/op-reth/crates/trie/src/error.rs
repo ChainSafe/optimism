@@ -105,6 +105,9 @@ pub enum OpProofsStorageError {
          Please clear proofs data and retry initialization."
     )]
     InitializeStorageInconsistentState,
+    /// Other error with a message.
+    #[error("{0}")]
+    Other(String),
 }
 
 impl From<BlockExecutionError> for OpProofsStorageError {

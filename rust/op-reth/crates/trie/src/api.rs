@@ -132,6 +132,12 @@ pub trait OpProofsStore: Send + Sync + Debug {
         block_state_diff: BlockStateDiff,
     ) -> OpProofsStorageResult<WriteCounts>;
 
+    /// Store a batch of trie updates for a block.
+    fn store_trie_updates_batch(
+        &self,
+        updates: Vec<(BlockWithParent, BlockStateDiff)>,
+    ) -> OpProofsStorageResult<WriteCounts>;
+
     /// Fetch all updates for a given block number.
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff>;
 

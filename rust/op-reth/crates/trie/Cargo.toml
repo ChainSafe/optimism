@@ -52,6 +52,7 @@ eyre = { workspace = true, optional = true }
 strum.workspace = true
 tracing.workspace = true
 derive_more.workspace = true
+crossbeam-channel.workspace = true
 
 [dev-dependencies]
 reth-codecs = { workspace = true, features = ["test-utils"] }

@@ -1,12 +1,11 @@
 //! Storage wrapper that records metrics for all operations.
 
 use crate::{
-    BlockStateDiff, OpProofsStorageResult, OpProofsStore,
     api::{InitialStateAnchor, OpProofsInitialStateStore, OperationDurations, WriteCounts},
-    cursor,
+    cursor, BlockStateDiff, OpProofsStorageResult, OpProofsStore,
 };
-use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
-use alloy_primitives::{B256, U256, map::HashMap};
+use alloy_eips::{eip1898::BlockWithParent, BlockNumHash};
+use alloy_primitives::{map::HashMap, B256, U256};
 use derive_more::Constructor;
 use metrics::{Counter, Gauge, Histogram};
 use reth_db::DatabaseError;
@@ -117,7 +116,11 @@ impl StorageMetrics {
 
     /// Record a storage operation with timing.
     pub fn record_operation<R>(&self, operation: StorageOperation, f: impl FnOnce() -> R) -> R {
-        if let Some(metrics) = self.operations.get(&operation) { metrics.record(f) } else { f() }
+        if let Some(metrics) = self.operations.get(&operation) {
+            metrics.record(f)
+        } else {
+            f()
+        }
     }
 
     /// Record a storage operation with timing (async version).
@@ -433,6 +436,18 @@ where
     ) -> OpProofsStorageResult<WriteCounts> {
         let result = self.storage.store_trie_updates(block_ref, block_state_diff)?;
         self.metrics.block_metrics.latest_number.set(block_ref.block.number as f64);
+        Ok(result)
+    }
+
+    #[inline]
+    fn store_trie_updates_batch(
+        &self,
+        updates: Vec<(BlockWithParent, BlockStateDiff)>,
+    ) -> OpProofsStorageResult<WriteCounts> {
+        let result = self.storage.store_trie_updates_batch(updates.clone())?;
+        if let Some((latest_block_ref, _)) = updates.last() {
+            self.metrics.block_metrics.latest_number.set(latest_block_ref.block.number as f64);
+        }
         Ok(result)
     }
 
