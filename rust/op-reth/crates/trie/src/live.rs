@@ -11,8 +11,7 @@ use crossbeam_channel::{bounded, RecvTimeoutError};
 use reth_evm::{execute::Executor, ConfigureEvm};
 use reth_primitives_traits::{AlloyBlockHeader, BlockTy, RecoveredBlock};
 use reth_provider::{
-    DatabaseProviderFactory, HashedPostStateProvider, StateProviderFactory, StateReader,
-    StateRootProvider,
+    BlockHashReader, DatabaseProviderFactory, HashedPostStateProvider, StateProviderFactory, StateReader, StateRootProvider
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_trie_common::{updates::TrieUpdatesSorted, HashedPostStateSorted};
@@ -50,7 +49,7 @@ where
 impl<Evm, Provider, Store> LiveTrieCollector<Evm, Provider, Store>
 where
     Evm: ConfigureEvm,
-    Provider: StateReader + DatabaseProviderFactory + StateProviderFactory,
+    Provider: BlockHashReader + StateReader + DatabaseProviderFactory + StateProviderFactory + Clone + 'static,
     Store: OpProofsStore + Clone + 'static,
 {
     /// Create a new live trie collector.
@@ -58,8 +57,9 @@ where
         evm_config: Evm,
         provider: Provider,
         storage: OpProofsStorage<Store>,
+        min_block_interval: u64,
     ) -> Self {
-        let persistence_handle = LiveTriePersistenceHandle::spawn(storage.clone());
+        let persistence_handle = LiveTriePersistenceHandle::spawn(provider.clone(), min_block_interval, storage.clone());
         Self {
             evm_config,
             provider,

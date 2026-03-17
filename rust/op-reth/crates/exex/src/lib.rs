@@ -15,7 +15,7 @@ use reth_execution_types::Chain;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
-    live::LiveTrieCollector, OpProofStoragePrunerTask, OpProofsStorage, OpProofsStore,
+    live::LiveTrieCollector, OpProofsStorage, OpProofsStore,
 };
 use reth_provider::{BlockNumReader, BlockReader, TransactionVariant};
 use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted, SortedTrieData};
@@ -223,18 +223,19 @@ where
             self.ctx.evm_config().clone(),
             self.ctx.provider().clone(),
             self.storage.clone(),
+            self.proofs_history_window
         ));
 
         let sync_target_tx = self.spawn_sync_task(collector.clone());
-        let prune_task = OpProofStoragePrunerTask::new(
-            self.storage.clone(),
-            self.ctx.provider().clone(),
-            self.proofs_history_window,
-            self.proofs_history_prune_interval,
-        );
-        self.ctx
-            .task_executor()
-            .spawn_with_graceful_shutdown_signal(|signal| Box::pin(prune_task.run(signal)));
+        // let prune_task = OpProofStoragePrunerTask::new(
+        //     self.storage.clone(),
+        //     self.ctx.provider().clone(),
+        //     self.proofs_history_window,
+        //     self.proofs_history_prune_interval,
+        // );
+        // self.ctx
+        //     .task_executor()
+        //     .spawn_with_graceful_shutdown_signal(|signal| Box::pin(prune_task.run(signal)));
 
 
         while let Some(notification) = self.ctx.notifications.try_next().await? {
@@ -749,6 +750,7 @@ mod tests {
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
+            0,
         );
         let exex = build_test_exex(ctx, proofs.clone());
 
@@ -780,6 +782,7 @@ mod tests {
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
+            0
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -821,6 +824,7 @@ mod tests {
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
+            0,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -866,6 +870,7 @@ mod tests {
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
+            0,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -912,6 +917,7 @@ mod tests {
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
+            0,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -957,6 +963,7 @@ mod tests {
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
+            0,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -1058,6 +1065,7 @@ mod tests {
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
+            0,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -1087,6 +1095,7 @@ mod tests {
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
+            0,
         );
         let exex = build_test_exex(ctx, proofs.clone());
 

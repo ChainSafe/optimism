@@ -1,35 +1,35 @@
 use super::{BlockNumberHash, ProofWindow, ProofWindowKey, Tables};
 use crate::{
+    api::{InitialStateAnchor, InitialStateStatus, OpProofsInitialStateStore, WriteCounts},
+    db::{
+        cursor::Dup,
+        models::{
+            kv::IntoKV, AccountTrieHistory, BlockChangeSet, ChangeSet, HashedAccountHistory,
+            HashedStorageHistory, HashedStorageKey, MaybeDeleted, StorageTrieHistory,
+            StorageTrieKey, StorageValue, VersionedValue,
+        },
+        MdbxAccountCursor, MdbxStorageCursor, MdbxTrieCursor,
+    },
     BlockStateDiff, OpProofsStorageError,
     OpProofsStorageError::NoBlocksFound,
     OpProofsStorageResult, OpProofsStore,
-    api::{InitialStateAnchor, InitialStateStatus, OpProofsInitialStateStore, WriteCounts},
-    db::{
-        MdbxAccountCursor, MdbxStorageCursor, MdbxTrieCursor,
-        cursor::Dup,
-        models::{
-            AccountTrieHistory, BlockChangeSet, ChangeSet, HashedAccountHistory,
-            HashedStorageHistory, HashedStorageKey, MaybeDeleted, StorageTrieHistory,
-            StorageTrieKey, StorageValue, VersionedValue, kv::IntoKV,
-        },
-    },
 };
-use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
-use alloy_primitives::{B256, U256, map::HashMap};
+use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
+use alloy_primitives::{map::HashMap, B256, U256};
 #[cfg(feature = "metrics")]
-use metrics::{Label, gauge};
+use metrics::{gauge, Label};
 use reth_db::{
-    Database, DatabaseEnv, DatabaseError,
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
-    mdbx::{DatabaseArguments, init_db_for},
+    mdbx::{init_db_for, DatabaseArguments},
     table::{DupSort, Table},
     transaction::{DbTx, DbTxMut},
+    Database, DatabaseEnv, DatabaseError,
 };
 use reth_primitives_traits::Account;
 use reth_trie::{hashed_cursor::HashedCursor, trie_cursor::TrieCursor};
 use reth_trie_common::{
-    BranchNodeCompact, HashedPostState, Nibbles, StoredNibbles,
     updates::{StorageTrieUpdates, TrieUpdates},
+    BranchNodeCompact, HashedPostState, Nibbles, StoredNibbles,
 };
 use std::{ops::RangeBounds, path::Path};
 
@@ -310,6 +310,69 @@ impl MdbxProofsStorage {
         })?
     }
 
+    fn calculate_prune_plan_with_tx(
+        &self,
+        tx: &<DatabaseEnv as Database>::TXMut,
+        target_block: u64
+    ) -> OpProofsStorageResult<Option<PrunePlan>> {
+        let Some((earliest, _)) =
+            self.inner_get_block_number_hash(tx, ProofWindowKey::EarliestBlock)?
+        else {
+            return Ok(None);
+        };
+
+        if earliest >= target_block {
+            return Ok(None);
+        }
+
+        // 1. Accumulate latest block per key using HashMap for O(1) deduplication
+        // This is memory-efficient for high-churn scenarios (many updates to same keys).
+        let mut acc_candidates: HashMap<StoredNibbles, u64> = HashMap::default();
+        let mut storage_candidates: HashMap<StorageTrieKey, u64> = HashMap::default();
+        let mut hashed_acc_candidates: HashMap<B256, u64> = HashMap::default();
+        let mut hashed_storage_candidates: HashMap<HashedStorageKey, u64> = HashMap::default();
+
+        let range = (earliest + 1)..=target_block;
+        let mut cs_cursor = tx.cursor_read::<BlockChangeSet>()?;
+        let mut walker = cs_cursor.walk_range(range)?;
+
+        while let Some(Ok((block_number, cs))) = walker.next() {
+            for k in cs.account_trie_keys {
+                acc_candidates
+                    .entry(k)
+                    .and_modify(|curr| *curr = (*curr).max(block_number))
+                    .or_insert(block_number);
+            }
+            for k in cs.storage_trie_keys {
+                storage_candidates
+                    .entry(k)
+                    .and_modify(|curr| *curr = (*curr).max(block_number))
+                    .or_insert(block_number);
+            }
+            for k in cs.hashed_account_keys {
+                hashed_acc_candidates
+                    .entry(k)
+                    .and_modify(|curr| *curr = (*curr).max(block_number))
+                    .or_insert(block_number);
+            }
+            for k in cs.hashed_storage_keys {
+                hashed_storage_candidates
+                    .entry(k)
+                    .and_modify(|curr| *curr = (*curr).max(block_number))
+                    .or_insert(block_number);
+            }
+        }
+
+        // 2. Convert map to sorted survivors list for efficient sequential db write
+        Ok(Some(PrunePlan {
+            earliest_block: earliest,
+            acc_survivors: Self::flatten_and_sort(acc_candidates),
+            storage_survivors: Self::flatten_and_sort(storage_candidates),
+            hashed_acc_survivors: Self::flatten_and_sort(hashed_acc_candidates),
+            hashed_storage_survivors: Self::flatten_and_sort(hashed_storage_candidates),
+        }))
+    }
+
     /// Helper to flatten `HashMap` into a sorted Vector of survivors.
     /// Sorting is required to ensure optimal sequential seek performance in MDBX.
     fn flatten_and_sort<K: Ord>(map: HashMap<K, u64>) -> Vec<(K, u64)> {
@@ -468,6 +531,62 @@ impl MdbxProofsStorage {
         })
     }
 
+    fn prune_earliest_state_with_tx(
+        &self,
+        tx: &<DatabaseEnv as Database>::TXMut,
+        new_earliest_block_ref: BlockWithParent,
+    ) -> OpProofsStorageResult<WriteCounts> {
+        let target_block = new_earliest_block_ref.block.number;
+
+        // --- PHASE 1: READ (Calculate Deletions) ---
+        let plan = self.calculate_prune_plan_with_tx(tx, target_block)?;
+        let Some(plan) = plan else {
+            return Ok(WriteCounts::default());
+        };
+
+        // --- PHASE 2: WRITE (Execute Deletions) ---
+        // 1. Execute Sparse Deletions and track actual deleted rows
+        let acc_deleted =
+            self.prune_history_preceding::<AccountTrieHistory, _>(tx, plan.acc_survivors)?;
+
+        let st_deleted =
+            self.prune_history_preceding::<StorageTrieHistory, _>(tx, plan.storage_survivors)?;
+
+        let ha_deleted = self.prune_history_preceding::<HashedAccountHistory, _>(
+            tx,
+            plan.hashed_acc_survivors,
+        )?;
+
+        let hs_deleted = self.prune_history_preceding::<HashedStorageHistory, _>(
+            tx,
+            plan.hashed_storage_survivors,
+        )?;
+
+        let counts = WriteCounts {
+            account_trie_updates_written_total: acc_deleted,
+            storage_trie_updates_written_total: st_deleted,
+            hashed_accounts_written_total: ha_deleted,
+            hashed_storages_written_total: hs_deleted,
+        };
+
+        // 2. Delete ChangeSets
+        let range = (plan.earliest_block + 1)..=target_block;
+        let mut cs_cursor = tx.cursor_write::<BlockChangeSet>()?;
+        let mut walker = cs_cursor.walk_range(range)?;
+        while walker.next().is_some() {
+            walker.delete_current()?;
+        }
+
+        // 3. Update Earliest Pointer
+        Self::inner_set_earliest_block_number(
+            tx,
+            target_block,
+            new_earliest_block_ref.block.hash,
+        )?;
+
+        Ok(counts)
+    }
+
     /// Write trie/state history for `block_number` from `block_state_diff`.
     fn store_trie_updates_for_block(
         &self,
@@ -567,8 +686,10 @@ impl MdbxProofsStorage {
         let block_number = block_ref.block.number;
 
         // Check the latest stored block is the parent of the incoming block
-        let latest_block_hash =
-            self.inner_get_latest_block_number_hash(tx)?.map_or(B256::ZERO, |(_num, hash)| hash);
+        let latest_block_hash = match self.inner_get_latest_block_number_hash(tx)? {
+            Some((_num, hash)) => hash,
+            None => B256::ZERO,
+        };
 
         if latest_block_hash != block_ref.parent {
             return Err(OpProofsStorageError::OutOfOrder {
@@ -696,8 +817,21 @@ impl OpProofsStore for MdbxProofsStorage {
     fn store_trie_updates_batch(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
+        new_earliest_block_ref: Option<BlockWithParent>,
     ) -> OpProofsStorageResult<WriteCounts> {
         self.env.update(|tx| {
+            let blocks_written = updates.len();
+            let blocks_pruned = if let (Some(new_earliest_block), Some((earliest_block, _))) = (
+                new_earliest_block_ref.as_ref(),
+                self.inner_get_block_number_hash(tx, ProofWindowKey::EarliestBlock)?,
+            ) {
+                new_earliest_block.block.number.saturating_sub(earliest_block)
+            } else {
+                0
+            };
+
+            let start = std::time::Instant::now();
+            // 1. Write all updates
             let mut total_counts = WriteCounts::default();
             for (block_ref, block_state_diff) in updates {
                 // store_trie_updates_append_only updates the "latest block" cursor within the tx,
@@ -712,6 +846,28 @@ impl OpProofsStore for MdbxProofsStorage {
                 total_counts.hashed_accounts_written_total += counts.hashed_accounts_written_total;
                 total_counts.hashed_storages_written_total += counts.hashed_storages_written_total;
             }
+            let write_duration = start.elapsed();
+            let mut prune_duration = None;
+            let mut prune_count = WriteCounts::default();
+
+            // 2. Prune earliest state to new_earliest_block_ref
+            if let Some(new_earliest_block) = new_earliest_block_ref {
+                let start = std::time::Instant::now();
+                prune_count = self.prune_earliest_state_with_tx(tx, new_earliest_block)?;
+                prune_duration = Some(start.elapsed());
+            }
+
+            tracing::info!(
+                target: "op-reth::trie::store",
+                blocks_written,
+                blocks_pruned,
+                ?write_duration,
+                write_counts = ?total_counts,
+                ?prune_duration,
+                ?prune_count,
+                "store:: Batch write and prune completed"
+            );
+
             Ok(total_counts)
         })?
     }
@@ -737,7 +893,7 @@ impl OpProofsStore for MdbxProofsStorage {
                             return Err(OpProofsStorageError::MissingAccountTrieHistory(
                                 key.0,
                                 block_number,
-                            ));
+                            ))
                         }
                     };
 
@@ -757,7 +913,7 @@ impl OpProofsStore for MdbxProofsStorage {
                                 key.hashed_address,
                                 key.path.0,
                                 block_number,
-                            ));
+                            ))
                         }
                     };
 
@@ -784,7 +940,7 @@ impl OpProofsStore for MdbxProofsStorage {
                         return Err(OpProofsStorageError::MissingHashedAccountHistory(
                             key,
                             block_number,
-                        ));
+                        ))
                     }
                 };
 
@@ -800,7 +956,7 @@ impl OpProofsStore for MdbxProofsStorage {
                                 hashed_address: key.hashed_address,
                                 hashed_storage_key: key.hashed_storage_key,
                                 block_number,
-                            });
+                            })
                         }
                     };
 
@@ -1185,19 +1341,19 @@ impl reth_db::database_metrics::DatabaseMetrics for MdbxProofsStorage {
 mod tests {
     use super::*;
     use crate::db::{
-        StorageTrieKey,
         models::{AccountTrieHistory, StorageTrieHistory},
+        StorageTrieKey,
     };
     use alloy_eips::NumHash;
     use alloy_primitives::B256;
     use reth_db::{
-        DatabaseError,
         cursor::DbDupCursorRO,
         transaction::{DbTx, DbTxMut},
+        DatabaseError,
     };
     use reth_trie::{
-        BranchNodeCompact, HashedPostStateSorted, HashedStorage, Nibbles, StoredNibbles,
         updates::{StorageTrieUpdates, TrieUpdatesSorted},
+        BranchNodeCompact, HashedPostStateSorted, HashedStorage, Nibbles, StoredNibbles,
     };
     use tempfile::TempDir;
 
@@ -3001,7 +3157,11 @@ mod tests {
                 let vv =
                     cur.seek_by_key_subkey(key, BLOCK.block.number).expect("seek").expect("exists");
                 assert_eq!(vv.block_number, BLOCK.block.number);
-                assert!(vv.value.0.is_none(), "expected tombstone at wipe block for path {path:?}");
+                assert!(
+                    vv.value.0.is_none(),
+                    "expected tombstone at wipe block for path {:?}",
+                    path
+                );
             }
         }
 
@@ -3553,30 +3713,21 @@ mod tests {
 
         // Verify storage history
         let mut storage_cur = tx.new_cursor::<HashedStorageHistory>().expect("cursor");
-        assert!(
-            storage_cur
-                .seek_by_key_subkey(HashedStorageKey::new(addr1, slot1), 1)
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            storage_cur
-                .seek_by_key_subkey(HashedStorageKey::new(addr2, slot2), 2)
-                .unwrap()
-                .is_none()
-        );
+        assert!(storage_cur
+            .seek_by_key_subkey(HashedStorageKey::new(addr1, slot1), 1)
+            .unwrap()
+            .is_some());
+        assert!(storage_cur
+            .seek_by_key_subkey(HashedStorageKey::new(addr2, slot2), 2)
+            .unwrap()
+            .is_none());
 
         // Verify storage trie history
         let mut storage_trie_cur = tx.cursor_dup_read::<StorageTrieHistory>().expect("cursor");
-        assert!(
-            storage_trie_cur
-                .seek_by_key_subkey(
-                    StorageTrieKey::new(addr1, StoredNibbles::from(storage_path1)),
-                    1
-                )
-                .unwrap()
-                .is_some()
-        );
+        assert!(storage_trie_cur
+            .seek_by_key_subkey(StorageTrieKey::new(addr1, StoredNibbles::from(storage_path1)), 1)
+            .unwrap()
+            .is_some());
 
         // Verify ProofWindow LatestBlock is updated
         let mut proof_window_cur = tx.cursor_read::<ProofWindow>().expect("cursor");

@@ -443,8 +443,9 @@ where
     fn store_trie_updates_batch(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
+        new_earliest_block_ref: Option<BlockWithParent>,
     ) -> OpProofsStorageResult<WriteCounts> {
-        let result = self.storage.store_trie_updates_batch(updates.clone())?;
+        let result = self.storage.store_trie_updates_batch(updates.clone(), new_earliest_block_ref)?;
         if let Some((latest_block_ref, _)) = updates.last() {
             self.metrics.block_metrics.latest_number.set(latest_block_ref.block.number as f64);
         }
