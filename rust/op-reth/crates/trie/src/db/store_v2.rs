@@ -42,6 +42,7 @@ use crate::{
             HashedStorages, HashedStoragesHistory, StorageTrieShardedKey, StoragesTrie,
             StorageTrieChangeSets, StoragesTrieHistory, TrieChangeSetsEntry,
         },
+        HashedStorageKey, StorageTrieKey,
     },
     BlockStateDiff, OpProofsStorageError, OpProofsStorageResult,
 };
@@ -537,15 +538,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
     ) -> OpProofsStorageResult<()> {
         for (hashed_address, nibbles) in entries {
             self.append_history_index::<StoragesTrieHistory>(
-                StorageTrieShardedKey {
-                    hashed_address: *hashed_address,
-                    sharded_key: ShardedKey::new(nibbles.clone(), u64::MAX),
-                },
+                StorageTrieShardedKey::new(*hashed_address, nibbles.clone(), u64::MAX),
                 block_number,
-                |highest| StorageTrieShardedKey {
-                    hashed_address: *hashed_address,
-                    sharded_key: ShardedKey::new(nibbles.clone(), highest),
-                },
+                |highest| StorageTrieShardedKey::new(*hashed_address, nibbles.clone(), highest),
             )?;
         }
         Ok(())
@@ -634,10 +629,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 let nibbles = StoredNibbles(entry.nibbles.0);
                 self.remove_from_history_index::<StoragesTrieHistory>(
                     block_number,
-                    |highest| StorageTrieShardedKey {
-                        hashed_address,
-                        sharded_key: ShardedKey::new(nibbles.clone(), highest),
-                    },
+                    |highest| StorageTrieShardedKey::new(hashed_address, nibbles.clone(), highest),
                 )?;
             }
         }
@@ -1523,9 +1515,33 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         let completed =
             self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?.is_some();
 
-        // V2 uses different table types for the "latest key" tracking.
-        // For now, return None for these — the init provider can be enhanced later
-        // to track resume keys specific to the v2 schema.
+        // Scan the last entry in each current-state table to determine resume
+        // keys. This allows multi-step initialization: if the process is
+        // interrupted, the next run picks up where it left off.
+        let latest_hashed_account_key = self
+            .tx
+            .cursor_read::<HashedAccounts>()?
+            .last()?
+            .map(|(k, _)| k);
+
+        let latest_hashed_storage_key = self
+            .tx
+            .cursor_read::<HashedStorages>()?
+            .last()?
+            .map(|(addr, entry)| HashedStorageKey::new(addr, entry.key));
+
+        let latest_account_trie_key = self
+            .tx
+            .cursor_read::<AccountsTrie>()?
+            .last()?
+            .map(|(k, _)| k);
+
+        let latest_storage_trie_key = self
+            .tx
+            .cursor_read::<StoragesTrie>()?
+            .last()?
+            .map(|(addr, entry)| StorageTrieKey::new(addr, StoredNibbles(entry.nibbles.0)));
+
         Ok(InitialStateAnchor {
             block: Some(block),
             status: if completed {
@@ -1533,10 +1549,10 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
             } else {
                 InitialStateStatus::InProgress
             },
-            latest_account_trie_key: None,
-            latest_storage_trie_key: None,
-            latest_hashed_account_key: None,
-            latest_hashed_storage_key: None,
+            latest_account_trie_key,
+            latest_storage_trie_key,
+            latest_hashed_account_key,
+            latest_hashed_storage_key,
         })
     }
 

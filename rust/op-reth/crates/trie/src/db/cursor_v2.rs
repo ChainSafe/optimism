@@ -786,13 +786,13 @@ where
         &mut self,
         path: &StoredNibbles,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let history_key = AccountTrieShardedKey::new(path.clone(), self.max_block_number);
+        let seek_key = AccountTrieShardedKey::new(path.clone(), self.max_block_number);
         let target = path.clone();
         let source = find_source::<AccountsTrieHistory, _>(
             &mut self.history_cursor,
-            history_key,
+            seek_key,
             self.max_block_number,
-            |k| k.0.key == target,
+            |k| k.key == target,
         )?;
 
         match source {
@@ -818,13 +818,13 @@ where
         path: &StoredNibbles,
         cs_value: Option<&BranchNodeCompact>,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let history_key = AccountTrieShardedKey::new(path.clone(), self.max_block_number);
+        let seek_key = AccountTrieShardedKey::new(path.clone(), self.max_block_number);
         let target = path.clone();
         let source = find_source::<AccountsTrieHistory, _>(
             &mut self.history_cursor,
-            history_key,
+            seek_key,
             self.max_block_number,
-            |k| k.0.key == target,
+            |k| k.key == target,
         )?;
 
         match source {
@@ -849,12 +849,12 @@ where
         let entry =
             self.history_walk_cursor.seek(AccountTrieShardedKey::new(key.clone(), u64::MAX))?;
         match entry {
-            Some((k, _)) if k.0.key == *key => {
+            Some((k, _)) if k.key == *key => {
                 // On the last shard of this key — one more step to reach the
                 // next distinct key.
-                Ok(self.history_walk_cursor.next()?.map(|(k, _)| k.0.key))
+                Ok(self.history_walk_cursor.next()?.map(|(k, _)| k.key))
             }
-            Some((k, _)) => Ok(Some(k.0.key)),
+            Some((k, _)) => Ok(Some(k.key)),
             None => Ok(None),
         }
     }
@@ -958,7 +958,7 @@ where
         self.hist_next_key = self
             .history_walk_cursor
             .seek(AccountTrieShardedKey::new(StoredNibbles(key), 0))?
-            .map(|(k, _)| k.0.key);
+            .map(|(k, _)| k.key);
         self.find_next_live()
     }
 
@@ -1062,18 +1062,19 @@ where
         path: Nibbles,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
         let nibbles = StoredNibbles(path);
-        let history_key = StorageTrieShardedKey {
-            hashed_address: self.hashed_address,
-            sharded_key: ShardedKey::new(nibbles.clone(), self.max_block_number),
-        };
+        let seek_key = StorageTrieShardedKey::new(
+            self.hashed_address,
+            nibbles.clone(),
+            self.max_block_number,
+        );
 
         let addr = self.hashed_address;
         let nibbles_cmp = nibbles.clone();
         let source = find_source::<StoragesTrieHistory, _>(
             &mut self.history_cursor,
-            history_key,
+            seek_key,
             self.max_block_number,
-            |k| k.hashed_address == addr && k.sharded_key.key == nibbles_cmp,
+            |k| k.hashed_address == addr && k.key == nibbles_cmp,
         )?;
 
         match source {
@@ -1102,18 +1103,19 @@ where
         cs_value: Option<&BranchNodeCompact>,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
         let nibbles = StoredNibbles(path);
-        let history_key = StorageTrieShardedKey {
-            hashed_address: self.hashed_address,
-            sharded_key: ShardedKey::new(nibbles.clone(), self.max_block_number),
-        };
+        let seek_key = StorageTrieShardedKey::new(
+            self.hashed_address,
+            nibbles.clone(),
+            self.max_block_number,
+        );
 
         let addr = self.hashed_address;
         let nibbles_cmp = nibbles.clone();
         let source = find_source::<StoragesTrieHistory, _>(
             &mut self.history_cursor,
-            history_key,
+            seek_key,
             self.max_block_number,
-            |k| k.hashed_address == addr && k.sharded_key.key == nibbles_cmp,
+            |k| k.hashed_address == addr && k.key == nibbles_cmp,
         )?;
 
         match source {
@@ -1135,24 +1137,25 @@ where
         &mut self,
         key: &StoredNibbles,
     ) -> Result<Option<StoredNibbles>, DatabaseError> {
-        let seek = StorageTrieShardedKey {
-            hashed_address: self.hashed_address,
-            sharded_key: ShardedKey::new(key.clone(), u64::MAX),
-        };
+        let seek = StorageTrieShardedKey::new(
+            self.hashed_address,
+            key.clone(),
+            u64::MAX,
+        );
         let entry = self
             .history_walk_cursor
             .seek(seek)?
             .filter(|(k, _)| k.hashed_address == self.hashed_address);
         match entry {
-            Some((k, _)) if k.sharded_key.key == *key => {
+            Some((k, _)) if k.key == *key => {
                 // On the last shard of this key — advance once more.
                 Ok(self
                     .history_walk_cursor
                     .next()?
                     .filter(|(k, _)| k.hashed_address == self.hashed_address)
-                    .map(|(k, _)| k.sharded_key.key))
+                    .map(|(k, _)| k.key))
             }
-            Some((k, _)) => Ok(Some(k.sharded_key.key)),
+            Some((k, _)) => Ok(Some(k.key)),
             None => Ok(None),
         }
     }
@@ -1267,15 +1270,16 @@ where
         // Initialize both merge cursors at the target key.
         self.cs_next =
             self.cursor.seek_by_key_subkey(self.hashed_address, StoredNibblesSubKey(key))?;
-        let hist_seek = StorageTrieShardedKey {
-            hashed_address: self.hashed_address,
-            sharded_key: ShardedKey::new(StoredNibbles(key), 0),
-        };
+        let hist_seek = StorageTrieShardedKey::new(
+            self.hashed_address,
+            StoredNibbles(key),
+            0,
+        );
         self.hist_next_key = self
             .history_walk_cursor
             .seek(hist_seek)?
             .filter(|(k, _)| k.hashed_address == self.hashed_address)
-            .map(|(k, _)| k.sharded_key.key);
+            .map(|(k, _)| k.key);
         self.find_next_live()
     }
 
@@ -1468,6 +1472,153 @@ mod tests {
         .expect("ok");
 
         assert_eq!(result, ResolvedSource::FromChangeset(15));
+    }
+
+    // ====================== find_source with AccountTrieShardedKey tests ======================
+
+    #[test]
+    fn find_source_resolves_root_path_despite_child_history() {
+        // Regression test: the root trie path [] has history at blocks [10, 15].
+        // A child path [0] also has history. With the old `ShardedKey<StoredNibbles>`
+        // encoding (no length prefix), `cursor.seek` would land on the wrong path.
+        // With `AccountTrieShardedKey`'s length-prefixed encoding, `find_source` works
+        // correctly: all shards of [] sort before all shards of [0].
+        let db = setup_db();
+        let root_path = StoredNibbles(Nibbles::default());
+        let child_path = StoredNibbles(Nibbles::from_nibbles([0]));
+
+        {
+            let wtx = db.tx_mut().expect("rw tx");
+            let mut cursor = wtx.cursor_write::<AccountsTrieHistory>().expect("c");
+            // Root path history: modified at blocks 10, 15
+            cursor
+                .upsert(
+                    AccountTrieShardedKey::new(root_path.clone(), u64::MAX),
+                    &BlockNumberList::new_pre_sorted([10, 15]),
+                )
+                .expect("upsert root");
+            // Child path [0] history: modified at blocks 10, 15
+            cursor
+                .upsert(
+                    AccountTrieShardedKey::new(child_path.clone(), u64::MAX),
+                    &BlockNumberList::new_pre_sorted([10, 15]),
+                )
+                .expect("upsert child");
+            wtx.commit().expect("commit");
+        }
+
+        let tx = db.tx().expect("ro tx");
+        let mut cursor = tx.cursor_read::<AccountsTrieHistory>().expect("c");
+
+        // Query at block 12 — should find changeset at block 15
+        // (the first modification after block 12).
+        let result = find_source::<AccountsTrieHistory, _>(
+            &mut cursor,
+            AccountTrieShardedKey::new(root_path.clone(), 12),
+            12,
+            |k| k.key == root_path,
+        )
+        .expect("ok");
+
+        assert_eq!(result, ResolvedSource::FromChangeset(15));
+    }
+
+    #[test]
+    fn find_source_trie_returns_current_state_when_no_history() {
+        let db = setup_db();
+        let root_path = StoredNibbles(Nibbles::default());
+
+        let tx = db.tx().expect("ro tx");
+        let mut cursor = tx.cursor_read::<AccountsTrieHistory>().expect("c");
+
+        let result = find_source::<AccountsTrieHistory, _>(
+            &mut cursor,
+            AccountTrieShardedKey::new(root_path.clone(), 10),
+            10,
+            |k| k.key == root_path,
+        )
+        .expect("ok");
+
+        assert_eq!(result, ResolvedSource::FromCurrentState);
+    }
+
+    #[test]
+    fn find_source_trie_returns_current_state_when_all_modifications_before_target() {
+        let db = setup_db();
+        let root_path = StoredNibbles(Nibbles::default());
+
+        {
+            let wtx = db.tx_mut().expect("rw tx");
+            wtx.cursor_write::<AccountsTrieHistory>()
+                .expect("c")
+                .upsert(
+                    AccountTrieShardedKey::new(root_path.clone(), u64::MAX),
+                    &BlockNumberList::new_pre_sorted([5, 8]),
+                )
+                .expect("upsert");
+            wtx.commit().expect("commit");
+        }
+
+        let tx = db.tx().expect("ro tx");
+        let mut cursor = tx.cursor_read::<AccountsTrieHistory>().expect("c");
+
+        // Target block 10 — all modifications (5, 8) are ≤ 10
+        let result = find_source::<AccountsTrieHistory, _>(
+            &mut cursor,
+            AccountTrieShardedKey::new(root_path.clone(), 10),
+            10,
+            |k| k.key == root_path,
+        )
+        .expect("ok");
+
+        assert_eq!(result, ResolvedSource::FromCurrentState);
+    }
+
+    #[test]
+    fn find_source_handles_root_path_with_child_history() {
+        // Verifies the encoding fix: `find_source` with `AccountTrieShardedKey`
+        // correctly resolves the root path even when child path [0] has history.
+        // Before the length-prefix fix, this would return `FromCurrentState`
+        // due to encoding ambiguity. Now it correctly returns `FromChangeset(15)`.
+        let db = setup_db();
+        let root_path = StoredNibbles(Nibbles::default());
+        let child_path = StoredNibbles(Nibbles::from_nibbles([0]));
+
+        {
+            let wtx = db.tx_mut().expect("rw tx");
+            let mut cursor = wtx.cursor_write::<AccountsTrieHistory>().expect("c");
+            cursor
+                .upsert(
+                    AccountTrieShardedKey::new(root_path.clone(), u64::MAX),
+                    &BlockNumberList::new_pre_sorted([10, 15]),
+                )
+                .expect("upsert root");
+            cursor
+                .upsert(
+                    AccountTrieShardedKey::new(child_path.clone(), u64::MAX),
+                    &BlockNumberList::new_pre_sorted([10, 15]),
+                )
+                .expect("upsert child");
+            wtx.commit().expect("commit");
+        }
+
+        let tx = db.tx().expect("ro tx");
+        let mut cursor = tx.cursor_read::<AccountsTrieHistory>().expect("c");
+
+        // find_source with AccountTrieShardedKey correctly returns FromChangeset(15)
+        let result = find_source::<AccountsTrieHistory, _>(
+            &mut cursor,
+            AccountTrieShardedKey::new(root_path.clone(), 12),
+            12,
+            |k| k.key == root_path,
+        )
+        .expect("ok");
+
+        assert_eq!(
+            result,
+            ResolvedSource::FromChangeset(15),
+            "find_source with AccountTrieShardedKey should correctly resolve root path"
+        );
     }
 
     // ====================== Account Cursor tests ======================
@@ -2798,28 +2949,19 @@ mod tests {
             let mut hc = wtx.cursor_write::<StoragesTrieHistory>().expect("c");
             // a1: created at block 2, deleted at block 5
             hc.upsert(
-                StorageTrieShardedKey {
-                    hashed_address: addr,
-                    sharded_key: ShardedKey::new(StoredNibbles(a1), u64::MAX),
-                },
+                StorageTrieShardedKey::new(addr, StoredNibbles(a1), u64::MAX),
                 &BlockNumberList::new_pre_sorted([2, 5]),
             )
             .expect("upsert");
             // b1: created at block 2
             hc.upsert(
-                StorageTrieShardedKey {
-                    hashed_address: addr,
-                    sharded_key: ShardedKey::new(StoredNibbles(b1), u64::MAX),
-                },
+                StorageTrieShardedKey::new(addr, StoredNibbles(b1), u64::MAX),
                 &BlockNumberList::new_pre_sorted([2]),
             )
             .expect("upsert");
             // c1: created at block 2
             hc.upsert(
-                StorageTrieShardedKey {
-                    hashed_address: addr,
-                    sharded_key: ShardedKey::new(StoredNibbles(c1), u64::MAX),
-                },
+                StorageTrieShardedKey::new(addr, StoredNibbles(c1), u64::MAX),
                 &BlockNumberList::new_pre_sorted([2]),
             )
             .expect("upsert");
@@ -2905,10 +3047,7 @@ mod tests {
             wtx.cursor_write::<StoragesTrieHistory>()
                 .expect("c")
                 .upsert(
-                    StorageTrieShardedKey {
-                        hashed_address: addr_b,
-                        sharded_key: ShardedKey::new(StoredNibbles(p2), u64::MAX),
-                    },
+                    StorageTrieShardedKey::new(addr_b, StoredNibbles(p2), u64::MAX),
                     &BlockNumberList::new_pre_sorted([2, 5]),
                 )
                 .expect("upsert");
@@ -3332,6 +3471,103 @@ mod tests {
         assert_eq!(r2.1, U256::from(22u64));
     }
 
+    // Regression: root trie path [] with child path [0] history.
+    // Before the length-prefixed encoding fix, the V2AccountTrieCursor would return
+    // the current-state root node instead of the historical one.
+    #[test]
+    fn account_trie_cursor_root_path_resolves_historical_with_child_paths() {
+        let db = setup_db();
+        let root_path = Nibbles::default();
+        let child_path = Nibbles::from_nibbles([0]);
+
+        let root_node_at_block5 = BranchNodeCompact::new(
+            0b11,
+            0,
+            0,
+            vec![],
+            Some(B256::repeat_byte(0x55)),
+        );
+        let root_node_at_block10 = BranchNodeCompact::new(
+            0b111,
+            0,
+            0,
+            vec![],
+            Some(B256::repeat_byte(0xAA)),
+        );
+        let child_node_at_block10 = BranchNodeCompact::new(
+            0b101,
+            0,
+            0,
+            vec![],
+            Some(B256::repeat_byte(0xBB)),
+        );
+
+        {
+            let wtx = db.tx_mut().expect("rw tx");
+
+            // Current state: root has block 10's node, child has block 10's node
+            wtx.cursor_write::<AccountsTrie>()
+                .expect("c")
+                .upsert(StoredNibbles(root_path), &root_node_at_block10)
+                .expect("upsert root");
+            wtx.cursor_write::<AccountsTrie>()
+                .expect("c")
+                .upsert(StoredNibbles(child_path), &child_node_at_block10)
+                .expect("upsert child");
+
+            // Changeset at block 10: root had block5's node before block 10
+            wtx.cursor_dup_write::<AccountTrieChangeSets>()
+                .expect("c")
+                .append_dup(
+                    10,
+                    TrieChangeSetsEntry {
+                        nibbles: StoredNibblesSubKey(root_path),
+                        node: Some(root_node_at_block5.clone()),
+                    },
+                )
+                .expect("append root cs");
+
+            // History: root modified at block 10
+            wtx.cursor_write::<AccountsTrieHistory>()
+                .expect("c")
+                .upsert(
+                    AccountTrieShardedKey::new(StoredNibbles(root_path), u64::MAX),
+                    &BlockNumberList::new_pre_sorted([10]),
+                )
+                .expect("upsert root history");
+
+            // History: child [0] modified at block 10
+            wtx.cursor_write::<AccountsTrieHistory>()
+                .expect("c")
+                .upsert(
+                    AccountTrieShardedKey::new(StoredNibbles(child_path), u64::MAX),
+                    &BlockNumberList::new_pre_sorted([10]),
+                )
+                .expect("upsert child history");
+
+            wtx.commit().expect("commit");
+        }
+
+        let tx = db.tx().expect("ro tx");
+        let mut cur = V2AccountTrieCursor::new(
+            tx.cursor_read::<AccountsTrie>().expect("c"),
+            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            8,     // max_block_number: query at block 8 (before block 10's change)
+            false, // is_latest = false (historical query)
+        );
+
+        // seek_exact on root path should return the historical value (block 5's node)
+        let out = TrieCursor::seek_exact(&mut cur, root_path)
+            .expect("ok")
+            .expect("root should exist at block 8");
+        assert_eq!(
+            out.1, root_node_at_block5,
+            "Root path should return the historical node from changeset, not current state"
+        );
+    }
+
     // ====================== Storage Trie Cursor tests ======================
 
     #[test]
@@ -3391,10 +3627,7 @@ mod tests {
             wtx.cursor_write::<StoragesTrieHistory>()
                 .expect("c")
                 .upsert(
-                    StorageTrieShardedKey {
-                        hashed_address: addr,
-                        sharded_key: ShardedKey::new(StoredNibbles(path), u64::MAX),
-                    },
+                    StorageTrieShardedKey::new(addr, StoredNibbles(path), u64::MAX),
                     &BlockNumberList::new_pre_sorted([6]),
                 )
                 .expect("upsert");

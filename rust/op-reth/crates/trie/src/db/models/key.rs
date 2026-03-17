@@ -53,19 +53,31 @@ impl Decode for HashedAccountShardedKey {
 }
 
 // ---------------------------------------------------------------------------
-// AccountTrieShardedKey – newtype over ShardedKey<StoredNibbles>
+// AccountTrieShardedKey – length-prefixed sharded key for trie nibble paths
 // ---------------------------------------------------------------------------
 
 /// Sharded key for account trie history.
 ///
-/// Wraps `ShardedKey<StoredNibbles>` to provide `Encode`/`Decode` impls needed by MDBX.
+/// Uses **length-prefixed encoding** to avoid sort ambiguity in MDBX:
+///
+/// ```text
+/// [nibble_count: 1 byte] ++ [raw nibble bytes] ++ [block_number: 8 BE bytes]
+/// ```
+///
+/// See [`crate::db::models::value::StorageTrieShardedKey`] for the same rationale
+/// applied to per-account storage tries.
 #[derive(Debug, Default, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, Hash)]
-pub struct AccountTrieShardedKey(pub ShardedKey<StoredNibbles>);
+pub struct AccountTrieShardedKey {
+    /// Trie path as nibbles.
+    pub key: StoredNibbles,
+    /// Highest block number in this shard (or `u64::MAX` for the sentinel).
+    pub highest_block_number: u64,
+}
 
 impl AccountTrieShardedKey {
     /// Create a new sharded key for an account trie path.
     pub fn new(key: StoredNibbles, highest_block_number: u64) -> Self {
-        Self(ShardedKey::new(key, highest_block_number))
+        Self { key, highest_block_number }
     }
 }
 
@@ -73,26 +85,35 @@ impl Encode for AccountTrieShardedKey {
     type Encoded = Vec<u8>;
 
     fn encode(self) -> Self::Encoded {
-        let nibble_bytes: Vec<u8> = self.0.key.0.iter().collect();
-        let mut buf = Vec::with_capacity(nibble_bytes.len() + 8);
+        let nibble_bytes: Vec<u8> = self.key.0.iter().collect();
+        let nibble_count = nibble_bytes.len() as u8;
+        let mut buf = Vec::with_capacity(1 + nibble_bytes.len() + 8);
+        buf.push(nibble_count);
         buf.extend_from_slice(&nibble_bytes);
-        buf.extend_from_slice(&self.0.highest_block_number.to_be_bytes());
+        buf.extend_from_slice(&self.highest_block_number.to_be_bytes());
         buf
     }
 }
 
 impl Decode for AccountTrieShardedKey {
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
-        if value.len() < 8 {
+        // Minimum: 1 (count) + 0 (nibbles) + 8 (block) = 9
+        if value.len() < 9 {
             return Err(DatabaseError::Decode);
         }
-        let (nibble_bytes, block_bytes) = value.split_at(value.len() - 8);
+        let nibble_count = value[0] as usize;
+        let expected_len = 1 + nibble_count + 8;
+        if value.len() != expected_len {
+            return Err(DatabaseError::Decode);
+        }
+        let nibble_bytes = &value[1..1 + nibble_count];
         let key = StoredNibbles::from(
             reth_trie_common::Nibbles::from_nibbles_unchecked(nibble_bytes),
         );
+        let block_bytes = &value[1 + nibble_count..];
         let highest_block_number =
             u64::from_be_bytes(block_bytes.try_into().map_err(|_| DatabaseError::Decode)?);
-        Ok(Self(ShardedKey::new(key, highest_block_number)))
+        Ok(Self { key, highest_block_number })
     }
 }
 

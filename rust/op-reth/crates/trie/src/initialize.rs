@@ -348,6 +348,7 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + Send>
             }
             InitialStateStatus::InProgress => {
                 self.validate_anchor_block(&anchor, best_number, best_hash)?;
+                drop(provider); // Release the RW transaction before initialize_trie opens a new one
             }
         }
 
