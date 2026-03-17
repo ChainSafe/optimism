@@ -7,7 +7,7 @@ use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_trie::{
-    OpProofStoragePruner, OpProofsStorage, OpProofsStore, db::MdbxProofsStorage,
+    db::MdbxProofsStorageV2, OpProofStoragePruner, OpProofsStorage, OpProofsStore, OpProofsProviderRO
 };
 use std::{path::PathBuf, sync::Arc};
 use tracing::info;
@@ -56,14 +56,14 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> PruneCommand<C> {
         // Initialize the environment with read-only access
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
-        let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = Arc::new(
-            MdbxProofsStorage::new(&self.storage_path)
-                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+        let storage: OpProofsStorage<Arc<MdbxProofsStorageV2>> = Arc::new(
+            MdbxProofsStorageV2::new(&self.storage_path)
+                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
         )
         .into();
 
-        let earliest_block = storage.get_earliest_block_number()?;
-        let latest_block = storage.get_latest_block_number()?;
+        let earliest_block = storage.provider_ro()?.get_earliest_block_number()?;
+        let latest_block = storage.provider_ro()?.get_latest_block_number()?;
         info!(
             target: "reth::cli",
             ?earliest_block,
@@ -71,12 +71,12 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> PruneCommand<C> {
             "Current proofs storage block range"
         );
 
-        let pruner = OpProofStoragePruner::new(
+        let mut pruner = OpProofStoragePruner::new(
             storage,
             provider_factory,
             self.proofs_history_window,
-            self.proofs_history_prune_batch_size,
         );
+        pruner = pruner.with_batch_size(self.proofs_history_prune_batch_size);
         pruner.run();
         Ok(())
     }

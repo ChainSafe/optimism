@@ -1,46 +1,34 @@
 //! End-to-end test of the live trie collector.
 
-use alloy_consensus::{BlockHeader, Header, TxEip2930, constants::ETH_TO_WEI};
+use alloy_consensus::{constants::ETH_TO_WEI, BlockHeader, Header, TxEip2930};
 use alloy_genesis::{Genesis, GenesisAccount};
-use alloy_primitives::{Address, B256, TxKind, U256, keccak256};
+use alloy_primitives::{Address, TxKind, B256, U256};
 use derive_more::Constructor;
 use reth_chainspec::{ChainSpec, ChainSpecBuilder, EthereumHardfork, MAINNET, MIN_TRANSACTION_GAS};
 use reth_db::Database;
 use reth_db_common::init::init_genesis;
-use reth_ethereum_primitives::{Block, BlockBody, Receipt, Transaction, TransactionSigned};
-use reth_evm::{ConfigureEvm, execute::Executor};
+use reth_ethereum_primitives::{Block, BlockBody, Receipt, TransactionSigned};
+use reth_evm::{execute::Executor, ConfigureEvm};
 use reth_evm_ethereum::EthEvmConfig;
 use reth_node_api::{NodePrimitives, NodeTypesWithDB};
 use reth_optimism_trie::{
-    MdbxProofsStorage, OpProofsStorage, OpProofsStorageError, initialize::InitializationJob,
-    live::LiveTrieCollector,
+    initialize::InitializationJob, live::LiveTrieCollector, MdbxProofsStorageV2,
+    OpProofStoragePruner, OpProofsStorage, OpProofsStorageError,
 };
-use reth_primitives_traits::{Block as _, RecoveredBlock};
+use reth_primitives_traits::{
+    crypto::secp256k1::public_key_to_address, Block as _, RecoveredBlock,
+};
 use reth_provider::{
-    BlockWriter as _, ExecutionOutcome, HashedPostStateProvider, LatestStateProviderRef,
-    ProviderFactory, StateRootProvider,
     providers::{BlockchainProvider, ProviderNodeTypes},
     test_utils::create_test_provider_factory_with_chain_spec,
+    BlockWriter as _, ExecutionOutcome, HashedPostStateProvider, LatestStateProviderRef,
+    ProviderFactory, StateRootProvider,
 };
 use reth_revm::database::StateProviderDatabase;
-use secp256k1::{Keypair, Secp256k1, rand::rng};
+use reth_testing_utils::generators::sign_tx_with_key_pair;
+use secp256k1::{rand::thread_rng, Keypair, Secp256k1};
 use std::sync::Arc;
 use tempfile::TempDir;
-
-/// Converts a secp256k1 public key to an Ethereum address.
-fn public_key_to_address(pubkey: secp256k1::PublicKey) -> Address {
-    let hash = keccak256(&pubkey.serialize_uncompressed()[1..]);
-    Address::from_slice(&hash[12..])
-}
-
-/// Signs a transaction with the given keypair.
-fn sign_tx_with_key_pair(key_pair: Keypair, tx: Transaction) -> TransactionSigned {
-    use alloy_consensus::SignableTransaction;
-    use reth_primitives_traits::crypto::secp256k1::sign_message;
-    let secret = B256::from_slice(&key_pair.secret_bytes());
-    let sig = sign_message(secret, tx.signature_hash()).unwrap();
-    tx.into_signed(sig).into()
-}
 
 /// Specification for a transaction within a block
 #[derive(Debug, Clone)]
@@ -219,7 +207,7 @@ fn run_test_scenario<N>(
     provider_factory: ProviderFactory<N>,
     chain_spec: Arc<ChainSpec>,
     key_pair: Keypair,
-    storage: OpProofsStorage<Arc<MdbxProofsStorage>>,
+    storage: OpProofsStorage<Arc<MdbxProofsStorageV2>>,
 ) -> eyre::Result<()>
 where
     N: ProviderNodeTypes<
@@ -260,6 +248,13 @@ where
     // Execute blocks after initialization using live collector
     let evm_config = EthEvmConfig::ethereum(chain_spec.clone());
 
+    // Create the live collector once so the in-memory buffer persists across blocks.
+    // BlockchainProvider sees newly committed blocks via fresh DB transactions.
+    let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;
+    let pruner = OpProofStoragePruner::new(storage.clone(), blockchain_db.clone(), 100);
+    let live_trie_collector =
+        LiveTrieCollector::new(evm_config, blockchain_db, storage, pruner);
+
     for (idx, block_spec) in scenario.blocks_after_initialization.iter().enumerate() {
         let block_number = last_block_number + idx as u64 + 1;
         let mut block = create_block_from_spec(
@@ -273,11 +268,6 @@ where
 
         // Execute the block to get the correct state root
         let execution_output = execute_block(&mut block, &provider_factory, &chain_spec)?;
-
-        // Create a fresh blockchain provider to ensure it sees all committed blocks
-        let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;
-        let live_trie_collector =
-            LiveTrieCollector::new(evm_config.clone(), blockchain_db, &storage);
 
         // Use the live collector to execute and store trie updates
         live_trie_collector.execute_and_store_block_updates(&block)?;
@@ -298,11 +288,11 @@ where
 #[test]
 fn test_execute_and_store_block_updates() {
     let dir = TempDir::new().unwrap();
-    let storage = Arc::new(MdbxProofsStorage::new(dir.path()).expect("env")).into();
+    let storage = Arc::new(MdbxProofsStorageV2::new(dir.path()).expect("env")).into();
 
     // Create a keypair for signing transactions
     let secp = Secp256k1::new();
-    let key_pair = Keypair::new(&secp, &mut rng());
+    let key_pair = Keypair::new(&secp, &mut thread_rng());
     let sender = public_key_to_address(key_pair.public_key());
 
     // Create chain spec with the sender address funded in genesis
@@ -330,11 +320,11 @@ fn test_execute_and_store_block_updates() {
 #[test]
 fn test_execute_and_store_block_updates_missing_parent_block() {
     let dir = TempDir::new().unwrap();
-    let storage: OpProofsStorage<Arc<MdbxProofsStorage>> =
-        Arc::new(MdbxProofsStorage::new(dir.path()).expect("env")).into();
+    let storage: OpProofsStorage<Arc<MdbxProofsStorageV2>> =
+        Arc::new(MdbxProofsStorageV2::new(dir.path()).expect("env")).into();
 
     let secp = Secp256k1::new();
-    let key_pair = Keypair::new(&secp, &mut rng());
+    let key_pair = Keypair::new(&secp, &mut thread_rng());
     let sender = public_key_to_address(key_pair.public_key());
 
     let chain_spec = chain_spec_with_address(sender);
@@ -369,23 +359,25 @@ fn test_execute_and_store_block_updates_missing_parent_block() {
     );
 
     let blockchain_db = BlockchainProvider::new(provider_factory).unwrap();
+    let pruner =
+        OpProofStoragePruner::new(storage.clone(), blockchain_db.clone(), 100);
     let collector =
-        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage);
+        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, storage, pruner);
 
-    // EXPECT: MissingParentBlock
+    // EXPECT: OutOfOrder (parent hash doesn't match the latest stored block hash)
     let err = collector.execute_and_store_block_updates(&incorrect_block).unwrap_err();
 
-    assert!(matches!(err, OpProofsStorageError::MissingParentBlock { .. }));
+    assert!(matches!(err, OpProofsStorageError::OutOfOrder { .. }));
 }
 
 #[test]
 fn test_execute_and_store_block_updates_state_root_mismatch() {
     let dir = TempDir::new().unwrap();
-    let storage: OpProofsStorage<Arc<MdbxProofsStorage>> =
-        Arc::new(MdbxProofsStorage::new(dir.path()).expect("env")).into();
+    let storage: OpProofsStorage<Arc<MdbxProofsStorageV2>> =
+        Arc::new(MdbxProofsStorageV2::new(dir.path()).expect("env")).into();
 
     let secp = Secp256k1::new();
-    let key_pair = Keypair::new(&secp, &mut rng());
+    let key_pair = Keypair::new(&secp, &mut thread_rng());
     let sender = public_key_to_address(key_pair.public_key());
 
     let chain_spec = chain_spec_with_address(sender);
@@ -410,8 +402,10 @@ fn test_execute_and_store_block_updates_state_root_mismatch() {
 
     // Generate a second block normally
     let blockchain_db = BlockchainProvider::new(provider_factory.clone()).unwrap();
+    let pruner =
+        OpProofStoragePruner::new(storage.clone(), blockchain_db.clone(), 100);
     let collector =
-        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage);
+        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, storage, pruner);
 
     // Create the next block
     let mut nonce_counter = 0;
@@ -443,10 +437,10 @@ fn test_execute_and_store_block_updates_state_root_mismatch() {
 #[test]
 fn test_multiple_blocks_before_and_after_initialization() {
     let dir = TempDir::new().unwrap();
-    let storage = Arc::new(MdbxProofsStorage::new(dir.path()).expect("env")).into();
+    let storage = Arc::new(MdbxProofsStorageV2::new(dir.path()).expect("env")).into();
 
     let secp = Secp256k1::new();
-    let key_pair = Keypair::new(&secp, &mut rng());
+    let key_pair = Keypair::new(&secp, &mut thread_rng());
     let sender = public_key_to_address(key_pair.public_key());
 
     let chain_spec = chain_spec_with_address(sender);
@@ -480,10 +474,10 @@ fn test_multiple_blocks_before_and_after_initialization() {
 #[test]
 fn test_blocks_with_multiple_transactions() {
     let dir = TempDir::new().unwrap();
-    let storage = Arc::new(MdbxProofsStorage::new(dir.path()).expect("env")).into();
+    let storage = Arc::new(MdbxProofsStorageV2::new(dir.path()).expect("env")).into();
 
     let secp = Secp256k1::new();
-    let key_pair = Keypair::new(&secp, &mut rng());
+    let key_pair = Keypair::new(&secp, &mut thread_rng());
     let sender = public_key_to_address(key_pair.public_key());
 
     let chain_spec = chain_spec_with_address(sender);

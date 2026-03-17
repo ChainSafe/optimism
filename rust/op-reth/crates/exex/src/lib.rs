@@ -15,7 +15,7 @@ use reth_execution_types::Chain;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
-    live::LiveTrieCollector, OpProofsStorage, OpProofsStore,
+    live::LiveTrieCollector, OpProofsProviderRO, OpProofStoragePruner, OpProofsStorage, OpProofsStore,
 };
 use reth_provider::{BlockNumReader, BlockReader, TransactionVariant};
 use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted, SortedTrieData};
@@ -98,7 +98,7 @@ where
             ctx: self.ctx,
             storage: self.storage,
             proofs_history_window: self.proofs_history_window,
-            proofs_history_prune_interval: self.proofs_history_prune_interval,
+            _proofs_history_prune_interval: self.proofs_history_prune_interval,
             verification_interval: self.verification_interval,
         }
     }
@@ -124,7 +124,7 @@ where
 /// use reth_optimism_chainspec::BASE_MAINNET;
 /// use reth_optimism_exex::OpProofsExEx;
 /// use reth_optimism_node::{args::RollupArgs, OpNode};
-/// use reth_optimism_trie::{db::MdbxProofsStorage, InMemoryProofsStorage, OpProofsStorage};
+/// use reth_optimism_trie::{db::MdbxProofsStorageV2, InMemoryProofsStorage, OpProofsStorage};
 /// use reth_provider::providers::BlockchainProvider;
 /// use std::{sync::Arc, time::Duration};
 ///
@@ -141,8 +141,8 @@ where
 /// # let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 /// # let storage_path = temp_dir.path().join("proofs_storage");
 ///
-/// # let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = Arc::new(
-/// #    MdbxProofsStorage::new(&storage_path).expect("Failed to create MdbxProofsStorage"),
+/// # let storage: OpProofsStorage<Arc<MdbxProofsStorageV2>> = Arc::new(
+/// #    MdbxProofsStorageV2::new(&storage_path).expect("Failed to create MdbxProofsStorageV2"),
 /// # ).into();
 ///
 /// let storage_exec = storage.clone();
@@ -184,7 +184,7 @@ where
     /// cli arg.
     proofs_history_window: u64,
     /// Interval between proof-storage prune runs
-    proofs_history_prune_interval: Duration,
+    _proofs_history_prune_interval: Duration,
     /// Verification interval: perform full block execution every N blocks for data integrity.
     /// If 0, verification is disabled (always use fast path when available).
     /// If 1, verification is always enabled (always execute blocks).
@@ -219,11 +219,17 @@ where
     pub async fn run(mut self) -> eyre::Result<()> {
         self.ensure_initialized()?;
 
+        let pruner = OpProofStoragePruner::new(
+            self.storage.clone(),
+            self.ctx.provider().clone(),
+            self.proofs_history_window,
+        );
+
         let collector = Arc::new(LiveTrieCollector::new(
             self.ctx.evm_config().clone(),
             self.ctx.provider().clone(),
             self.storage.clone(),
-            self.proofs_history_window
+            pruner,
         ));
 
         let sync_target_tx = self.spawn_sync_task(collector.clone());
@@ -248,7 +254,8 @@ where
     /// Ensure proofs storage is initialized
     fn ensure_initialized(&self) -> eyre::Result<()> {
         // Check if proofs storage is initialized
-        let earliest_block_number = match self.storage.get_earliest_block_number()? {
+        let provider_ro = self.storage.provider_ro()?;
+        let earliest_block_number = match provider_ro.get_earliest_block_number()? {
             Some((n, _)) => n,
             None => {
                 return Err(eyre::eyre!(
@@ -257,7 +264,7 @@ where
             }
         };
 
-        let latest_block_number = match self.storage.get_latest_block_number()? {
+        let latest_block_number = match provider_ro.get_latest_block_number()? {
             Some((n, _)) => n,
             None => {
                 return Err(eyre::eyre!(
@@ -640,7 +647,7 @@ mod tests {
     use reth_ethereum_primitives::{Block, Receipt};
     use reth_execution_types::{Chain, ExecutionOutcome};
     use reth_optimism_trie::{
-        db::MdbxProofsStorage, BlockStateDiff, OpProofsStorage, OpProofsStore,
+        db::MdbxProofsStorageV2, BlockStateDiff, OpProofsStorage, OpProofsProviderRO, OpProofsProviderRw, OpProofsStore,
     };
     use reth_primitives_traits::RecoveredBlock;
     use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted, LazyTrieData};
@@ -708,9 +715,11 @@ mod tests {
     fn init_storage<S: OpProofsStore>(storage: OpProofsStorage<S>) {
         let genesis_block = NumHash::new(0, b256(0x00));
         storage
+            .provider_rw().expect("provider ro")
             .set_earliest_block_number(genesis_block.number, genesis_block.hash)
             .expect("set earliest");
         storage
+            .provider_rw().expect("provider ro")
             .store_trie_updates(
                 BlockWithParent::new(genesis_block.hash, genesis_block),
                 BlockStateDiff::default(),
@@ -738,19 +747,24 @@ mod tests {
     async fn handle_notification_chain_committed() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
 
+        let pruner = OpProofStoragePruner::new(
+            proofs.clone(),
+            ctx.components.provider.clone(),
+            20,
+        );
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
-            0,
+            pruner,
         );
         let exex = build_test_exex(ctx, proofs.clone());
 
@@ -762,7 +776,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx).expect("handle chain commit");
 
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 1);
     }
 
@@ -770,19 +784,24 @@ mod tests {
     async fn handle_notification_chain_committed_skips_already_processed() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
 
+        let pruner = OpProofStoragePruner::new(
+            proofs.clone(),
+            ctx.components.provider.clone(),
+            20,
+        );
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
-            0
+            pruner
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -796,14 +815,14 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
 
         // Try to handle already processed notification
         let new_chain = Arc::new(mk_chain_with_updates(5, 5, Some(hash_for_num(10))));
         let notif = ExExNotification::ChainCommitted { new: new_chain };
         exex.handle_notification(notif, &collector, &sync_target_tx).expect("handle chain commit");
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok");
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok");
         assert_eq!(latest.0, 5);
         assert_eq!(latest.1, hash_for_num(5)); // block was not updated
     }
@@ -812,19 +831,24 @@ mod tests {
     async fn handle_notification_chain_reorged() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
 
+        let pruner = OpProofStoragePruner::new(
+            proofs.clone(),
+            ctx.components.provider.clone(),
+            20,
+        );
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
-            0,
+            pruner,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -838,7 +862,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
         // Now the tip is 10, and we want to reorg from block 6..12
@@ -850,7 +874,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx)
             .expect("handle chain re-orged");
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 12);
     }
 
@@ -858,19 +882,24 @@ mod tests {
     async fn handle_notification_chain_reorged_skips_beyond_stored_blocks() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
 
+        let pruner = OpProofStoragePruner::new(
+            proofs.clone(),
+            ctx.components.provider.clone(),
+            20,
+        );
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
-            0,
+            pruner,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -885,7 +914,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
         // Now the tip is 10, and we want to reorg from block 12..15
@@ -897,7 +926,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx)
             .expect("handle chain re-orged");
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
     }
 
@@ -905,19 +934,24 @@ mod tests {
     async fn handle_notification_chain_reverted() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
 
+        let pruner = OpProofStoragePruner::new(
+            proofs.clone(),
+            ctx.components.provider.clone(),
+            20,
+        );
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
-            0,
+            pruner,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -932,7 +966,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
         // Now the tip is 10, and we want to revert from block 9..10
@@ -943,7 +977,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx)
             .expect("handle chain reverted");
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 8);
     }
 
@@ -951,19 +985,24 @@ mod tests {
     async fn handle_notification_chain_reverted_skips_beyond_stored_blocks() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
 
+        let pruner = OpProofStoragePruner::new(
+            proofs.clone(),
+            ctx.components.provider.clone(),
+            20,
+        );
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
-            0,
+            pruner,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -978,7 +1017,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
 
         // Now the tip is 10, and we want to revert from block 9..10
@@ -989,7 +1028,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx)
             .expect("handle chain reverted");
-        let latest = proofs.get_latest_block_number().expect("get latest block").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
     }
 
@@ -997,8 +1036,8 @@ mod tests {
     async fn ensure_initialized_errors_on_storage_not_initialized() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
@@ -1011,13 +1050,14 @@ mod tests {
     async fn ensure_initialized_errors_when_prune_exceeds_threshold() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
         for i in 1..1100 {
             proofs
+                .provider_rw().expect("provider rw")
                 .store_trie_updates(
                     BlockWithParent::new(
                         hash_for_num(i - 1),
@@ -1039,8 +1079,8 @@ mod tests {
     async fn ensure_initialized_succeeds() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
@@ -1055,17 +1095,22 @@ mod tests {
     async fn handle_notification_errors_on_empty_storage() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
 
+        let pruner = OpProofStoragePruner::new(
+            proofs.clone(),
+            ctx.components.provider.clone(),
+            20,
+        );
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
-            0,
+            pruner,
         );
 
         let exex = build_test_exex(ctx, proofs.clone());
@@ -1083,19 +1128,24 @@ mod tests {
     async fn handle_notification_schedules_async_on_gap() {
         // MDBX proofs storage
         let dir = tempdir_path();
-        let store = Arc::new(MdbxProofsStorage::new(dir.as_path()).expect("env"));
-        let proofs: OpProofsStorage<Arc<MdbxProofsStorage>> = store.clone().into();
+        let store = Arc::new(MdbxProofsStorageV2::new(dir.as_path()).expect("env"));
+        let proofs: OpProofsStorage<Arc<MdbxProofsStorageV2>> = store.clone().into();
 
         init_storage(proofs.clone());
 
         let (ctx, _handle) =
             reth_exex_test_utils::test_exex_context().await.expect("exex test context");
 
+        let pruner = OpProofStoragePruner::new(
+            proofs.clone(),
+            ctx.components.provider.clone(),
+            20,
+        );
         let collector = LiveTrieCollector::new(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             proofs.clone(),
-            0,
+            pruner,
         );
         let exex = build_test_exex(ctx, proofs.clone());
 
@@ -1121,7 +1171,7 @@ mod tests {
         // Because we didn't spawn the actual worker thread in this test, storage should still be at
         // 0. This proves the 'handle_notification' returned instantly without doing the
         // heavy lifting.
-        let latest = proofs.get_latest_block_number().expect("get").expect("ok").0;
+        let latest = proofs.provider_ro().expect("provider ro").get_latest_block_number().expect("get").expect("ok").0;
         assert_eq!(latest, 0, "Main thread should not have processed the blocks synchronously");
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::{
     overlay_provider::MemoryOverlayOpProofsStateProviderRef, provider::OpProofsStateProviderRef,
-    BlockStateDiff, OpProofsStore,
+    BlockStateDiff, OpProofsProviderRO,
 };
 use alloy_eips::eip1898::BlockWithParent;
 use alloy_primitives::{map::HashMap, B256};
@@ -187,13 +187,13 @@ impl LiveTrieState {
     ///
     /// This retrieves the chain of blocks ending at `hash` from the in-memory buffer,
     /// providing a view that includes both the buffered changes and the underlying disk state.
-    pub fn state_provider<'a, Storage>(
+    pub fn state_provider<'a, P>(
         &self,
         hash: B256,
-        inner: OpProofsStateProviderRef<'a, Storage>,
-    ) -> MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+        inner: OpProofsStateProviderRef<'a, P>,
+    ) -> MemoryOverlayOpProofsStateProviderRef<'a, P>
     where
-        Storage: OpProofsStore,
+        P: OpProofsProviderRO + Clone,
     {
         let mut in_memory = Vec::new();
         let blocks = self.inner.blocks.read();

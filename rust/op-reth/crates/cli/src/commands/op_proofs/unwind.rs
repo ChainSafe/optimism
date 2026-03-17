@@ -6,7 +6,7 @@ use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, Environ
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
-use reth_optimism_trie::{OpProofsStorage, OpProofsStore, db::MdbxProofsStorage};
+use reth_optimism_trie::{OpProofsProviderRO, OpProofsStorage, OpProofsStore, db::MdbxProofsStorageV2, OpProofsProviderRw};
 use reth_provider::{BlockReader, TransactionVariant};
 use std::{path::PathBuf, sync::Arc};
 use tracing::{info, warn};
@@ -40,8 +40,9 @@ impl<C: ChainSpecParser> UnwindCommand<C> {
         &self,
         storage: &OpProofsStorage<Store>,
     ) -> eyre::Result<bool> {
+        let provider_ro = storage.provider_ro()?;
         let (Some((earliest, _)), Some((latest, _))) =
-            (storage.get_earliest_block_number()?, storage.get_latest_block_number()?)
+            (provider_ro.get_earliest_block_number()?, provider_ro.get_latest_block_number()?)
         else {
             warn!(target: "reth::cli", "No blocks found in proofs storage. Nothing to unwind.");
             return Ok(false);
@@ -73,9 +74,9 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> UnwindCommand<C> {
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
         // Create the proofs storage
-        let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = Arc::new(
-            MdbxProofsStorage::new(&self.storage_path)
-                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+        let storage: OpProofsStorage<Arc<MdbxProofsStorageV2>> = Arc::new(
+            MdbxProofsStorageV2::new(&self.storage_path)
+                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
         )
         .into();
 
@@ -91,9 +92,10 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> UnwindCommand<C> {
                 eyre::eyre!("Target block {} not found in the main database", self.target)
             })?;
 
+        let provider_rw = storage.provider_rw()?;
         info!(target: "reth::cli", block_number = block.number, block_hash = %block.hash(), "Unwinding to target block");
-        storage.unwind_history(block.block_with_parent())?;
-
+        provider_rw.unwind_history(block.block_with_parent())?;
+        provider_rw.commit()?;
         Ok(())
     }
 }

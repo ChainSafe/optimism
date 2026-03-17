@@ -1,7 +1,11 @@
 //! Persistence implementation for external proof
 
-use crate::{BlockStateDiff, OpProofsStorage, OpProofsStore, api::WriteCounts};
-use alloy_eips::{NumHash, eip1898::BlockWithParent};
+use crate::{
+    api::{OpProofsProviderRw, WriteCounts},
+    prune::OpProofStoragePruner,
+    BlockStateDiff, OpProofsStore, OpProofsStorage,
+};
+use alloy_eips::eip1898::BlockWithParent;
 use reth_provider::BlockHashReader;
 use crossbeam_channel::{Receiver, Sender};
 use std::{thread, time::Instant};
@@ -34,13 +38,13 @@ impl LiveTriePersistenceHandle {
     }
 
     /// Spawn the service in a new thread and return a handle.
-    pub fn spawn<H, S>(block_hash_reader: H, min_block_interval: u64, storage: OpProofsStorage<S>) -> Self
+    pub fn spawn<H, S>(pruner: OpProofStoragePruner<S, H>, storage: OpProofsStorage<S>) -> Self
     where
         S: OpProofsStore + Send + Sync + 'static,
         H: BlockHashReader + Send + Sync + 'static,
     {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let service = LiveTriePersistenceService::new(block_hash_reader, min_block_interval, storage, rx);
+        let service = LiveTriePersistenceService::new(pruner, storage, rx);
 
         thread::Builder::new()
             .name("Live Trie Persistence".into())
@@ -72,19 +76,16 @@ impl LiveTriePersistenceHandle {
 /// Service that runs in a background thread to persist trie updates.
 #[derive(Debug)]
 pub struct LiveTriePersistenceService<H, S> {
-    /// Reader to fetch block hash by block number
-    block_hash_reader: H,
-    /// Keep at least these many recent blocks
-    min_block_interval: u64,
-    // The storage backend for proofs data.
+    /// Pruner that also owns the storage backend and block hash reader.
+    pruner: OpProofStoragePruner<S, H>,
     storage: OpProofsStorage<S>,
     incoming: Receiver<LiveTriePersistenceAction>,
 }
 
 impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
     /// Create a new persistence service.
-    pub fn new(block_hash_reader: H, min_block_interval: u64,  storage: OpProofsStorage<S>, incoming: Receiver<LiveTriePersistenceAction>) -> Self {
-        Self { block_hash_reader, min_block_interval, storage, incoming }
+    pub fn new(pruner: OpProofStoragePruner<S, H>, storage: OpProofsStorage<S>, incoming: Receiver<LiveTriePersistenceAction>) -> Self {
+        Self { pruner, storage, incoming }
     }
 
     /// Main loop for the service.
@@ -121,46 +122,46 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
         let last = updates.last().map(|(b, _)| b.block.number);
         debug!(target: "live-trie::persistence", ?count, ?first, ?last, "Writing batch to storage");
 
-        // Use the batch storage function for atomicity and performance
-        let target = if let Some((last_block, _)) = updates.last() {
-            let last_block_num = last_block.block.number;
-            let target_num = last_block_num.saturating_sub(self.min_block_interval);
+        // Store updates and prune in a single transaction
+        let result = self.storage.provider_rw().and_then(|provider| {
+            // 1. Store the new block updates (without pruning — pass None)
+            let write_start = Instant::now();
+            let res = provider.store_trie_updates_batch(updates)?;
+            let write_duration = write_start.elapsed();
 
-            // Check if we actually need to prune
-            // If the earliest block is already >= target_num, we don't need to do anything
-            let earliest_block = self.storage.get_earliest_block_number().unwrap_or(None);
-            if let Some((earliest_num, _)) = earliest_block {
-                if earliest_num >= target_num {
-                    debug!(target: "live-trie::persistence", earliest_num, target_num, "Earliest block already ahead of target, skipping pruning calculation");
-                    // Return None to skip pruning
-                    // MdbxProofsStorage::store_trie_updates_batch handles None by doing nothing for pruning
-                    None
-                } else {
-                     let target_hash = self.block_hash_reader.block_hash(target_num).ok().flatten();
-                     let parent_hash = self.block_hash_reader.block_hash(target_num.saturating_sub(1)).ok().flatten();
+            // 2. Prune old state using the pruner on the same transaction
+            let prune_start = Instant::now();
+            let prune_result = self.pruner.prune_with_provider(&provider);
+            let prune_duration = prune_start.elapsed();
 
-                     if let (Some(hash), Some(parent)) = (target_hash, parent_hash) {
-                         Some(BlockWithParent {
-                             block: NumHash { number: target_num, hash },
-                             parent,
-                         })
-                     } else {
-                         None
-                     }
+            match &prune_result {
+                Ok(output) => {
+                    if *output != Default::default() {
+                        info!(
+                            target: "live-trie::persistence",
+                            ?output,
+                            "Pruning complete within save transaction"
+                        );
+                    }
                 }
-            } else {
-                 None
+                Err(e) => {
+                    error!(target: "live-trie::persistence", ?e, "Pruning failed during save, aborting transaction");
+                }
             }
-        } else {
-             None
-        };
 
-        let (successful_last, total_write_count) = match self.storage.store_trie_updates_batch(updates, target) {
-            Ok(counts) => (last, counts),
+            // 3. Abort the entire transaction if pruning failed
+            prune_result.map_err(|e| crate::OpProofsStorageError::Other(e.to_string()))?;
+
+            // 4. Commit both store and prune atomically
+            provider.commit()?;
+            Ok((res, write_duration, prune_duration))
+        });
+
+        let (successful_last, total_write_count, write_duration, prune_duration) = match result {
+            Ok((counts, wd, pd)) => (last, counts, Some(wd), Some(pd)),
             Err(e) => {
                 error!(target: "live-trie::persistence", ?e, "Failed to persist batch trie updates");
-                // If the batch fails, we assume nothing was persisted locally (implied by transaction rollback)
-                (None, WriteCounts::default())
+                (None, WriteCounts::default(), None, None)
             }
         };
 
@@ -169,6 +170,8 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
             target: "live-trie::persistence",
             ?successful_last,
             ?duration,
+            ?write_duration,
+            ?prune_duration,
             ?total_write_count,
             blocks_count = count,
             "Batch write complete"
@@ -182,7 +185,11 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
         reply_tx: Sender<Result<(), ()>>,
     ) {
         debug!(target: "live-trie::persistence", to_block = ?to.block.number, "Unwinding storage");
-        match self.storage.unwind_history(to) {
+        let result = self.storage.provider_rw().and_then(|provider| {
+            provider.unwind_history(to)?;
+            provider.commit()
+        });
+        match result {
             Ok(_) => {
                 debug!(target: "live-trie::persistence", "Unwind successful");
                 let _ = reply_tx.send(Ok(()));

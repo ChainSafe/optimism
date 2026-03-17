@@ -1,6 +1,6 @@
 //! Overlay Provider for external proofs storage
 
-use crate::{provider::OpProofsStateProviderRef, BlockStateDiff, OpProofsStore};
+use crate::{api::OpProofsProviderRO, provider::OpProofsStateProviderRef, BlockStateDiff};
 use alloy_eips::eip1898::BlockWithParent;
 use alloy_primitives::{keccak256, Address, BlockNumber, Bytes, StorageValue, B256};
 use reth_primitives_traits::{Account, Bytecode};
@@ -17,25 +17,25 @@ use std::{fmt::Debug, sync::{Arc, OnceLock}};
 
 /// A state provider that overlays in-memory buffered blocks on top of the persistent proofs storage.
 #[derive(Debug)]
-pub struct MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+pub struct MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore,
+    P: OpProofsProviderRO,
 {
-    inner: OpProofsStateProviderRef<'a, Storage>,
+    inner: OpProofsStateProviderRef<'a, P>,
     /// Ordered list of buffered blocks (Oldest to Newest).
     memory: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
     trie_input: OnceLock<TrieInput>,
 }
 
-impl<'a, Storage> MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore,
+    P: OpProofsProviderRO + Clone,
 {
     /// Create a new overlay provider.
     ///
     /// `memory` should be strictly ordered from oldest to newest.
     pub fn new(
-        inner: OpProofsStateProviderRef<'a, Storage>,
+        inner: OpProofsStateProviderRef<'a, P>,
         memory: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
     ) -> Self {
         Self { inner, memory, trie_input: OnceLock::new() }
@@ -68,9 +68,9 @@ where
     }
 }
 
-impl<'a, Storage> AccountReader for MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> AccountReader for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore,
+    P: OpProofsProviderRO + Clone,
 {
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<Account>> {
         let hashed_address = keccak256(address);
@@ -82,9 +82,9 @@ where
     }
 }
 
-impl<'a, Storage> StateProvider for MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> StateProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore + Clone,
+    P: OpProofsProviderRO + Clone,
 {
     fn storage(&self, address: Address, storage_key: B256) -> ProviderResult<Option<StorageValue>> {
         let hashed_slot = keccak256(storage_key);
@@ -122,12 +122,11 @@ where
 
         self.inner.storage_by_hashed_key(address, hashed_key)
     }
-
 }
 
-impl<'a, Storage> BytecodeReader for MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> BytecodeReader for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore + Clone,
+    P: OpProofsProviderRO + Clone,
 {
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<Bytecode>> {
         // HashedPostStateSorted does not store bytecode, so we cannot look it up in the overlay.
@@ -136,9 +135,9 @@ where
     }
 }
 
-impl<'a, Storage> StateRootProvider for MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> StateRootProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore + Clone,
+    P: OpProofsProviderRO + Clone,
 {
     fn state_root(&self, state: HashedPostState) -> ProviderResult<B256> {
         self.state_root_from_nodes(TrieInput::from_state(state))
@@ -168,9 +167,9 @@ where
     }
 }
 
-impl<'a, Storage> StorageRootProvider for MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> StorageRootProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore + Clone,
+    P: OpProofsProviderRO + Clone,
 {
     fn storage_root(
         &self,
@@ -202,9 +201,9 @@ where
     }
 }
 
-impl<'a, Storage> StateProofProvider for MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> StateProofProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore + Clone,
+    P: OpProofsProviderRO + Clone,
 {
     fn proof(
         &self,
@@ -235,9 +234,9 @@ where
     }
 }
 
-impl<'a, Storage> BlockHashReader for MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> BlockHashReader for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore,
+    P: OpProofsProviderRO,
 {
     fn block_hash(&self, number: BlockNumber) -> ProviderResult<Option<B256>> {
         // Iterate backwards (Newest to Oldest) to find most recent definition
@@ -272,9 +271,9 @@ where
     }
 }
 
-impl<'a, Storage> HashedPostStateProvider for MemoryOverlayOpProofsStateProviderRef<'a, Storage>
+impl<'a, P> HashedPostStateProvider for MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
-    Storage: OpProofsStore,
+    P: OpProofsProviderRO + Clone,
 {
     fn hashed_post_state(&self, bundle_state: &BundleState) -> HashedPostState {
         self.inner.hashed_post_state(bundle_state)

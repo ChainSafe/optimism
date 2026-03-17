@@ -3,7 +3,8 @@
 use crate::{
     api::OperationDurations,
     provider::OpProofsStateProviderRef, state::LiveTrieState, BlockStateDiff, OpProofsStorage,
-    OpProofsStorageError, OpProofsStore, persistence::LiveTriePersistenceHandle,
+    OpProofsStorageError, OpProofsStore, OpProofsProviderRO, persistence::LiveTriePersistenceHandle,
+    OpProofStoragePruner,
 };
 use alloy_primitives::B256;
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
@@ -57,9 +58,9 @@ where
         evm_config: Evm,
         provider: Provider,
         storage: OpProofsStorage<Store>,
-        min_block_interval: u64,
+        pruner: OpProofStoragePruner<Store, Provider>,
     ) -> Self {
-        let persistence_handle = LiveTriePersistenceHandle::spawn(provider.clone(), min_block_interval, storage.clone());
+        let persistence_handle = LiveTriePersistenceHandle::spawn(pruner, storage.clone());
         Self {
             evm_config,
             provider,
@@ -110,7 +111,7 @@ where
 
         let inner_provider = OpProofsStateProviderRef::new(
             self.provider.state_by_block_hash(block.parent_hash())?,
-            self.storage.as_ref(),
+            self.storage.provider_ro()?,
             parent_block_number,
         );
 
@@ -335,6 +336,7 @@ where
 
         // Fallback to storage
         self.storage
+            .provider_ro()?
             .get_latest_block_number()?
             .map(|(n, h)| NumHash::new(n, h))
             .ok_or(OpProofsStorageError::NoBlocksFound)
@@ -354,7 +356,9 @@ where
         }
 
         // Fallback to storage
-        self.storage.get_latest_block_number()?
+        self.storage
+            .provider_ro()?
+            .get_latest_block_number()?
             .map(|(n, _)| n)
             .ok_or_else(|| OpProofsStorageError::NoBlocksFound)
     }

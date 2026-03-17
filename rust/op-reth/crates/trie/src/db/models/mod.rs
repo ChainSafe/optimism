@@ -15,15 +15,19 @@ mod change_set;
 pub(crate) mod kv;
 pub use change_set::*;
 pub use kv::*;
+mod key;
+pub use key::*;
+mod value;
+pub use value::*;
 
 use alloy_primitives::B256;
+use alloy_primitives::BlockNumber;
 use reth_db::{
-    TableSet, TableType, TableViewer,
     table::{DupSort, TableInfo},
-    tables,
+    tables, BlockNumberList, TableSet, TableType, TableViewer,
 };
-use reth_primitives_traits::Account;
-use reth_trie_common::{BranchNodeCompact, StoredNibbles};
+use reth_primitives_traits::{Account, StorageEntry};
+use reth_trie_common::{BranchNodeCompact, StoredNibbles, StoredNibblesSubKey, StorageTrieEntry};
 use std::fmt;
 
 tables! {
@@ -81,5 +85,149 @@ tables! {
     table BlockChangeSet {
         type Key = u64; // Block number
         type Value = ChangeSet;
+    }
+
+    // ==================== V2 Tables ====================
+    //
+    // The v2 schema uses the same 3-table-per-data-type pattern as reth's main database:
+    //
+    //   - **Current state** tables hold the latest values for fast reads.
+    //   - **ChangeSet** tables group changes by block number for efficient pruning/unwinding.
+    //   - **History** tables store sharded bitmaps for historical lookups.
+
+    // -------------------- Hashed Accounts --------------------
+
+    /// Sharded history index for hashed accounts.
+    ///
+    /// Maps `ShardedKey<B256>` (hashed address + highest block number in shard)
+    /// to a bitmap of block numbers that modified this account. Used for historical
+    /// lookups: find the relevant block in the bitmap, then read the changeset.
+    table HashedAccountsHistory {
+        type Key = HashedAccountShardedKey;
+        type Value = BlockNumberList;
+    }
+
+    /// Account changesets grouped by block number.
+    ///
+    /// Each entry stores the hashed address and the account state **before** the
+    /// block was applied (`None` if the account didn't exist). Grouped by block
+    /// number for efficient pruning (delete all entries for a block in one
+    /// operation) and unwinding (restore old values on reorg).
+    table HashedAccountChangeSets {
+        type Key = BlockNumber;
+        type Value = HashedAccountBeforeTx;
+        type SubKey = B256;
+    }
+
+    /// Current state of all accounts, keyed by `keccak256(address)`.
+    ///
+    /// Holds the latest account data (nonce, balance, code hash, storage root).
+    /// Primary read target for state root computation and proof generation —
+    /// no version lookup needed.
+    table HashedAccounts {
+        type Key = B256;
+        type Value = Account;
+    }
+
+    // -------------------- Hashed Storages --------------------
+
+    /// Sharded history index for storage slots.
+    ///
+    /// Composite key of `(hashed_address, hashed_storage_key, highest_block_number)`.
+    /// Maps to a bitmap of block numbers that modified this storage slot.
+    table HashedStoragesHistory {
+        type Key = HashedStorageShardedKey;
+        type Value = BlockNumberList;
+    }
+
+    /// Storage changesets grouped by block number and account.
+    ///
+    /// Composite key of `(block_number, hashed_address)`. Each entry stores the
+    /// hashed storage key and value **before** the block was applied.
+    /// A value of [`U256::ZERO`](alloy_primitives::U256::ZERO) means the slot
+    /// did not exist (needs to be removed on unwind).
+    table HashedStorageChangeSets {
+        type Key = BlockNumberHashedAddress;
+        type Value = StorageEntry;
+        type SubKey = B256;
+    }
+
+    /// Current storage values, keyed by hashed address with hashed storage key
+    /// as the `DupSort` subkey.
+    ///
+    /// Holds the latest storage slot values for each account. Primary read target
+    /// for storage proof generation.
+    table HashedStorages {
+        type Key = B256;
+        type Value = StorageEntry;
+        type SubKey = B256;
+    }
+
+    // -------------------- Account Trie --------------------
+
+    /// Sharded history index for the account state trie.
+    ///
+    /// Maps `ShardedKey<StoredNibbles>` (trie path + highest block number in shard)
+    /// to a bitmap of block numbers that modified this path.
+    table AccountsTrieHistory {
+        type Key = AccountTrieShardedKey;
+        type Value = BlockNumberList;
+    }
+
+    /// Account trie changesets grouped by block number.
+    ///
+    /// Each entry stores the trie path and the branch node value **before** the
+    /// block was applied (`None` if the node didn't exist). Enables efficient
+    /// pruning and unwinding of trie state.
+    ///
+    /// NOTE: Named `AccountTrieChangeSets` (singular) to avoid collision with
+    /// upstream reth's `ORPHAN_TABLES` list which drops `AccountsTrieChangeSets`.
+    table AccountTrieChangeSets {
+        type Key = BlockNumber;
+        type Value = TrieChangeSetsEntry;
+        type SubKey = StoredNibblesSubKey;
+    }
+
+    /// Current state of the account Merkle Patricia Trie.
+    ///
+    /// Maps trie paths to the latest branch node. Primary read target during
+    /// proof generation — no version lookup needed.
+    table AccountsTrie {
+        type Key = StoredNibbles;
+        type Value = BranchNodeCompact;
+    }
+
+    // -------------------- Storage Trie --------------------
+
+    /// Sharded history index for per-account storage tries.
+    ///
+    /// Composite key of `(hashed_address, trie_path, highest_block_number)`.
+    /// Maps to a bitmap of block numbers that modified this storage trie node.
+    table StoragesTrieHistory {
+        type Key = StorageTrieShardedKey;
+        type Value = BlockNumberList;
+    }
+
+    /// Storage trie changesets grouped by block number and account.
+    ///
+    /// Composite key of `(block_number, hashed_address)`. Each entry stores the
+    /// trie path and the branch node value **before** the block was applied.
+    ///
+    /// NOTE: Named `StorageTrieChangeSets` (singular) to avoid collision with
+    /// upstream reth's `ORPHAN_TABLES` list which drops `StoragesTrieChangeSets`.
+    table StorageTrieChangeSets {
+        type Key = BlockNumberHashedAddress;
+        type Value = TrieChangeSetsEntry;
+        type SubKey = StoredNibblesSubKey;
+    }
+
+    /// Current state of each account's storage Merkle Patricia Trie.
+    ///
+    /// Keyed by hashed account address, with the trie path as the `DupSort` subkey.
+    /// Holds the latest branch node for each path in each account's storage trie.
+    table StoragesTrie {
+        type Key = B256;
+        type Value = StorageTrieEntry;
+        type SubKey = StoredNibblesSubKey;
     }
 }

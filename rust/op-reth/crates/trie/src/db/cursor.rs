@@ -1,18 +1,18 @@
 use std::marker::PhantomData;
 
 use crate::{
-    OpProofsStorageResult,
     db::{
         AccountTrieHistory, HashedAccountHistory, HashedStorageHistory, HashedStorageKey,
         MaybeDeleted, StorageTrieHistory, StorageTrieKey, VersionedValue,
     },
+    OpProofsStorageResult,
 };
 use alloy_primitives::{B256, U256};
 use reth_db::{
-    Database, DatabaseEnv, DatabaseError,
     cursor::{DbCursorRO, DbDupCursorRO},
     table::{DupSort, Table},
     transaction::DbTx,
+    Database, DatabaseEnv, DatabaseError,
 };
 use reth_primitives_traits::Account;
 use reth_trie::{
@@ -69,7 +69,7 @@ where
                 return Ok(self.cursor.prev_dup()?);
             }
             // already at the dup = max
-            return Ok(Some((key, vv)));
+            return Ok(Some((key, vv)))
         }
 
         // No dup >= max ⇒ either key absent or all dups < max. Check if key exists:
@@ -158,10 +158,10 @@ pub struct MdbxTrieCursor<T: Table + DupSort, Cursor> {
 }
 
 impl<
-    V,
-    T: Table<Value = VersionedValue<V>> + DupSort<SubKey = u64>,
-    Cursor: DbCursorRO<T> + DbDupCursorRO<T>,
-> MdbxTrieCursor<T, Cursor>
+        V,
+        T: Table<Value = VersionedValue<V>> + DupSort<SubKey = u64>,
+        Cursor: DbCursorRO<T> + DbDupCursorRO<T>,
+    > MdbxTrieCursor<T, Cursor>
 {
     /// Initializes new [`MdbxTrieCursor`].
     pub const fn new(cursor: Cursor, max_block_number: u64, hashed_address: Option<B256>) -> Self {
@@ -171,7 +171,7 @@ impl<
 
 impl<Cursor> TrieCursor for MdbxTrieCursor<AccountTrieHistory, Cursor>
 where
-    Cursor: DbCursorRO<AccountTrieHistory> + DbDupCursorRO<AccountTrieHistory> + Send + Sync,
+    Cursor: DbCursorRO<AccountTrieHistory> + DbDupCursorRO<AccountTrieHistory> + Send,
 {
     fn seek_exact(
         &mut self,
@@ -208,7 +208,7 @@ where
 
 impl<Cursor> TrieCursor for MdbxTrieCursor<StorageTrieHistory, Cursor>
 where
-    Cursor: DbCursorRO<StorageTrieHistory> + DbDupCursorRO<StorageTrieHistory> + Send + Sync,
+    Cursor: DbCursorRO<StorageTrieHistory> + DbDupCursorRO<StorageTrieHistory> + Send,
 {
     fn seek_exact(
         &mut self,
@@ -218,7 +218,7 @@ where
             let key = StorageTrieKey::new(address, StoredNibbles(path));
             return Ok(self.inner.seek_exact(key).map(|opt| {
                 opt.and_then(|(k, node)| (k.hashed_address == address).then_some((k.path.0, node)))
-            })?);
+            })?)
         }
         Ok(None)
     }
@@ -231,7 +231,7 @@ where
             let key = StorageTrieKey::new(address, StoredNibbles(path));
             return Ok(self.inner.seek(key).map(|opt| {
                 opt.and_then(|(k, node)| (k.hashed_address == address).then_some((k.path.0, node)))
-            })?);
+            })?)
         }
         Ok(None)
     }
@@ -249,7 +249,7 @@ where
 
             return Ok(self.inner.next().map(|opt| {
                 opt.and_then(|(k, node)| (k.hashed_address == address).then_some((k.path.0, node)))
-            })?);
+            })?)
         }
         Ok(None)
     }
@@ -270,7 +270,7 @@ where
 
 impl<Cursor> TrieStorageCursor for MdbxTrieCursor<StorageTrieHistory, Cursor>
 where
-    Cursor: DbCursorRO<StorageTrieHistory> + DbDupCursorRO<StorageTrieHistory> + Send + Sync,
+    Cursor: DbCursorRO<StorageTrieHistory> + DbDupCursorRO<StorageTrieHistory> + Send,
 {
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = Some(hashed_address);
@@ -286,7 +286,7 @@ pub struct MdbxStorageCursor<Cursor> {
 
 impl<Cursor> MdbxStorageCursor<Cursor>
 where
-    Cursor: DbCursorRO<HashedStorageHistory> + DbDupCursorRO<HashedStorageHistory> + Send + Sync,
+    Cursor: DbCursorRO<HashedStorageHistory> + DbDupCursorRO<HashedStorageHistory> + Send,
 {
     ///  Initializes new [`MdbxStorageCursor`]
     pub const fn new(cursor: Cursor, block_number: u64, hashed_address: B256) -> Self {
@@ -296,7 +296,7 @@ where
 
 impl<Cursor> HashedCursor for MdbxStorageCursor<Cursor>
 where
-    Cursor: DbCursorRO<HashedStorageHistory> + DbDupCursorRO<HashedStorageHistory> + Send + Sync,
+    Cursor: DbCursorRO<HashedStorageHistory> + DbDupCursorRO<HashedStorageHistory> + Send,
 {
     type Value = U256;
 
@@ -356,7 +356,10 @@ where
     }
 }
 
-impl HashedStorageCursor for MdbxStorageCursor<Dup<'_, HashedStorageHistory>> {
+impl<Cursor> HashedStorageCursor for MdbxStorageCursor<Cursor>
+where
+    Cursor: DbCursorRO<HashedStorageHistory> + DbDupCursorRO<HashedStorageHistory> + Send,
+{
     fn is_storage_empty(&mut self) -> Result<bool, DatabaseError> {
         Ok(self.seek(B256::ZERO)?.is_none())
     }
@@ -374,7 +377,7 @@ pub struct MdbxAccountCursor<Cursor> {
 
 impl<Cursor> MdbxAccountCursor<Cursor>
 where
-    Cursor: DbCursorRO<HashedAccountHistory> + DbDupCursorRO<HashedAccountHistory> + Send + Sync,
+    Cursor: DbCursorRO<HashedAccountHistory> + DbDupCursorRO<HashedAccountHistory> + Send,
 {
     /// Initializes new `MdbxAccountCursor`
     pub const fn new(cursor: Cursor, block_number: u64) -> Self {
@@ -384,7 +387,7 @@ where
 
 impl<Cursor> HashedCursor for MdbxAccountCursor<Cursor>
 where
-    Cursor: DbCursorRO<HashedAccountHistory> + DbDupCursorRO<HashedAccountHistory> + Send + Sync,
+    Cursor: DbCursorRO<HashedAccountHistory> + DbDupCursorRO<HashedAccountHistory> + Send,
 {
     type Value = Account;
 
@@ -404,15 +407,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{StorageValue, models};
+    use crate::db::{models, StorageValue};
     use reth_db::{
+        mdbx::{init_db_for, DatabaseArguments},
         DatabaseEnv,
-        mdbx::{DatabaseArguments, init_db_for},
     };
     use reth_db_api::{
-        Database,
         cursor::DbDupCursorRW,
         transaction::{DbTx, DbTxMut},
+        Database,
     };
     use reth_trie::{BranchNodeCompact, Nibbles, StoredNibbles};
     use tempfile::TempDir;
@@ -744,7 +747,7 @@ mod tests {
             // Key 0x10 latest ≤ max is deleted
             append_account_trie(&wtx, k1.clone(), 10, Some(node()));
             append_account_trie(&wtx, k1.clone(), 20, None); // tombstone at latest ≤ max
-            // Next key has live
+                                                             // Next key has live
             append_account_trie(&wtx, k2.clone(), 5, Some(node()));
             wtx.commit().expect("commit");
         }

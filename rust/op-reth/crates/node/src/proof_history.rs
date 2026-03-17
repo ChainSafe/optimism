@@ -1,6 +1,6 @@
 //! Node luncher with proof history support.
 
-use crate::{OpNode, args::RollupArgs};
+use crate::{args::RollupArgs, OpNode};
 use eyre::ErrReport;
 use futures_util::FutureExt;
 use reth_db::DatabaseEnv;
@@ -12,7 +12,7 @@ use reth_optimism_rpc::{
     debug::{DebugApiExt, DebugApiOverrideServer},
     eth::proofs::{EthApiExt, EthApiOverrideServer},
 };
-use reth_optimism_trie::{OpProofsStorage, db::MdbxProofsStorage};
+use reth_optimism_trie::{db::MdbxProofsStorageV2, OpProofsStorage};
 use reth_tasks::TaskExecutor;
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -44,10 +44,10 @@ pub async fn launch_node_with_proof_history(
         info!(target: "reth::cli", "Using on-disk storage for proofs history");
 
         let mdbx = Arc::new(
-            MdbxProofsStorage::new(&path)
-                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+            MdbxProofsStorageV2::new(&path)
+                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
         );
-        let storage: OpProofsStorage<Arc<MdbxProofsStorage>> = mdbx.clone().into();
+        let storage: OpProofsStorage<Arc<MdbxProofsStorageV2>> = mdbx.clone().into();
 
         let storage_exec = storage.clone();
 
@@ -91,7 +91,7 @@ pub async fn launch_node_with_proof_history(
 /// Spawns a task that periodically reports metrics for the proofs DB.
 fn spawn_proofs_db_metrics(
     executor: TaskExecutor,
-    storage: Arc<MdbxProofsStorage>,
+    storage: Arc<MdbxProofsStorageV2>,
     metrics_report_interval: Duration,
 ) {
     executor.spawn_critical_task("op-proofs-storage-metrics", async move {

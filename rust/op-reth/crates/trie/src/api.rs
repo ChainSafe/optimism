@@ -61,12 +61,9 @@ pub struct OperationDurations {
     pub write_duration_seconds: Duration,
 }
 
-/// Trait for reading trie nodes from the database.
-///
-/// Only leaf nodes and some branch nodes are stored. The bottom layer of branch nodes
-/// are not stored to reduce write amplification. This matches Reth's non-historical trie storage.
+/// Provider for interacting with the proofs storage within a transaction.
 #[auto_impl(Arc)]
-pub trait OpProofsStore: Send + Sync + Debug {
+pub trait OpProofsProviderRO: Send + Sync + Debug {
     /// Cursor for iterating over trie branches.
     type StorageTrieCursor<'tx>: TrieStorageCursor + 'tx
     where
@@ -78,19 +75,16 @@ pub trait OpProofsStore: Send + Sync + Debug {
         Self: 'tx;
 
     /// Cursor for iterating over storage leaves.
-    type StorageCursor<'tx>: HashedStorageCursor<Value = U256> + Send + Sync + 'tx
+    type StorageCursor<'tx>: HashedStorageCursor<Value = U256> + Send + 'tx
     where
         Self: 'tx;
 
     /// Cursor for iterating over account leaves.
-    type AccountHashedCursor<'tx>: HashedCursor<Value = Account> + Send + Sync + 'tx
+    type AccountHashedCursor<'tx>: HashedCursor<Value = Account> + Send + 'tx
     where
         Self: 'tx;
 
     /// Get the earliest block number and hash that has been stored
-    ///
-    /// This is used to determine the block number of trie nodes with block number 0.
-    /// All earliest block numbers are stored in 0 to reduce updates required to prune trie nodes.
     fn get_earliest_block_number(&self) -> OpProofsStorageResult<Option<(u64, B256)>>;
 
     /// Get the latest block number and hash that has been stored
@@ -122,10 +116,13 @@ pub trait OpProofsStore: Send + Sync + Debug {
         max_block_number: u64,
     ) -> OpProofsStorageResult<Self::AccountHashedCursor<'tx>>;
 
+    /// Fetch all updates for a given block number.
+    fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff>;
+}
+
+/// Provider for writing to the proofs storage within a transaction.
+pub trait OpProofsProviderRw: OpProofsProviderRO {
     /// Store trie updates for a block.
-    ///
-    /// If wiped is true, the entire storage trie is wiped, but this is unsupported going forward,
-    /// so should only happen for legacy reasons.
     fn store_trie_updates(
         &self,
         block_ref: BlockWithParent,
@@ -136,11 +133,7 @@ pub trait OpProofsStore: Send + Sync + Debug {
     fn store_trie_updates_batch(
         &self,
         updates: Vec<(BlockWithParent, BlockStateDiff)>,
-        new_earliest_block_ref: Option<BlockWithParent>,
     ) -> OpProofsStorageResult<WriteCounts>;
-
-    /// Fetch all updates for a given block number.
-    fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff>;
 
     /// Applies [`BlockStateDiff`] to the earliest state (updating/deleting nodes) and updates the
     /// earliest block number.
@@ -163,6 +156,38 @@ pub trait OpProofsStore: Send + Sync + Debug {
     /// Set the earliest block number and hash that has been stored
     fn set_earliest_block_number(&self, block_number: u64, hash: B256)
         -> OpProofsStorageResult<()>;
+
+    /// Commit the changes to the database.
+    /// Consumes the provider.
+    fn commit(self) -> OpProofsStorageResult<()>;
+}
+
+/// Factory trait for creating providers to interact with the proofs storage.
+#[auto_impl(Arc)]
+pub trait OpProofsStore: Send + Sync + Debug {
+    /// The read-only provider type created by the factory.
+    type ProviderRO<'a>: OpProofsProviderRO + Clone + 'a
+    where
+        Self: 'a;
+
+    /// The read-write provider type created by the factory.
+    type ProviderRw<'a>: OpProofsProviderRw + 'a
+    where
+        Self: 'a;
+
+    /// The initialization provider type created by the factory.
+    type Initializer<'a>: OpProofsInitProvider + 'a
+    where
+        Self: 'a;
+
+    /// Create a read-only provider for interacting with the proofs storage.
+    fn provider_ro<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRO<'a>>;
+
+    /// Create a read-write provider for interacting with the proofs storage.
+    fn provider_rw<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRw<'a>>;
+
+    /// Create an initialization provider for interacting with the proofs storage.
+    fn initialization_provider<'a>(&'a self) -> OpProofsStorageResult<Self::Initializer<'a>>;
 }
 
 /// Status of the initial state anchor.
@@ -196,8 +221,7 @@ pub struct InitialStateAnchor {
 }
 
 /// Trait for storing and retrieving the initial state anchor.
-#[auto_impl(Arc)]
-pub trait OpProofsInitialStateStore: Send + Sync + Debug {
+pub trait OpProofsInitProvider: Send + Sync + Debug {
     /// Read the current anchor.
     fn initial_state_anchor(&self) -> OpProofsStorageResult<InitialStateAnchor>;
 
@@ -206,7 +230,7 @@ pub trait OpProofsInitialStateStore: Send + Sync + Debug {
     fn set_initial_state_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()>;
 
     /// Store a batch of account trie branches. Used for saving existing state. For live state
-    /// capture, use [store_trie_updates](OpProofsStore::store_trie_updates).
+    /// capture, use [store_trie_updates](OpProofsProviderRw::store_trie_updates).
     fn store_account_branches(
         &self,
         account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
@@ -235,4 +259,8 @@ pub trait OpProofsInitialStateStore: Send + Sync + Debug {
     /// Commit the initial state - mark the anchor as completed and also set the earliest block
     /// number to anchor.
     fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash>;
+
+    /// Commit the changes to the database.
+    /// Consumes the provider.
+    fn commit(self) -> OpProofsStorageResult<()>;
 }

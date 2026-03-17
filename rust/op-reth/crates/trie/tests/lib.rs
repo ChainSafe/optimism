@@ -1,17 +1,17 @@
 //! Common test suite for [`OpProofsStore`] implementations.
 
-use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
+use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
 use alloy_primitives::{B256, U256};
 use reth_optimism_trie::{
-    BlockStateDiff, InMemoryProofsStorage, OpProofsInitialStateStore, OpProofsStorageError,
-    OpProofsStore, db::MdbxProofsStorage,
+    db::{MdbxProofsStorage, MdbxProofsStorageV2}, BlockStateDiff, InMemoryProofsStorage, OpProofsInitProvider,
+    OpProofsStorageError, OpProofsStore, OpProofsProviderRO, OpProofsProviderRw
 };
 use reth_primitives_traits::Account;
 use reth_trie::{
-    BranchNodeCompact, HashedPostState, HashedPostStateSorted, HashedStorage, Nibbles, TrieMask,
     hashed_cursor::HashedCursor,
     trie_cursor::TrieCursor,
     updates::{TrieUpdates, TrieUpdatesSorted},
+    BranchNodeCompact, HashedPostState, HashedPostStateSorted, HashedStorage, Nibbles, TrieMask,
 };
 use serial_test::serial;
 use std::sync::Arc;
@@ -76,23 +76,31 @@ fn create_mdbx_proofs_storage() -> MdbxProofsStorage {
     MdbxProofsStorage::new(path.path()).unwrap()
 }
 
+fn create_mdbx_proofs_storage_v2() -> MdbxProofsStorageV2 {
+    let path = TempDir::new().unwrap();
+    MdbxProofsStorageV2::new(path.path()).unwrap()
+}
+
 /// Test basic storage and retrieval of earliest block number
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_earliest_block_operations<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_earliest_block_operations<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     // Initially should be None
-    let earliest = storage.get_earliest_block_number()?;
+    let earliest = storage.provider_ro().expect("provider ro").get_earliest_block_number()?;
     assert!(earliest.is_none());
 
     // Set earliest block
     let block_hash = B256::repeat_byte(0x42);
-    storage.set_earliest_block_number(100, block_hash)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.set_earliest_block_number(100, block_hash)?;
+    provider_rw.commit()?;
 
     // Should retrieve the same values
-    let earliest = storage.get_earliest_block_number()?;
+    let earliest = storage.provider_ro().expect("provider ro").get_earliest_block_number()?;
     assert_eq!(earliest, Some((100, block_hash)));
 
     Ok(())
@@ -101,8 +109,9 @@ fn test_earliest_block_operations<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test storing and retrieving trie updates
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_trie_updates_operations<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_trie_updates_operations<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let block_ref = BlockWithParent::new(B256::ZERO, NumHash::new(50, B256::repeat_byte(0x96)));
@@ -114,10 +123,14 @@ fn test_trie_updates_operations<S: OpProofsStore + OpProofsInitialStateStore>(
     };
 
     // Store trie updates
-    storage.store_trie_updates(block_ref, block_state_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref, block_state_diff)?;
+    provider_rw.commit()?;
 
     // Retrieve and verify
-    let retrieved_diff = storage.fetch_trie_updates(block_ref.block.number)?;
+    let provider_rw = storage.provider_rw().expect("provider ro");
+    let retrieved_diff = provider_rw.fetch_trie_updates(block_ref.block.number)?;
+    provider_rw.commit()?;
     assert_eq!(retrieved_diff.sorted_trie_updates, sorted_trie_updates);
     assert_eq!(retrieved_diff.sorted_post_state, sorted_post_state);
 
@@ -131,11 +144,12 @@ fn test_trie_updates_operations<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test cursor operations on empty trie
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_cursor_empty_trie<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_cursor_empty_trie<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
 
     // All operations should return None on empty trie
     assert!(cursor.seek_exact(Nibbles::default())?.is_none());
@@ -149,17 +163,20 @@ fn test_cursor_empty_trie<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test cursor operations with single entry
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_cursor_single_entry<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_cursor_single_entry<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2, 3]);
     let branch = create_test_branch();
 
     // Store single entry
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
 
     // Test seek_exact
     let result = cursor.seek_exact(path)?.unwrap();
@@ -177,8 +194,9 @@ fn test_cursor_single_entry<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test cursor operations with multiple entries
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_cursor_multiple_entries<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_cursor_multiple_entries<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let paths = vec![
@@ -190,11 +208,13 @@ fn test_cursor_multiple_entries<S: OpProofsStore + OpProofsInitialStateStore>(
     let branch = create_test_branch();
 
     // Store multiple entries
+    let init_provider = storage.initialization_provider().expect("provider ro");
     for path in &paths {
-        storage.store_account_branches(vec![(*path, Some(branch.clone()))])?;
+        init_provider.store_account_branches(vec![(*path, Some(branch.clone()))])?;
     }
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
 
     // Test that we can iterate through all entries
     let mut found_paths = Vec::new();
@@ -218,16 +238,19 @@ fn test_cursor_multiple_entries<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test `seek_exact` with existing path
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_seek_exact_existing_path<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_seek_exact_existing_path<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2, 3]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let result = cursor.seek_exact(path)?.unwrap();
     assert_eq!(result.0, path);
 
@@ -237,16 +260,19 @@ fn test_seek_exact_existing_path<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test `seek_exact` with non-existing path
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_seek_exact_non_existing_path<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_seek_exact_non_existing_path<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2, 3]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let non_existing = nibbles_from(vec![4, 5, 6]);
     assert!(cursor.seek_exact(non_existing)?.is_none());
 
@@ -256,16 +282,19 @@ fn test_seek_exact_non_existing_path<S: OpProofsStore + OpProofsInitialStateStor
 /// Test `seek_exact` with empty path
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_seek_exact_empty_path<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_seek_exact_empty_path<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let result = cursor.seek_exact(Nibbles::default())?.unwrap();
     assert_eq!(result.0, Nibbles::default());
 
@@ -275,16 +304,19 @@ fn test_seek_exact_empty_path<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test seek to existing path
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_seek_to_existing_path<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_seek_to_existing_path<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2, 3]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let result = cursor.seek(path)?.unwrap();
     assert_eq!(result.0, path);
 
@@ -294,18 +326,21 @@ fn test_seek_to_existing_path<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test seek between existing nodes
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_seek_between_existing_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_seek_between_existing_nodes<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path1 = nibbles_from(vec![1]);
     let path2 = nibbles_from(vec![3]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path1, Some(branch.clone()))])?;
-    storage.store_account_branches(vec![(path2, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path1, Some(branch.clone()))])?;
+    init_provider.store_account_branches(vec![(path2, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     // Seek to path between 1 and 3, should return path 3
     let seek_path = nibbles_from(vec![2]);
     let result = cursor.seek(seek_path)?.unwrap();
@@ -317,16 +352,19 @@ fn test_seek_between_existing_nodes<S: OpProofsStore + OpProofsInitialStateStore
 /// Test seek after all nodes
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_seek_after_all_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_seek_after_all_nodes<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     // Seek to path after all nodes
     let seek_path = nibbles_from(vec![9]);
     assert!(cursor.seek(seek_path)?.is_none());
@@ -337,16 +375,19 @@ fn test_seek_after_all_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test seek before all nodes
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_seek_before_all_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_seek_before_all_nodes<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![5]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     // Seek to path before all nodes, should return first node
     let seek_path = nibbles_from(vec![1]);
     let result = cursor.seek(seek_path)?.unwrap();
@@ -362,16 +403,19 @@ fn test_seek_before_all_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test next without prior seek
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_next_without_prior_seek<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_next_without_prior_seek<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     // next() without prior seek should start from beginning
     let result = cursor.next()?.unwrap();
     assert_eq!(result.0, path);
@@ -382,18 +426,21 @@ fn test_next_without_prior_seek<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test next after seek
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_next_after_seek<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_next_after_seek<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path1 = nibbles_from(vec![1]);
     let path2 = nibbles_from(vec![2]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path1, Some(branch.clone()))])?;
-    storage.store_account_branches(vec![(path2, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path1, Some(branch.clone()))])?;
+    init_provider.store_account_branches(vec![(path2, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     cursor.seek(path1)?;
 
     // next() should return second node
@@ -406,16 +453,19 @@ fn test_next_after_seek<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test next at end of trie
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_next_at_end_of_trie<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_next_at_end_of_trie<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     cursor.seek(path)?;
 
     // next() at end should return None
@@ -427,18 +477,21 @@ fn test_next_at_end_of_trie<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test multiple consecutive next calls
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_multiple_consecutive_next<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_multiple_consecutive_next<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let paths = vec![nibbles_from(vec![1]), nibbles_from(vec![2]), nibbles_from(vec![3])];
     let branch = create_test_branch();
 
+    let init_provider = storage.initialization_provider().expect("provider ro");
     for path in &paths {
-        storage.store_account_branches(vec![(*path, Some(branch.clone()))])?;
+        init_provider.store_account_branches(vec![(*path, Some(branch.clone()))])?;
     }
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
 
     // Iterate through all with consecutive next() calls
     for expected_path in &paths {
@@ -455,18 +508,21 @@ fn test_multiple_consecutive_next<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test current after operations
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_current_after_operations<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_current_after_operations<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path1 = nibbles_from(vec![1]);
     let path2 = nibbles_from(vec![2]);
     let branch = create_test_branch();
 
-    storage.store_account_branches(vec![(path1, Some(branch.clone()))])?;
-    storage.store_account_branches(vec![(path2, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path1, Some(branch.clone()))])?;
+    init_provider.store_account_branches(vec![(path2, Some(branch))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
 
     // Current should be None initially
     assert!(cursor.current()?.is_none());
@@ -485,11 +541,12 @@ fn test_current_after_operations<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test current with no prior operations
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_current_no_prior_operations<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_current_no_prior_operations<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
 
     // Current should be None when no operations performed
     assert!(cursor.current()?.is_none());
@@ -504,8 +561,9 @@ fn test_current_no_prior_operations<S: OpProofsStore + OpProofsInitialStateStore
 /// Test same path with different blocks
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_same_path_different_blocks<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_same_path_different_blocks<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2]);
@@ -513,16 +571,18 @@ fn test_same_path_different_blocks<S: OpProofsStore + OpProofsInitialStateStore>
     let branch2 = create_test_branch_variant();
 
     // Store same path at different blocks
-    storage.store_account_branches(vec![(path, Some(branch1))])?;
-    storage.store_account_branches(vec![(path, Some(branch2))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch1))])?;
+    init_provider.store_account_branches(vec![(path, Some(branch2))])?;
+    init_provider.commit()?;
 
     // Cursor with max_block_number=75 should see only block 50 data
-    let mut cursor75 = storage.account_trie_cursor(75)?;
+    let mut cursor75 = storage.provider_ro().expect("provider ro").account_trie_cursor(75)?;
     let result75 = cursor75.seek_exact(path)?.unwrap();
     assert_eq!(result75.0, path);
 
     // Cursor with max_block_number=150 should see block 100 data (latest)
-    let mut cursor150 = storage.account_trie_cursor(150)?;
+    let mut cursor150 = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     let result150 = cursor150.seek_exact(path)?.unwrap();
     assert_eq!(result150.0, path);
 
@@ -532,8 +592,9 @@ fn test_same_path_different_blocks<S: OpProofsStore + OpProofsInitialStateStore>
 /// Test deleted branch nodes
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_deleted_branch_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_deleted_branch_nodes<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2]);
@@ -541,10 +602,12 @@ fn test_deleted_branch_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
     let block_ref = BlockWithParent::new(B256::ZERO, NumHash::new(100, B256::repeat_byte(0x96)));
 
     // Store branch node, then delete it (store None)
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
     // Cursor before deletion should see the node
-    let mut cursor75 = storage.account_trie_cursor(75)?;
+    let mut cursor75 = storage.provider_ro().expect("provider ro").account_trie_cursor(75)?;
     assert!(cursor75.seek_exact(path)?.is_some());
 
     let mut block_state_diff_trie_updates = TrieUpdates::default();
@@ -553,10 +616,12 @@ fn test_deleted_branch_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
         sorted_trie_updates: block_state_diff_trie_updates.into_sorted(),
         sorted_post_state: HashedPostStateSorted::default(),
     };
-    storage.store_trie_updates(block_ref, block_state_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref, block_state_diff)?;
+    provider_rw.commit()?;
 
     // Cursor after deletion should not see the node
-    let mut cursor150 = storage.account_trie_cursor(150)?;
+    let mut cursor150 = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     assert!(cursor150.seek_exact(path)?.is_none());
 
     Ok(())
@@ -569,8 +634,9 @@ fn test_deleted_branch_nodes<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test account-specific cursor
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_account_specific_cursor<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_account_specific_cursor<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2]);
@@ -579,21 +645,23 @@ fn test_account_specific_cursor<S: OpProofsStore + OpProofsInitialStateStore>(
     let branch = create_test_branch();
 
     // Store same path for different accounts (using storage branches)
-    storage.store_storage_branches(addr1, vec![(path, Some(branch.clone()))])?;
-    storage.store_storage_branches(addr2, vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_storage_branches(addr1, vec![(path, Some(branch.clone()))])?;
+    init_provider.store_storage_branches(addr2, vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
     // Cursor for addr1 should only see addr1 data
-    let mut cursor1 = storage.storage_trie_cursor(addr1, 100)?;
+    let mut cursor1 = storage.provider_ro().expect("provider ro").storage_trie_cursor(addr1, 100)?;
     let result1 = cursor1.seek_exact(path)?.unwrap();
     assert_eq!(result1.0, path);
 
     // Cursor for addr2 should only see addr2 data
-    let mut cursor2 = storage.storage_trie_cursor(addr2, 100)?;
+    let mut cursor2 = storage.provider_ro().expect("provider ro").storage_trie_cursor(addr2, 100)?;
     let result2 = cursor2.seek_exact(path)?.unwrap();
     assert_eq!(result2.0, path);
 
     // Cursor for addr1 should not see addr2 data when iterating
-    let mut cursor1_iter = storage.storage_trie_cursor(addr1, 100)?;
+    let mut cursor1_iter = storage.provider_ro().expect("provider ro").storage_trie_cursor(addr1, 100)?;
     let mut found_count = 0;
     while cursor1_iter.next()?.is_some() {
         found_count += 1;
@@ -606,8 +674,9 @@ fn test_account_specific_cursor<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test state trie cursor
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_state_trie_cursor<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_state_trie_cursor<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path = nibbles_from(vec![1, 2]);
@@ -615,16 +684,18 @@ fn test_state_trie_cursor<S: OpProofsStore + OpProofsInitialStateStore>(
     let branch = create_test_branch();
 
     // Store data for account trie and state trie
-    storage.store_storage_branches(addr, vec![(path, Some(branch.clone()))])?;
-    storage.store_account_branches(vec![(path, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_storage_branches(addr, vec![(path, Some(branch.clone()))])?;
+    init_provider.store_account_branches(vec![(path, Some(branch))])?;
+    init_provider.commit()?;
 
     // State trie cursor (None address) should only see state trie data
-    let mut state_cursor = storage.account_trie_cursor(100)?;
+    let mut state_cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let result = state_cursor.seek_exact(path)?.unwrap();
     assert_eq!(result.0, path);
 
     // Verify state cursor doesn't see account data when iterating
-    let mut state_cursor_iter = storage.account_trie_cursor(100)?;
+    let mut state_cursor_iter = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let mut found_count = 0;
     while state_cursor_iter.next()?.is_some() {
         found_count += 1;
@@ -638,8 +709,9 @@ fn test_state_trie_cursor<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test mixed account and state data
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_mixed_account_state_data<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_mixed_account_state_data<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let path1 = nibbles_from(vec![1]);
@@ -648,11 +720,13 @@ fn test_mixed_account_state_data<S: OpProofsStore + OpProofsInitialStateStore>(
     let branch = create_test_branch();
 
     // Store mixed account and state trie data
-    storage.store_storage_branches(addr, vec![(path1, Some(branch.clone()))])?;
-    storage.store_account_branches(vec![(path2, Some(branch))])?;
+    let init_provider = storage.initialization_provider().expect("provider ro");
+    init_provider.store_storage_branches(addr, vec![(path1, Some(branch.clone()))])?;
+    init_provider.store_account_branches(vec![(path2, Some(branch))])?;
+    init_provider.commit()?;
 
     // Account cursor should only see account data
-    let mut account_cursor = storage.storage_trie_cursor(addr, 100)?;
+    let mut account_cursor = storage.provider_ro().expect("provider ro").storage_trie_cursor(addr, 100)?;
     let mut account_paths = Vec::new();
     while let Some((path, _)) = account_cursor.next()? {
         account_paths.push(path);
@@ -661,7 +735,7 @@ fn test_mixed_account_state_data<S: OpProofsStore + OpProofsInitialStateStore>(
     assert_eq!(account_paths[0], path1);
 
     // State cursor should only see state data
-    let mut state_cursor = storage.account_trie_cursor(100)?;
+    let mut state_cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let mut state_paths = Vec::new();
     while let Some((path, _)) = state_cursor.next()? {
         state_paths.push(path);
@@ -679,8 +753,9 @@ fn test_mixed_account_state_data<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test lexicographic ordering
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_lexicographic_ordering<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_lexicographic_ordering<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let paths = vec![
@@ -692,11 +767,13 @@ fn test_lexicographic_ordering<S: OpProofsStore + OpProofsInitialStateStore>(
     let branch = create_test_branch();
 
     // Store paths in random order
+    let init_provider = storage.initialization_provider().expect("provider ro");
     for path in &paths {
-        storage.store_account_branches(vec![(*path, Some(branch.clone()))])?;
+        init_provider.store_account_branches(vec![(*path, Some(branch.clone()))])?;
     }
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let mut found_paths = Vec::new();
     while let Some((path, _)) = cursor.next()? {
         found_paths.push(path);
@@ -718,8 +795,9 @@ fn test_lexicographic_ordering<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test path prefix scenarios
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_path_prefix_scenarios<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_path_prefix_scenarios<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let paths = vec![
@@ -729,11 +807,13 @@ fn test_path_prefix_scenarios<S: OpProofsStore + OpProofsInitialStateStore>(
     ];
     let branch = create_test_branch();
 
+    let init_provider = storage.initialization_provider().expect("provider ro");
     for path in &paths {
-        storage.store_account_branches(vec![(*path, Some(branch.clone()))])?;
+        init_provider.store_account_branches(vec![(*path, Some(branch.clone()))])?;
     }
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
 
     // Seek to prefix should find exact match
     let result = cursor.seek_exact(paths[0])?.unwrap();
@@ -752,8 +832,9 @@ fn test_path_prefix_scenarios<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test complex nibble combinations
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_complex_nibble_combinations<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_complex_nibble_combinations<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     // Test various nibble patterns including edge values
@@ -766,11 +847,13 @@ fn test_complex_nibble_combinations<S: OpProofsStore + OpProofsInitialStateStore
     ];
     let branch = create_test_branch();
 
+    let init_provider = storage.initialization_provider().expect("provider ro");
     for path in &paths {
-        storage.store_account_branches(vec![(*path, Some(branch.clone()))])?;
+        init_provider.store_account_branches(vec![(*path, Some(branch.clone()))])?;
     }
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_trie_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     let mut found_paths = Vec::new();
     while let Some((path, _)) = cursor.next()? {
         found_paths.push(path);
@@ -794,18 +877,21 @@ fn test_complex_nibble_combinations<S: OpProofsStore + OpProofsInitialStateStore
 /// Test store and retrieve single account
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_store_and_retrieve_single_account<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_store_and_retrieve_single_account<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let account_key = B256::repeat_byte(0x01);
     let account = create_test_account();
 
     // Store account
-    storage.store_hashed_accounts(vec![(account_key, Some(account))])?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_accounts(vec![(account_key, Some(account))])?;
+    init_provider.commit()?;
 
     // Retrieve via cursor
-    let mut cursor = storage.account_hashed_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_hashed_cursor(100)?;
     let result = cursor.seek(account_key)?.unwrap();
 
     assert_eq!(result.0, account_key);
@@ -819,8 +905,9 @@ fn test_store_and_retrieve_single_account<S: OpProofsStore + OpProofsInitialStat
 /// Test account cursor navigation
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_account_cursor_navigation<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_account_cursor_navigation<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let accounts = [
@@ -831,9 +918,11 @@ fn test_account_cursor_navigation<S: OpProofsStore + OpProofsInitialStateStore>(
 
     // Store accounts
     let accounts_to_store: Vec<_> = accounts.iter().map(|(k, v)| (*k, Some(*v))).collect();
-    storage.store_hashed_accounts(accounts_to_store)?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_accounts(accounts_to_store)?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_hashed_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_hashed_cursor(100)?;
 
     // Test seeking to exact key
     let result = cursor.seek(accounts[1].0)?.unwrap();
@@ -857,8 +946,9 @@ fn test_account_cursor_navigation<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test account block versioning
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_account_block_versioning<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_account_block_versioning<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let account_key = B256::repeat_byte(0x01);
@@ -866,18 +956,22 @@ fn test_account_block_versioning<S: OpProofsStore + OpProofsInitialStateStore>(
     let account_v2 = create_test_account_with_values(2, 200, 0xDD);
 
     // Store account at different blocks
-    storage.store_hashed_accounts(vec![(account_key, Some(account_v1))])?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_accounts(vec![(account_key, Some(account_v1))])?;
+    init_provider.commit()?;
 
     // Cursor with max_block_number=75 should see v1
-    let mut cursor75 = storage.account_hashed_cursor(75)?;
+    let mut cursor75 = storage.provider_ro().expect("provider ro").account_hashed_cursor(75)?;
     let result75 = cursor75.seek(account_key)?.unwrap();
     assert_eq!(result75.1.nonce, account_v1.nonce);
     assert_eq!(result75.1.balance, account_v1.balance);
 
-    storage.store_hashed_accounts(vec![(account_key, Some(account_v2))])?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_accounts(vec![(account_key, Some(account_v2))])?;
+    init_provider.commit()?;
 
     // After update, Cursor with max_block_number=150 should see v2
-    let mut cursor150 = storage.account_hashed_cursor(150)?;
+    let mut cursor150 = storage.provider_ro().expect("provider ro").account_hashed_cursor(150)?;
     let result150 = cursor150.seek(account_key)?.unwrap();
     assert_eq!(result150.1.nonce, account_v2.nonce);
     assert_eq!(result150.1.balance, account_v2.balance);
@@ -888,8 +982,9 @@ fn test_account_block_versioning<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test store and retrieve storage
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 
-fn test_store_and_retrieve_storage<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_store_and_retrieve_storage<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let hashed_address = B256::repeat_byte(0x01);
@@ -900,10 +995,12 @@ fn test_store_and_retrieve_storage<S: OpProofsStore + OpProofsInitialStateStore>
     ];
 
     // Store storage slots
-    storage.store_hashed_storages(hashed_address, storage_slots.clone())?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_storages(hashed_address, storage_slots.clone())?;
+    init_provider.commit()?;
 
     // Retrieve via cursor
-    let mut cursor = storage.storage_hashed_cursor(hashed_address, 100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 100)?;
 
     // Test seeking to each slot
     for (key, expected_value) in &storage_slots {
@@ -918,8 +1015,9 @@ fn test_store_and_retrieve_storage<S: OpProofsStore + OpProofsInitialStateStore>
 /// Test storage cursor navigation
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_storage_cursor_navigation<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_storage_cursor_navigation<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let hashed_address = B256::repeat_byte(0x01);
@@ -929,9 +1027,11 @@ fn test_storage_cursor_navigation<S: OpProofsStore + OpProofsInitialStateStore>(
         (B256::repeat_byte(0x50), U256::from(500)),
     ];
 
-    storage.store_hashed_storages(hashed_address, storage_slots.clone())?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_storages(hashed_address, storage_slots.clone())?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.storage_hashed_cursor(hashed_address, 100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 100)?;
 
     // Start from beginning with next()
     let mut found_slots = Vec::new();
@@ -950,8 +1050,9 @@ fn test_storage_cursor_navigation<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test storage account isolation
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_storage_account_isolation<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_storage_account_isolation<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let address1 = B256::repeat_byte(0x01);
@@ -959,20 +1060,22 @@ fn test_storage_account_isolation<S: OpProofsStore + OpProofsInitialStateStore>(
     let storage_key = B256::repeat_byte(0x10);
 
     // Store same storage key for different accounts
-    storage.store_hashed_storages(address1, vec![(storage_key, U256::from(100))])?;
-    storage.store_hashed_storages(address2, vec![(storage_key, U256::from(200))])?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_storages(address1, vec![(storage_key, U256::from(100))])?;
+    init_provider.store_hashed_storages(address2, vec![(storage_key, U256::from(200))])?;
+    init_provider.commit()?;
 
     // Verify each account sees only its own storage
-    let mut cursor1 = storage.storage_hashed_cursor(address1, 100)?;
+    let mut cursor1 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(address1, 100)?;
     let result1 = cursor1.seek(storage_key)?.unwrap();
     assert_eq!(result1.1, U256::from(100));
 
-    let mut cursor2 = storage.storage_hashed_cursor(address2, 100)?;
+    let mut cursor2 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(address2, 100)?;
     let result2 = cursor2.seek(storage_key)?.unwrap();
     assert_eq!(result2.1, U256::from(200));
 
     // Verify cursor1 doesn't see address2's storage
-    let mut cursor1_iter = storage.storage_hashed_cursor(address1, 100)?;
+    let mut cursor1_iter = storage.provider_ro().expect("provider ro").storage_hashed_cursor(address1, 100)?;
     let mut count = 0;
     while cursor1_iter.next()?.is_some() {
         count += 1;
@@ -985,24 +1088,42 @@ fn test_storage_account_isolation<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test storage block versioning
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_storage_block_versioning<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_storage_block_versioning<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let hashed_address = B256::repeat_byte(0x01);
     let storage_key = B256::repeat_byte(0x10);
 
-    // Store storage at different blocks
-    storage.store_hashed_storages(hashed_address, vec![(storage_key, U256::from(100))])?;
+    // Set up initial state with value 100 (init_provider writes current-state only)
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_storages(hashed_address, vec![(storage_key, U256::from(100))])?;
+    init_provider.commit()?;
 
-    // Cursor with max_block_number=75 should see old value
-    let mut cursor75 = storage.storage_hashed_cursor(hashed_address, 75)?;
+    // Apply a block-level update at block 100 that changes the value to 200.
+    // This records changeset (old=100) + history bitmap + updates current state.
+    let mut block_state_diff_post_state = HashedPostState::default();
+    let mut hashed_storage = HashedStorage::default();
+    hashed_storage.storage.insert(storage_key, U256::from(200));
+    block_state_diff_post_state.storages.insert(hashed_address, hashed_storage);
+
+    let block_ref = BlockWithParent::new(B256::ZERO, NumHash::new(100, B256::repeat_byte(0x96)));
+    let block_state_diff = BlockStateDiff {
+        sorted_trie_updates: TrieUpdatesSorted::default(),
+        sorted_post_state: block_state_diff_post_state.into_sorted(),
+    };
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref, block_state_diff)?;
+    provider_rw.commit()?;
+
+    // Cursor with max_block_number=75 should see old value (before block 100 update)
+    let mut cursor75 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 75)?;
     let result75 = cursor75.seek(storage_key)?.unwrap();
     assert_eq!(result75.1, U256::from(100));
 
-    storage.store_hashed_storages(hashed_address, vec![(storage_key, U256::from(200))])?;
-    // Cursor with max_block_number=150 should see new value
-    let mut cursor150 = storage.storage_hashed_cursor(hashed_address, 150)?;
+    // Cursor with max_block_number=150 should see new value (after block 100 update)
+    let mut cursor150 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 150)?;
     let result150 = cursor150.seek(storage_key)?.unwrap();
     assert_eq!(result150.1, U256::from(200));
 
@@ -1012,18 +1133,21 @@ fn test_storage_block_versioning<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test storage zero value deletion
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_storage_zero_value_deletion<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_storage_zero_value_deletion<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let hashed_address = B256::repeat_byte(0x01);
     let storage_key = B256::repeat_byte(0x10);
 
     // Store non-zero value
-    storage.store_hashed_storages(hashed_address, vec![(storage_key, U256::from(100))])?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_storages(hashed_address, vec![(storage_key, U256::from(100))])?;
+    init_provider.commit()?;
 
     // Cursor before deletion should see the value
-    let mut cursor75 = storage.storage_hashed_cursor(hashed_address, 75)?;
+    let mut cursor75 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 75)?;
     let result75 = cursor75.seek(storage_key)?.unwrap();
     assert_eq!(result75.1, U256::from(100));
 
@@ -1038,10 +1162,12 @@ fn test_storage_zero_value_deletion<S: OpProofsStore + OpProofsInitialStateStore
         sorted_trie_updates: TrieUpdatesSorted::default(),
         sorted_post_state: block_state_diff_post_state.into_sorted(),
     };
-    storage.store_trie_updates(block_ref, block_state_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref, block_state_diff)?;
+    provider_rw.commit()?;
 
     // Cursor after deletion should NOT see the entry (zero values are skipped)
-    let mut cursor150 = storage.storage_hashed_cursor(hashed_address, 150)?;
+    let mut cursor150 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 150)?;
     let result150 = cursor150.seek(storage_key)?;
     assert!(result150.is_none(), "Zero values should be skipped/deleted");
 
@@ -1051,8 +1177,9 @@ fn test_storage_zero_value_deletion<S: OpProofsStore + OpProofsInitialStateStore
 /// Test that zero values are skipped during iteration
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_storage_cursor_skips_zero_values<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_storage_cursor_skips_zero_values<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let hashed_address = B256::repeat_byte(0x01);
@@ -1067,10 +1194,12 @@ fn test_storage_cursor_skips_zero_values<S: OpProofsStore + OpProofsInitialState
     ];
 
     // Store all slots
-    storage.store_hashed_storages(hashed_address, storage_slots)?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_storages(hashed_address, storage_slots)?;
+    init_provider.commit()?;
 
     // Create cursor and iterate through all entries
-    let mut cursor = storage.storage_hashed_cursor(hashed_address, 100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 100)?;
     let mut found_slots = Vec::new();
     while let Some((key, value)) = cursor.next()? {
         found_slots.push((key, value));
@@ -1085,7 +1214,7 @@ fn test_storage_cursor_skips_zero_values<S: OpProofsStore + OpProofsInitialState
     assert_eq!(found_slots[2], (B256::repeat_byte(0x50), U256::from(500)));
 
     // Verify seeking to a zero-value slot returns None or skips to next non-zero
-    let mut seek_cursor = storage.storage_hashed_cursor(hashed_address, 100)?;
+    let mut seek_cursor = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 100)?;
     let seek_result = seek_cursor.seek(B256::repeat_byte(0x20))?;
 
     // Should either return None or skip to the next non-zero value (0x30)
@@ -1100,17 +1229,18 @@ fn test_storage_cursor_skips_zero_values<S: OpProofsStore + OpProofsInitialState
 /// Test empty cursors
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_empty_cursors<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_empty_cursors<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     // Test empty account cursor
-    let mut account_cursor = storage.account_hashed_cursor(100)?;
+    let mut account_cursor = storage.provider_ro().expect("provider ro").account_hashed_cursor(100)?;
     assert!(account_cursor.seek(B256::repeat_byte(0x01))?.is_none());
     assert!(account_cursor.next()?.is_none());
 
     // Test empty storage cursor
-    let mut storage_cursor = storage.storage_hashed_cursor(B256::repeat_byte(0x01), 100)?;
+    let mut storage_cursor = storage.provider_ro().expect("provider ro").storage_hashed_cursor(B256::repeat_byte(0x01), 100)?;
     assert!(storage_cursor.seek(B256::repeat_byte(0x10))?.is_none());
     assert!(storage_cursor.next()?.is_none());
 
@@ -1120,16 +1250,19 @@ fn test_empty_cursors<S: OpProofsStore + OpProofsInitialStateStore>(
 /// Test cursor boundary conditions
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_cursor_boundary_conditions<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_cursor_boundary_conditions<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     let account_key = B256::repeat_byte(0x80); // Middle value
     let account = create_test_account();
 
-    storage.store_hashed_accounts(vec![(account_key, Some(account))])?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_accounts(vec![(account_key, Some(account))])?;
+    init_provider.commit()?;
 
-    let mut cursor = storage.account_hashed_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_hashed_cursor(100)?;
 
     // Seek to minimum key should find our account
     let result = cursor.seek(B256::ZERO)?.unwrap();
@@ -1149,8 +1282,9 @@ fn test_cursor_boundary_conditions<S: OpProofsStore + OpProofsInitialStateStore>
 /// Test large batch operations
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_large_batch_operations<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_large_batch_operations<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     // Create large batch of accounts
@@ -1162,10 +1296,12 @@ fn test_large_batch_operations<S: OpProofsStore + OpProofsInitialStateStore>(
     }
 
     // Store in batch
-    storage.store_hashed_accounts(accounts.clone())?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_accounts(accounts.clone())?;
+    init_provider.commit()?;
 
     // Verify all accounts can be retrieved
-    let mut cursor = storage.account_hashed_cursor(100)?;
+    let mut cursor = storage.provider_ro().expect("provider ro").account_hashed_cursor(100)?;
     let mut found_count = 0;
     while cursor.next()?.is_some() {
         found_count += 1;
@@ -1187,8 +1323,9 @@ fn test_large_batch_operations<S: OpProofsStore + OpProofsInitialStateStore>(
 /// it should iterate all existing values for that address and create deletion entries for them.
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_store_trie_updates_with_wiped_storage<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_store_trie_updates_with_wiped_storage<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     use reth_trie::HashedStorage;
@@ -1204,10 +1341,12 @@ fn test_store_trie_updates_with_wiped_storage<S: OpProofsStore + OpProofsInitial
         (B256::repeat_byte(0x40), U256::from(400)),
     ];
 
-    storage.store_hashed_storages(hashed_address, storage_slots.clone())?;
+    let init_provider = storage.initialization_provider().expect("provider rw");
+    init_provider.store_hashed_storages(hashed_address, storage_slots.clone())?;
+    init_provider.commit()?;
 
     // Verify all values are present at block 75
-    let mut cursor75 = storage.storage_hashed_cursor(hashed_address, 75)?;
+    let mut cursor75 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 75)?;
     let mut found_slots = Vec::new();
     while let Some((key, value)) = cursor75.next()? {
         found_slots.push((key, value));
@@ -1229,10 +1368,12 @@ fn test_store_trie_updates_with_wiped_storage<S: OpProofsStore + OpProofsInitial
     };
 
     // Store the wiped state
-    storage.store_trie_updates(block_ref, block_state_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref, block_state_diff)?;
+    provider_rw.commit()?;
 
     // After wiping, cursor at block 150 should see NO storage values
-    let mut cursor150 = storage.storage_hashed_cursor(hashed_address, 150)?;
+    let mut cursor150 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 150)?;
     let mut found_slots_after_wipe = Vec::new();
     while let Some((key, value)) = cursor150.next()? {
         found_slots_after_wipe.push((key, value));
@@ -1241,21 +1382,23 @@ fn test_store_trie_updates_with_wiped_storage<S: OpProofsStore + OpProofsInitial
     assert_eq!(
         found_slots_after_wipe.len(),
         0,
-        "All storage slots should be deleted after wipe. Found: {found_slots_after_wipe:?}"
+        "All storage slots should be deleted after wipe. Found: {:?}",
+        found_slots_after_wipe
     );
 
     // Verify individual seeks also return None
     for (slot, _) in &storage_slots {
-        let mut seek_cursor = storage.storage_hashed_cursor(hashed_address, 150)?;
+        let mut seek_cursor = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 150)?;
         let result = seek_cursor.seek(*slot)?;
         assert!(
             result.is_none() || result.unwrap().0 != *slot,
-            "Storage slot {slot:?} should be deleted after wipe"
+            "Storage slot {:?} should be deleted after wipe",
+            slot
         );
     }
 
     // Verify cursor at block 75 (before wipe) still sees all values
-    let mut cursor75_after = storage.storage_hashed_cursor(hashed_address, 75)?;
+    let mut cursor75_after = storage.provider_ro().expect("provider ro").storage_hashed_cursor(hashed_address, 75)?;
     let mut found_slots_before_wipe = Vec::new();
     while let Some((key, value)) = cursor75_after.next()? {
         found_slots_before_wipe.push((key, value));
@@ -1275,11 +1418,12 @@ fn test_store_trie_updates_with_wiped_storage<S: OpProofsStore + OpProofsInitial
 /// through the cursor APIs.
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_store_trie_updates_comprehensive<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_store_trie_updates_comprehensive<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
-    use reth_trie::{HashedStorage, updates::StorageTrieUpdates};
+    use reth_trie::{updates::StorageTrieUpdates, HashedStorage};
 
     let block_ref = BlockWithParent::new(B256::ZERO, NumHash::new(100, B256::repeat_byte(0x96)));
 
@@ -1345,10 +1489,12 @@ fn test_store_trie_updates_comprehensive<S: OpProofsStore + OpProofsInitialState
     };
 
     // Store the updates
-    storage.store_trie_updates(block_ref, block_state_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref, block_state_diff)?;
+    provider_rw.commit()?;
 
     // ========== Verify Account Branch Nodes ==========
-    let mut account_trie_cursor = storage.account_trie_cursor(block_ref.block.number + 10)?;
+    let mut account_trie_cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(block_ref.block.number + 10)?;
 
     // Should find the added branches
     let result1 = account_trie_cursor.seek_exact(account_path1)?;
@@ -1365,7 +1511,7 @@ fn test_store_trie_updates_comprehensive<S: OpProofsStore + OpProofsInitialState
 
     // ========== Verify Storage Branch Nodes ==========
     let mut storage_trie_cursor =
-        storage.storage_trie_cursor(hashed_address, block_ref.block.number + 10)?;
+        storage.provider_ro().expect("provider ro").storage_trie_cursor(hashed_address, block_ref.block.number + 10)?;
 
     let storage_result1 = storage_trie_cursor.seek_exact(storage_path1)?;
     assert!(storage_result1.is_some(), "Storage branch node 1 should be found");
@@ -1378,7 +1524,7 @@ fn test_store_trie_updates_comprehensive<S: OpProofsStore + OpProofsInitialState
     assert!(removed_storage_result.is_none(), "Removed storage node should not be found");
 
     // ========== Verify Account Leaves ==========
-    let mut account_cursor = storage.account_hashed_cursor(block_ref.block.number + 10)?;
+    let mut account_cursor = storage.provider_ro().expect("provider ro").account_hashed_cursor(block_ref.block.number + 10)?;
 
     let acc1_result = account_cursor.seek(account1_addr)?;
     assert!(acc1_result.is_some(), "Account 1 should be found");
@@ -1399,7 +1545,7 @@ fn test_store_trie_updates_comprehensive<S: OpProofsStore + OpProofsInitialState
 
     // ========== Verify Storage Leaves ==========
     let mut storage_cursor =
-        storage.storage_hashed_cursor(storage_addr, block_ref.block.number + 10)?;
+        storage.provider_ro().expect("provider ro").storage_hashed_cursor(storage_addr, block_ref.block.number + 10)?;
 
     let slot1_result = storage_cursor.seek(B256::repeat_byte(0x01))?;
     assert!(slot1_result.is_some(), "Storage slot 1 should be found");
@@ -1417,7 +1563,9 @@ fn test_store_trie_updates_comprehensive<S: OpProofsStore + OpProofsInitialState
     );
 
     // ========== Verify fetch_trie_updates can retrieve the data ==========
-    let fetched_diff = storage.fetch_trie_updates(block_ref.block.number)?;
+    let provider_rw = storage.provider_rw().expect("provider ro");
+    let fetched_diff = provider_rw.fetch_trie_updates(block_ref.block.number)?;
+    provider_rw.commit()?;
 
     // Check that trie updates are stored
     assert_eq!(
@@ -1449,11 +1597,12 @@ fn test_store_trie_updates_comprehensive<S: OpProofsStore + OpProofsInitialState
 /// (`hashed_accounts`, `hashed_storages`, `account_branches`, `storage_branches`).
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_replace_updates_applies_all_updates<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
-    use reth_trie::{HashedStorage, updates::StorageTrieUpdates};
+    use reth_trie::{updates::StorageTrieUpdates, HashedStorage};
 
     let block_ref_50 = BlockWithParent::new(B256::ZERO, NumHash::new(50, B256::repeat_byte(0x96)));
 
@@ -1479,7 +1628,9 @@ fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialSt
         sorted_trie_updates: initial_trie_updates_50.into_sorted(),
         sorted_post_state: initial_post_state_50.into_sorted(),
     };
-    storage.store_trie_updates(block_ref_50, initial_diff_50)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref_50, initial_diff_50)?;
+    provider_rw.commit()?;
 
     // Store data at block 100 (common block)
     let mut initial_trie_updates_100 = TrieUpdates::default();
@@ -1499,7 +1650,9 @@ fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialSt
     let block_ref_100 =
         BlockWithParent::new(block_ref_50.block.hash, NumHash::new(100, B256::repeat_byte(0x97)));
 
-    storage.store_trie_updates(block_ref_100, initial_diff_100)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref_100, initial_diff_100)?;
+    provider_rw.commit()?;
 
     // Store data at block 101 (will be replaced)
     let mut initial_trie_updates_101 = TrieUpdates::default();
@@ -1517,27 +1670,29 @@ fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialSt
     };
     let block_ref_101 =
         BlockWithParent::new(block_ref_100.block.hash, NumHash::new(101, B256::repeat_byte(0x98)));
-    storage.store_trie_updates(block_ref_101, initial_diff_101)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref_101, initial_diff_101)?;
+    provider_rw.commit()?;
 
     let block_ref_102 =
         BlockWithParent::new(block_ref_101.block.hash, NumHash::new(102, B256::repeat_byte(0x99)));
 
     // ========== Verify initial state exists ==========
     // Verify block 50 data exists
-    let mut cursor_initial = storage.account_trie_cursor(75)?;
+    let mut cursor_initial = storage.provider_ro().expect("provider ro").account_trie_cursor(75)?;
     assert!(
         cursor_initial.seek_exact(initial_branch_path)?.is_some(),
         "Initial branch should exist before replace"
     );
 
     // Verify block 101 old data exists
-    let mut cursor_old = storage.account_trie_cursor(150)?;
+    let mut cursor_old = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     assert!(
         cursor_old.seek_exact(old_branch_path)?.is_some(),
         "Old branch at block 101 should exist before replace"
     );
 
-    let mut account_cursor_old = storage.account_hashed_cursor(150)?;
+    let mut account_cursor_old = storage.provider_ro().expect("provider ro").account_hashed_cursor(150)?;
     assert!(
         account_cursor_old.seek(old_account_addr)?.is_some(),
         "Old account at block 101 should exist before replace"
@@ -1603,21 +1758,23 @@ fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialSt
     ));
 
     // Execute replace_updates
-    storage.replace_updates(BlockNumHash::new(100, block_ref_100.block.hash), blocks_to_add)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.replace_updates(BlockNumHash::new(100, block_ref_100.block.hash), blocks_to_add)?;
+    provider_rw.commit()?;
     // ========== Verify that data up to block 100 still exists ==========
-    let mut cursor_50 = storage.account_trie_cursor(75)?;
+    let mut cursor_50 = storage.provider_ro().expect("provider ro").account_trie_cursor(75)?;
     assert!(
         cursor_50.seek_exact(initial_branch_path)?.is_some(),
         "Block 50 branch should still exist after replace"
     );
 
-    let mut cursor_100 = storage.account_trie_cursor(100)?;
+    let mut cursor_100 = storage.provider_ro().expect("provider ro").account_trie_cursor(100)?;
     assert!(
         cursor_100.seek_exact(common_branch_path)?.is_some(),
         "Block 100 branch should still exist after replace"
     );
 
-    let mut storage_cursor_100 = storage.storage_hashed_cursor(initial_storage_addr, 100)?;
+    let mut storage_cursor_100 = storage.provider_ro().expect("provider ro").storage_hashed_cursor(initial_storage_addr, 100)?;
     let result_100 = storage_cursor_100.seek(initial_storage_slot)?;
     assert!(result_100.is_some(), "Block 100 storage should still exist after replace");
     assert_eq!(
@@ -1627,13 +1784,13 @@ fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialSt
     );
 
     // ========== Verify that old data after block 100 is gone ==========
-    let mut cursor_old_gone = storage.account_trie_cursor(150)?;
+    let mut cursor_old_gone = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     assert!(
         cursor_old_gone.seek_exact(old_branch_path)?.is_none(),
         "Old branch at block 101 should be removed after replace"
     );
 
-    let mut account_cursor_old_gone = storage.account_hashed_cursor(150)?;
+    let mut account_cursor_old_gone = storage.provider_ro().expect("provider ro").account_hashed_cursor(150)?;
     let old_acc_result = account_cursor_old_gone.seek(old_account_addr)?;
     assert!(
         old_acc_result.is_none() || old_acc_result.unwrap().0 != old_account_addr,
@@ -1643,19 +1800,19 @@ fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialSt
     // ========== Verify new data is properly accessible via cursors ==========
 
     // Verify new account branch nodes
-    let mut trie_cursor = storage.account_trie_cursor(150)?;
+    let mut trie_cursor = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     let branch_result = trie_cursor.seek_exact(new_branch_path)?;
     assert!(branch_result.is_some(), "New account branch should be accessible via cursor");
     assert_eq!(branch_result.unwrap().0, new_branch_path);
 
     // Verify new storage branch nodes
-    let mut storage_trie_cursor = storage.storage_trie_cursor(storage_hashed_addr, 150)?;
+    let mut storage_trie_cursor = storage.provider_ro().expect("provider ro").storage_trie_cursor(storage_hashed_addr, 150)?;
     let storage_branch_result = storage_trie_cursor.seek_exact(storage_branch_path)?;
     assert!(storage_branch_result.is_some(), "New storage branch should be accessible via cursor");
     assert_eq!(storage_branch_result.unwrap().0, storage_branch_path);
 
     // Verify new hashed accounts
-    let mut account_cursor = storage.account_hashed_cursor(150)?;
+    let mut account_cursor = storage.provider_ro().expect("provider ro").account_hashed_cursor(150)?;
     let account_result = account_cursor.seek(new_account_addr)?;
     assert!(account_result.is_some(), "New account should be accessible via cursor");
     assert_eq!(account_result.as_ref().unwrap().0, new_account_addr);
@@ -1664,26 +1821,28 @@ fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialSt
     assert_eq!(account_result.as_ref().unwrap().1.bytecode_hash, new_account.bytecode_hash);
 
     // Verify new hashed storages
-    let mut storage_cursor = storage.storage_hashed_cursor(new_storage_addr, 150)?;
+    let mut storage_cursor = storage.provider_ro().expect("provider ro").storage_hashed_cursor(new_storage_addr, 150)?;
     let storage_result = storage_cursor.seek(new_storage_slot)?;
     assert!(storage_result.is_some(), "New storage should be accessible via cursor");
     assert_eq!(storage_result.as_ref().unwrap().0, new_storage_slot);
     assert_eq!(storage_result.as_ref().unwrap().1, new_storage_value);
 
     // Verify block 102 data
-    let mut trie_cursor_102 = storage.account_trie_cursor(150)?;
+    let mut trie_cursor_102 = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     let branch_result_102 = trie_cursor_102.seek_exact(block_102_branch_path)?;
     assert!(branch_result_102.is_some(), "Block 102 branch should be accessible");
     assert_eq!(branch_result_102.unwrap().0, block_102_branch_path);
 
-    let mut account_cursor_102 = storage.account_hashed_cursor(150)?;
+    let mut account_cursor_102 = storage.provider_ro().expect("provider ro").account_hashed_cursor(150)?;
     let account_result_102 = account_cursor_102.seek(block_102_account_addr)?;
     assert!(account_result_102.is_some(), "Block 102 account should be accessible");
     assert_eq!(account_result_102.as_ref().unwrap().0, block_102_account_addr);
     assert_eq!(account_result_102.as_ref().unwrap().1.nonce, block_102_account.nonce);
 
     // Verify fetch_trie_updates returns the new data
-    let fetched_101 = storage.fetch_trie_updates(101)?;
+    let provider_rw = storage.provider_rw().expect("provider ro");
+    let fetched_101 = provider_rw.fetch_trie_updates(101)?;
+    provider_rw.commit()?;
     assert_eq!(
         fetched_101.sorted_trie_updates.account_nodes_ref().len(),
         1,
@@ -1716,8 +1875,9 @@ fn test_replace_updates_applies_all_updates<S: OpProofsStore + OpProofsInitialSt
 /// it is properly stored as a deletion and subsequent queries return None for that path.
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_pure_deletions_stored_correctly<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_pure_deletions_stored_correctly<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     use reth_trie::updates::StorageTrieUpdates;
@@ -1747,10 +1907,12 @@ fn test_pure_deletions_stored_correctly<S: OpProofsStore + OpProofsInitialStateS
 
     let block_ref_50 = BlockWithParent::new(B256::ZERO, NumHash::new(50, B256::repeat_byte(0x96)));
 
-    storage.store_trie_updates(block_ref_50, initial_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref_50, initial_diff)?;
+    provider_rw.commit()?;
 
     // Verify initial state exists at block 75
-    let mut cursor_75 = storage.account_trie_cursor(75)?;
+    let mut cursor_75 = storage.provider_ro().expect("provider ro").account_trie_cursor(75)?;
     assert!(
         cursor_75.seek_exact(account_path1)?.is_some(),
         "Initial account branch 1 should exist at block 75"
@@ -1760,7 +1922,7 @@ fn test_pure_deletions_stored_correctly<S: OpProofsStore + OpProofsInitialStateS
         "Initial account branch 2 should exist at block 75"
     );
 
-    let mut storage_cursor_75 = storage.storage_trie_cursor(storage_address, 75)?;
+    let mut storage_cursor_75 = storage.provider_ro().expect("provider ro").storage_trie_cursor(storage_address, 75)?;
     assert!(
         storage_cursor_75.seek_exact(storage_path1)?.is_some(),
         "Initial storage branch 1 should exist at block 75"
@@ -1789,12 +1951,14 @@ fn test_pure_deletions_stored_correctly<S: OpProofsStore + OpProofsInitialStateS
     let block_ref_100 =
         BlockWithParent::new(B256::repeat_byte(0x96), NumHash::new(100, B256::repeat_byte(0x97)));
 
-    storage.store_trie_updates(block_ref_100, deletion_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref_100, deletion_diff)?;
+    provider_rw.commit()?;
 
     // ========== Verify that deleted nodes return None at block 150 ==========
 
     // Deleted account branch should not be found
-    let mut cursor_150 = storage.account_trie_cursor(150)?;
+    let mut cursor_150 = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     let account_result = cursor_150.seek_exact(account_path1)?;
     assert!(account_result.is_none(), "Deleted account branch should return None at block 150");
 
@@ -1806,7 +1970,7 @@ fn test_pure_deletions_stored_correctly<S: OpProofsStore + OpProofsInitialStateS
     );
 
     // Deleted storage branch should not be found
-    let mut storage_cursor_150 = storage.storage_trie_cursor(storage_address, 150)?;
+    let mut storage_cursor_150 = storage.provider_ro().expect("provider ro").storage_trie_cursor(storage_address, 150)?;
     let storage_result = storage_cursor_150.seek_exact(storage_path1)?;
     assert!(storage_result.is_none(), "Deleted storage branch should return None at block 150");
 
@@ -1818,20 +1982,20 @@ fn test_pure_deletions_stored_correctly<S: OpProofsStore + OpProofsInitialStateS
     );
 
     // ========== Verify that the nodes still exist at block 75 (before deletion) ==========
-    let mut cursor_75_after = storage.account_trie_cursor(75)?;
+    let mut cursor_75_after = storage.provider_ro().expect("provider ro").account_trie_cursor(75)?;
     assert!(
         cursor_75_after.seek_exact(account_path1)?.is_some(),
         "Deleted node should still exist at block 75 (before deletion)"
     );
 
-    let mut storage_cursor_75_after = storage.storage_trie_cursor(storage_address, 75)?;
+    let mut storage_cursor_75_after = storage.provider_ro().expect("provider ro").storage_trie_cursor(storage_address, 75)?;
     assert!(
         storage_cursor_75_after.seek_exact(storage_path1)?.is_some(),
         "Deleted storage node should still exist at block 75 (before deletion)"
     );
 
     // ========== Verify iteration skips deleted nodes ==========
-    let mut cursor_iter = storage.account_trie_cursor(150)?;
+    let mut cursor_iter = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     let mut found_paths = Vec::new();
     while let Some((path, _)) = cursor_iter.next()? {
         found_paths.push(path);
@@ -1850,8 +2014,9 @@ fn test_pure_deletions_stored_correctly<S: OpProofsStore + OpProofsInitialStateS
 /// when processing trie updates that both remove and update the same node.
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_updates_take_precedence_over_removals<S: OpProofsStore + OpProofsInitialStateStore>(
+fn test_updates_take_precedence_over_removals<S: OpProofsStore>(
     storage: S,
 ) -> Result<(), OpProofsStorageError> {
     use reth_trie::updates::StorageTrieUpdates;
@@ -1877,16 +2042,18 @@ fn test_updates_take_precedence_over_removals<S: OpProofsStore + OpProofsInitial
 
     let block_ref_50 = BlockWithParent::new(B256::ZERO, NumHash::new(50, B256::repeat_byte(0x96)));
 
-    storage.store_trie_updates(block_ref_50, initial_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref_50, initial_diff)?;
+    provider_rw.commit()?;
 
     // Verify initial state exists at block 75
-    let mut cursor_75 = storage.account_trie_cursor(75)?;
+    let mut cursor_75 = storage.provider_ro().expect("provider ro").account_trie_cursor(75)?;
     assert!(
         cursor_75.seek_exact(account_path)?.is_some(),
         "Initial account branch should exist at block 75"
     );
 
-    let mut storage_cursor_75 = storage.storage_trie_cursor(storage_address, 75)?;
+    let mut storage_cursor_75 = storage.provider_ro().expect("provider ro").storage_trie_cursor(storage_address, 75)?;
     assert!(
         storage_cursor_75.seek_exact(storage_path)?.is_some(),
         "Initial storage branch should exist at block 75"
@@ -1919,12 +2086,14 @@ fn test_updates_take_precedence_over_removals<S: OpProofsStore + OpProofsInitial
     let block_ref_100 =
         BlockWithParent::new(B256::repeat_byte(0x96), NumHash::new(100, B256::repeat_byte(0x97)));
 
-    storage.store_trie_updates(block_ref_100, conflicting_diff)?;
+    let provider_rw = storage.provider_rw().expect("provider rw");
+    provider_rw.store_trie_updates(block_ref_100, conflicting_diff)?;
+    provider_rw.commit()?;
 
     // ========== Verify that updates took precedence at block 150 ==========
 
     // Account branch should exist (not deleted) with the updated value
-    let mut cursor_150 = storage.account_trie_cursor(150)?;
+    let mut cursor_150 = storage.provider_ro().expect("provider ro").account_trie_cursor(150)?;
     let account_result = cursor_150.seek_exact(account_path)?;
     assert!(
         account_result.is_some(),
@@ -1939,7 +2108,7 @@ fn test_updates_take_precedence_over_removals<S: OpProofsStore + OpProofsInitial
     );
 
     // Storage branch should exist (not deleted) with the updated value
-    let mut storage_cursor_150 = storage.storage_trie_cursor(storage_address, 150)?;
+    let mut storage_cursor_150 = storage.provider_ro().expect("provider ro").storage_trie_cursor(storage_address, 150)?;
     let storage_result = storage_cursor_150.seek_exact(storage_path)?;
     assert!(
         storage_result.is_some(),
@@ -1954,7 +2123,7 @@ fn test_updates_take_precedence_over_removals<S: OpProofsStore + OpProofsInitial
     );
 
     // ========== Verify that the old version still exists at block 75 ==========
-    let mut cursor_75_after = storage.account_trie_cursor(75)?;
+    let mut cursor_75_after = storage.provider_ro().expect("provider ro").account_trie_cursor(75)?;
     let result_75 = cursor_75_after.seek_exact(account_path)?;
     assert!(result_75.is_some(), "Initial version should still exist at block 75");
     let (_, branch_75) = result_75.unwrap();

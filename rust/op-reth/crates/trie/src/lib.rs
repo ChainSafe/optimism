@@ -12,12 +12,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-// Used only for feature propagation (serde-bincode-compat workaround).
-#[cfg(feature = "serde-bincode-compat")]
-use reth_ethereum_primitives as _;
-
 pub mod api;
-pub use api::{BlockStateDiff, OpProofsInitialStateStore, OpProofsStore};
+pub use api::{
+    BlockStateDiff, InitialStateAnchor, InitialStateStatus, OpProofsInitProvider,
+    OpProofsProviderRO, OpProofsProviderRw, OpProofsStore,
+};
 
 pub mod initialize;
 pub use initialize::InitializationJob;
@@ -28,14 +27,16 @@ pub use in_memory::{
 };
 
 pub mod db;
-pub use db::{MdbxAccountCursor, MdbxProofsStorage, MdbxStorageCursor, MdbxTrieCursor};
+pub use db::{
+    MdbxAccountCursor, MdbxProofsStorage, MdbxProofsStorageV2, MdbxStorageCursor, MdbxTrieCursor,
+};
 
 #[cfg(feature = "metrics")]
 pub mod metrics;
 #[cfg(feature = "metrics")]
 pub use metrics::{
-    OpProofsHashedAccountCursor, OpProofsHashedStorageCursor, OpProofsStorage, OpProofsTrieCursor,
-    StorageMetrics,
+    OpProofsHashedAccountCursor, OpProofsHashedStorageCursor, OpProofsTrieCursor,
+    StorageMetrics, OpProofsStorage
 };
 
 #[cfg(not(feature = "metrics"))]
