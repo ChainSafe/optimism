@@ -133,6 +133,40 @@ impl CompletionEstimatable for StoredNibbles {
     }
 }
 
+/// Log memory statistics from /proc/self/status (Linux only).
+/// On non-Linux platforms, this is a no-op.
+#[allow(unused_variables)]
+fn log_memory_stats(context: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            let parse_kb = |prefix: &str| -> u64 {
+                status
+                    .lines()
+                    .find(|l| l.starts_with(prefix))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0)
+            };
+
+            let rss = parse_kb("VmRSS:");
+            let anon = parse_kb("RssAnon:");
+            let file = parse_kb("RssFile:");
+            let shmem = parse_kb("RssShmem:");
+            let hwm = parse_kb("VmHWM:");
+
+            info!(
+                "[MEM {context}] RSS: {}MB (anon: {}MB, file: {}MB, shmem: {}MB) peak: {}MB",
+                rss / 1024,
+                anon / 1024,
+                file / 1024,
+                shmem / 1024,
+                hwm / 1024,
+            );
+        }
+    }
+}
+
 impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
     InitializationJob<Tx, S>
 {
@@ -196,6 +230,7 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
             if batch.len() >= storage_threshold {
                 info!("Storing {} entries, total entries: {}", name, total_entries);
                 I::store_entries(storage, batch)?;
+                log_memory_stats(&format!("{name} after_store entries={total_entries}"));
                 batch = Vec::with_capacity(
                     (source_size_hint.saturating_sub(total_entries)).min(storage_threshold),
                 );
@@ -205,6 +240,7 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
         if !batch.is_empty() {
             info!("Storing final {} entries", name);
             I::store_entries(storage, batch)?;
+            log_memory_stats(&format!("{name} after_final_store entries={total_entries}"));
         }
 
         info!("{} initialization complete: {} entries", name, total_entries);
@@ -340,6 +376,7 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
 
     /// Run the initialization job.
     pub fn run(&self, best_number: u64, best_hash: B256) -> Result<(), OpProofsStorageError> {
+        log_memory_stats("init_job run start");
         let anchor = self.storage.initial_state_anchor()?;
 
         match anchor.status {
