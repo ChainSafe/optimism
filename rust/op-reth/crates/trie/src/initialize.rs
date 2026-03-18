@@ -23,10 +23,10 @@ use std::time::Instant;
 use tracing::{debug, info};
 
 /// Batch size threshold for storing entries during initialization
-const INITIALIZE_STORAGE_THRESHOLD: usize = 100000;
+const INITIALIZE_STORAGE_THRESHOLD: usize = 10_000;
 
 /// Threshold for logging progress during initialization
-const INITIALIZE_LOG_THRESHOLD: usize = 100000;
+const INITIALIZE_LOG_THRESHOLD: usize = 100_000;
 
 /// Initialization job for external storage.
 #[derive(Debug, Constructor)]
