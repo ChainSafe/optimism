@@ -585,6 +585,11 @@ where
         self.metrics.block_metrics.earliest_number.set(block.number as f64);
         Ok(block)
     }
+
+    #[inline]
+    fn reopen_env_for_init(&self) -> OpProofsStorageResult<()> {
+        self.storage.reopen_env_for_init()
+    }
 }
 
 impl<S> From<S> for OpProofsStorageWithMetrics<S>
