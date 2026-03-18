@@ -365,8 +365,8 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
 
     /// Run complete initialization of all preimage data
     fn initialize_trie(&self, anchor: InitialStateAnchor) -> Result<(), OpProofsStorageError> {
-        self.initialize_hashed_accounts(anchor.latest_hashed_account_key)?;
         self.initialize_hashed_storages(anchor.latest_hashed_storage_key)?;
+        self.initialize_hashed_accounts(anchor.latest_hashed_account_key)?;
         self.initialize_storages_trie(anchor.latest_storage_trie_key)?;
         self.initialize_accounts_trie(anchor.latest_account_trie_key)?;
         Ok(())

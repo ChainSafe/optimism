@@ -31,7 +31,7 @@ use reth_trie_common::{
     BranchNodeCompact, HashedPostState, Nibbles, StoredNibbles,
     updates::{StorageTrieUpdates, TrieUpdates},
 };
-use std::{ops::RangeBounds, path::{Path, PathBuf}};
+use std::{cell::UnsafeCell, ops::RangeBounds, path::{Path, PathBuf}};
 use tracing::info;
 
 /// Log memory statistics from /proc/self/status (Linux only).
@@ -64,10 +64,51 @@ fn log_memory_stats_store(context: &str) {
     }
 }
 
+/// Wrapper around `DatabaseEnv` that supports interior mutability for reopening.
+/// Uses `UnsafeCell` to allow replacing the environment through a shared reference,
+/// which is needed because the `OpProofsInitialStateStore` trait takes `&self`.
+#[repr(transparent)]
+struct ReopenableEnv(UnsafeCell<DatabaseEnv>);
+
+impl ReopenableEnv {
+    fn new(env: DatabaseEnv) -> Self {
+        Self(UnsafeCell::new(env))
+    }
+
+    /// Get a raw mutable pointer to the inner `DatabaseEnv`.
+    /// Used exclusively by `reopen_env_for_init` during single-threaded initialization.
+    fn as_mut_ptr(&self) -> *mut DatabaseEnv {
+        self.0.get()
+    }
+}
+
+impl std::ops::Deref for ReopenableEnv {
+    type Target = DatabaseEnv;
+    fn deref(&self) -> &DatabaseEnv {
+        // SAFETY: No mutable access occurs concurrently. The UnsafeCell is only
+        // mutated in reopen_env_for_init() during single-threaded initialization,
+        // when no other references to the env exist.
+        unsafe { &*self.0.get() }
+    }
+}
+
+impl std::fmt::Debug for ReopenableEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReopenableEnv").finish_non_exhaustive()
+    }
+}
+
+// SAFETY: ReopenableEnv is Sync because:
+// - DatabaseEnv itself is Send + Sync
+// - The UnsafeCell is only mutated during single-threaded initialization
+//   (reopen_env_for_init), when no other references to the env exist
+// - All other access goes through Deref which returns &DatabaseEnv
+unsafe impl Sync for ReopenableEnv {}
+
 /// MDBX implementation of [`OpProofsStore`].
 #[derive(Debug)]
 pub struct MdbxProofsStorage {
-    env: DatabaseEnv,
+    env: ReopenableEnv,
     path: PathBuf,
 }
 
@@ -100,7 +141,7 @@ impl MdbxProofsStorage {
     pub fn new(path: &Path) -> Result<Self, OpProofsStorageError> {
         let env = init_db_for::<_, Tables>(path, DatabaseArguments::default())
             .map_err(|e| DatabaseError::Other(format!("Failed to open database: {e}")))?;
-        Ok(Self { env, path: path.to_path_buf() })
+        Ok(Self { env: ReopenableEnv::new(env), path: path.to_path_buf() })
     }
 
     fn inner_get_latest_block_number_hash(
@@ -1106,16 +1147,17 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
         // SAFETY: This is called ONLY during single-threaded initialization.
         // At this point:
         //   - No MDBX transactions are open (we're between batch commits)
-        //   - No cursors or references to `self.env` are alive
+        //   - No cursors or references to the env are alive
+        //   - as_mut_ptr() goes through UnsafeCell::get(), which is the
+        //     sanctioned way to obtain a mutable pointer through a shared ref
         //
         // We MUST drop the old env FIRST to release MDBX's exclusive file lock
         // before opening a new one, otherwise the second open fails with EAGAIN.
         // If the reopen fails after dropping, we panic because the struct is in
         // an irrecoverable state (env field already consumed). This is acceptable
         // since failing to open the DB is fatal for init anyway.
-        #[allow(invalid_reference_casting)]
         unsafe {
-            let env_ptr = &self.env as *const DatabaseEnv as *mut DatabaseEnv;
+            let env_ptr = self.env.as_mut_ptr();
 
             // Move the old env out and drop it to release the MDBX file lock
             let old = std::ptr::read(env_ptr);
