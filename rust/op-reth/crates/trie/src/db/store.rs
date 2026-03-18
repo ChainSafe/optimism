@@ -32,6 +32,37 @@ use reth_trie_common::{
     updates::{StorageTrieUpdates, TrieUpdates},
 };
 use std::{ops::RangeBounds, path::Path};
+use tracing::info;
+
+/// Log memory statistics from /proc/self/status (Linux only).
+/// On non-Linux platforms, this is a no-op.
+#[allow(unused_variables)]
+fn log_memory_stats_store(context: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            let parse_kb = |prefix: &str| -> u64 {
+                status
+                    .lines()
+                    .find(|l| l.starts_with(prefix))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0)
+            };
+
+            let rss = parse_kb("VmRSS:");
+            let anon = parse_kb("RssAnon:");
+            let file = parse_kb("RssFile:");
+
+            info!(
+                "[MEM-STORE {context}] RSS: {}MB (anon: {}MB, file: {}MB)",
+                rss / 1024,
+                anon / 1024,
+                file / 1024,
+            );
+        }
+    }
+}
 
 /// MDBX implementation of [`OpProofsStore`].
 #[derive(Debug)]
@@ -172,8 +203,14 @@ impl MdbxProofsStorage {
         I: IntoIterator,
         I::Item: IntoKV<T>,
     {
+        let table_name = std::any::type_name::<T>();
+        // Extract short table name from full path (e.g. "...::HashedStorageHistory" -> "HashedStorageHistory")
+        let short_name = table_name.rsplit("::").next().unwrap_or(table_name);
+
         let mut cur = tx.cursor_dup_write::<T>()?;
         let mut keys = Vec::<T::Key>::new();
+
+        log_memory_stats_store(&format!("{short_name} before_materialize"));
 
         // Materialize iterator to enable partitioning and collect keys
         let mut pairs: Vec<(T::Key, T::Value)> = Vec::new();
@@ -183,11 +220,15 @@ impl MdbxProofsStorage {
             keys.push(k)
         }
 
+        let count = pairs.len();
+        log_memory_stats_store(&format!("{short_name} after_materialize count={count}"));
+
         if append_mode {
             // Append all entries (including tombstones) to preserve full history
             for (k, vv) in pairs {
                 cur.append_dup(k.clone(), vv)?;
             }
+            log_memory_stats_store(&format!("{short_name} after_append_dup count={count}"));
             return Ok(keys);
         }
 
@@ -1035,6 +1076,7 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
             return Ok(());
         }
 
+        let count = storages.len();
         self.env.update(|tx| {
             self.persist_history_batch(
                 tx,
@@ -1045,7 +1087,9 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
                 true,
             )?;
             Ok(())
-        })?
+        })?;
+        log_memory_stats_store(&format!("HashedStorageHistory after_commit count={count}"));
+        Ok(())
     }
 
     fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash> {
