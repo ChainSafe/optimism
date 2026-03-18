@@ -64,7 +64,7 @@ use reth_trie::{
     BranchNodeCompact, HashedPostState, Nibbles, StorageTrieEntry, StoredNibbles,
     StoredNibblesSubKey,
 };
-use std::{fmt::Debug, path::Path, sync::Arc};
+use std::{collections::{BTreeMap, BTreeSet}, fmt::Debug, path::Path, sync::Arc};
 
 /// Maximum number of block indices per shard in history bitmap tables.
 ///
@@ -417,15 +417,18 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
     // History bitmap helpers (sharded)
     // -------------------------------------------------------------------------
 
-    /// Append a block number to a sharded history bitmap.
+    /// Append a block number to a sharded history bitmap using the provided
+    /// cursor.
     ///
     /// Uses the same shard-splitting logic as reth's `append_history_index`:
     /// - Seek the last shard (keyed with `u64::MAX`).
     /// - Append the new block number.
     /// - If the shard exceeds [`NUM_OF_INDICES_IN_SHARD`], split it.
-    fn append_history_index<T>(
-        &self,
-        _partial_key: T::Key,
+    ///
+    /// The caller must supply a reusable cursor to avoid creating a new one per
+    /// key (which would be ~11 000 cursor allocations per Base mainnet block).
+    fn append_history_index_with_cursor<T>(
+        cursor: &mut (impl DbCursorRO<T> + DbCursorRW<T>),
         block_number: BlockNumber,
         sharded_key_factory: impl Fn(BlockNumber) -> T::Key,
     ) -> OpProofsStorageResult<()>
@@ -434,7 +437,6 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         T::Key: Clone,
     {
         let last_key = sharded_key_factory(u64::MAX);
-        let mut cursor = self.tx.cursor_write::<T>()?;
 
         let mut last_shard = cursor
             .seek_exact(last_key.clone())?
@@ -476,115 +478,97 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         Ok(())
     }
 
-    /// Batch-append block numbers to account history bitmaps.
-    fn append_account_history(
-        &self,
-        keys: &[B256],
-        block_number: BlockNumber,
-    ) -> OpProofsStorageResult<()> {
-        for key in keys {
-            self.append_history_index::<HashedAccountsHistory>(
-                HashedAccountShardedKey::new(*key, u64::MAX),
-                block_number,
-                |highest| HashedAccountShardedKey::new(*key, highest),
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Batch-append block numbers to storage history bitmaps.
-    fn append_storage_history(
-        &self,
-        entries: &[(B256, B256)],
-        block_number: BlockNumber,
-    ) -> OpProofsStorageResult<()> {
-        for (hashed_address, storage_key) in entries {
-            self.append_history_index::<HashedStoragesHistory>(
-                HashedStorageShardedKey {
-                    hashed_address: *hashed_address,
-                    sharded_key: ShardedKey::new(*storage_key, u64::MAX),
-                },
-                block_number,
-                |highest| HashedStorageShardedKey {
-                    hashed_address: *hashed_address,
-                    sharded_key: ShardedKey::new(*storage_key, highest),
-                },
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Batch-append block numbers to account trie history bitmaps.
-    fn append_account_trie_history(
-        &self,
-        keys: &[StoredNibbles],
-        block_number: BlockNumber,
-    ) -> OpProofsStorageResult<()> {
-        for key in keys {
-            self.append_history_index::<AccountsTrieHistory>(
-                AccountTrieShardedKey::new(key.clone(), u64::MAX),
-                block_number,
-                |highest| AccountTrieShardedKey::new(key.clone(), highest),
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Batch-append block numbers to storage trie history bitmaps.
-    fn append_storage_trie_history(
-        &self,
-        entries: &[(B256, StoredNibbles)],
-        block_number: BlockNumber,
-    ) -> OpProofsStorageResult<()> {
-        for (hashed_address, nibbles) in entries {
-            self.append_history_index::<StoragesTrieHistory>(
-                StorageTrieShardedKey::new(*hashed_address, nibbles.clone(), u64::MAX),
-                block_number,
-                |highest| StorageTrieShardedKey::new(*hashed_address, nibbles.clone(), highest),
-            )?;
-        }
-        Ok(())
-    }
-
     // -------------------------------------------------------------------------
     // History bitmap removal (for unwind / replace)
     // -------------------------------------------------------------------------
 
-    /// Remove a block number from a single sharded history entry.
+    /// Remove multiple block numbers from a single key's history bitmap shard(s).
     ///
-    /// Seeks the shard for the given key (using `u64::MAX` sentinel), removes
-    /// `block_number` from the bitmap, and either updates or deletes the shard.
-    fn remove_from_history_index<T>(
-        &self,
-        block_number: u64,
+    /// Reuses the provided cursor. Processes blocks in sorted order for
+    /// sequential shard access. When a shard is found, ALL matching block
+    /// numbers are removed in a single bitmap edit, so subsequent seeks for
+    /// blocks in the same shard become no-ops.
+    fn remove_blocks_from_history_shard<T>(
+        cursor: &mut (impl DbCursorRO<T> + DbCursorRW<T>),
+        blocks_to_remove: &BTreeSet<u64>,
         sharded_key_factory: impl Fn(u64) -> T::Key,
     ) -> OpProofsStorageResult<()>
     where
         T: Table<Value = BlockNumberList>,
         T::Key: Clone,
     {
-        let mut cursor = self.tx.cursor_write::<T>()?;
+        for &block_number in blocks_to_remove {
+            let seek_key = sharded_key_factory(block_number);
+            let Some((key, list)) = cursor.seek(seek_key)? else {
+                continue;
+            };
 
-        // Find the shard that contains this block number.
-        // Shards are keyed by highest block number in shard, with u64::MAX as
-        // sentinel for the last shard. We seek to `block_number` to find the
-        // first shard whose key >= block_number.
-        let seek_key = sharded_key_factory(block_number);
-        let Some((key, list)) = cursor.seek(seek_key)? else {
-            return Ok(());
-        };
+            if !list.contains(block_number) {
+                // Already removed by a previous shard edit (batch removal),
+                // or was never present.
+                continue;
+            }
 
-        if !list.contains(block_number) {
-            return Ok(());
+            // Remove ALL target blocks from this shard in one pass.
+            let filtered: Vec<u64> =
+                list.iter().filter(|&bn| !blocks_to_remove.contains(&bn)).collect();
+
+            if filtered.is_empty() {
+                cursor.delete_current()?;
+            } else {
+                let new_list = BlockNumberList::new_pre_sorted(filtered.into_iter());
+                cursor.upsert(key, &new_list)?;
+            }
         }
 
-        let filtered: Vec<u64> = list.iter().filter(|&bn| bn != block_number).collect();
+        Ok(())
+    }
 
-        if filtered.is_empty() {
-            cursor.delete_current()?;
-        } else {
-            let new_list = BlockNumberList::new_pre_sorted(filtered.into_iter());
-            cursor.upsert(key, &new_list)?;
+    /// Prune-specific history removal: for a given logical key, seek its first
+    /// history shard and walk forward, removing all block numbers that fall
+    /// within `range`.  This is faster than [`Self::remove_blocks_from_history_shard`]
+    /// for pruning because it requires only **one seek per unique key** (instead
+    /// of one seek per block) and uses a simple range check instead of a
+    /// set-membership lookup.
+    fn prune_history_range_for_key<T>(
+        cursor: &mut (impl DbCursorRO<T> + DbCursorRW<T>),
+        range: &std::ops::RangeInclusive<u64>,
+        first_shard_key: T::Key,
+        same_logical_key: impl Fn(&T::Key) -> bool,
+    ) -> OpProofsStorageResult<()>
+    where
+        T: Table<Value = BlockNumberList>,
+        T::Key: Clone,
+    {
+        let mut entry = cursor.seek(first_shard_key)?;
+        loop {
+            let Some((key, list)) = entry else { break };
+
+            if !same_logical_key(&key) {
+                break;
+            }
+
+            let original_len = list.len() as usize;
+            let filtered: Vec<u64> =
+                list.iter().filter(|&bn| !range.contains(&bn)).collect();
+
+            if filtered.is_empty() {
+                // Entire shard pruned — delete and advance.
+                cursor.delete_current()?;
+                entry = cursor.current()?;
+            } else if filtered.len() < original_len {
+                // Partial prune — update shard and advance.
+                let new_list = BlockNumberList::new_pre_sorted(filtered.into_iter());
+                cursor.upsert(key, &new_list)?;
+                entry = cursor.next()?;
+            } else {
+                // No blocks in this shard were in range.
+                // If the shard's lowest block is past our range, stop.
+                if list.iter().next().map_or(true, |first| first > *range.end()) {
+                    break;
+                }
+                entry = cursor.next()?;
+            }
         }
 
         Ok(())
@@ -593,80 +577,106 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
     /// Remove block numbers from all 4 history bitmap tables by reading the
     /// changeset tables to find exactly which keys were affected.
     ///
-    /// This is efficient: it only touches history shards for keys that actually
-    /// have entries in the block range, rather than walking entire tables.
+    /// Optimised path: each changeset table is walked **once**, entries are
+    /// deduplicated by key into a `BTreeMap<key, BTreeSet<block_number>>`,
+    /// and then each unique key's bitmap shard(s) are edited in a single
+    /// batch operation through a **reused cursor**.
     fn remove_all_history_entries(
         &self,
         range: std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<()> {
         // ---- Account trie history ----
         {
+            let mut dedup: BTreeMap<StoredNibbles, BTreeSet<u64>> = BTreeMap::new();
             let mut cs_cursor = self.tx.cursor_read::<AccountTrieChangeSets>()?;
-            for block_number in range.clone() {
-                let mut walker = cs_cursor.walk(Some(block_number))?;
-                while let Some(Ok((bn, entry))) = walker.next() {
-                    if bn != block_number {
-                        break;
-                    }
-                    let nibbles = StoredNibbles(entry.nibbles.0);
-                    self.remove_from_history_index::<AccountsTrieHistory>(
-                        block_number,
-                        |highest| AccountTrieShardedKey::new(nibbles.clone(), highest),
-                    )?;
-                }
+            let mut walker = cs_cursor.walk_range(range.clone())?;
+            while let Some(Ok((block_number, entry))) = walker.next() {
+                let nibbles = StoredNibbles(entry.nibbles.0);
+                dedup.entry(nibbles).or_default().insert(block_number);
+            }
+            drop(walker);
+            drop(cs_cursor);
+
+            let mut hist_cursor = self.tx.cursor_write::<AccountsTrieHistory>()?;
+            for (nibbles, blocks) in &dedup {
+                Self::remove_blocks_from_history_shard(
+                    &mut hist_cursor,
+                    blocks,
+                    |highest| AccountTrieShardedKey::new(nibbles.clone(), highest),
+                )?;
             }
         }
 
         // ---- Storage trie history ----
         {
+            let mut dedup: BTreeMap<(B256, StoredNibbles), BTreeSet<u64>> = BTreeMap::new();
             let mut cs_cursor = self.tx.cursor_read::<StorageTrieChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
             let mut walker = cs_cursor.walk_range(start..=end)?;
             while let Some(Ok((key, entry))) = walker.next() {
-                let block_number = key.0 .0;
                 let hashed_address = key.0 .1;
                 let nibbles = StoredNibbles(entry.nibbles.0);
-                self.remove_from_history_index::<StoragesTrieHistory>(
-                    block_number,
-                    |highest| StorageTrieShardedKey::new(hashed_address, nibbles.clone(), highest),
+                dedup.entry((hashed_address, nibbles)).or_default().insert(key.0 .0);
+            }
+            drop(walker);
+            drop(cs_cursor);
+
+            let mut hist_cursor = self.tx.cursor_write::<StoragesTrieHistory>()?;
+            for ((hashed_address, nibbles), blocks) in &dedup {
+                Self::remove_blocks_from_history_shard(
+                    &mut hist_cursor,
+                    blocks,
+                    |highest| {
+                        StorageTrieShardedKey::new(*hashed_address, nibbles.clone(), highest)
+                    },
                 )?;
             }
         }
 
         // ---- Hashed accounts history ----
         {
+            let mut dedup: BTreeMap<B256, BTreeSet<u64>> = BTreeMap::new();
             let mut cs_cursor = self.tx.cursor_read::<HashedAccountChangeSets>()?;
-            for block_number in range.clone() {
-                let mut walker = cs_cursor.walk(Some(block_number))?;
-                while let Some(Ok((bn, entry))) = walker.next() {
-                    if bn != block_number {
-                        break;
-                    }
-                    let addr = entry.hashed_address;
-                    self.remove_from_history_index::<HashedAccountsHistory>(
-                        block_number,
-                        |highest| HashedAccountShardedKey::new(addr, highest),
-                    )?;
-                }
+            let mut walker = cs_cursor.walk_range(range.clone())?;
+            while let Some(Ok((block_number, entry))) = walker.next() {
+                dedup.entry(entry.hashed_address).or_default().insert(block_number);
+            }
+            drop(walker);
+            drop(cs_cursor);
+
+            let mut hist_cursor = self.tx.cursor_write::<HashedAccountsHistory>()?;
+            for (addr, blocks) in &dedup {
+                Self::remove_blocks_from_history_shard(
+                    &mut hist_cursor,
+                    blocks,
+                    |highest| HashedAccountShardedKey::new(*addr, highest),
+                )?;
             }
         }
 
         // ---- Hashed storages history ----
         {
+            let mut dedup: BTreeMap<(B256, B256), BTreeSet<u64>> = BTreeMap::new();
             let mut cs_cursor = self.tx.cursor_read::<HashedStorageChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
             let mut walker = cs_cursor.walk_range(start..=end)?;
             while let Some(Ok((key, entry))) = walker.next() {
-                let block_number = key.0 .0;
                 let hashed_address = key.0 .1;
-                let storage_key = entry.key;
-                self.remove_from_history_index::<HashedStoragesHistory>(
-                    block_number,
+                dedup.entry((hashed_address, entry.key)).or_default().insert(key.0 .0);
+            }
+            drop(walker);
+            drop(cs_cursor);
+
+            let mut hist_cursor = self.tx.cursor_write::<HashedStoragesHistory>()?;
+            for ((hashed_address, storage_key), blocks) in &dedup {
+                Self::remove_blocks_from_history_shard(
+                    &mut hist_cursor,
+                    blocks,
                     |highest| HashedStorageShardedKey {
-                        hashed_address,
-                        sharded_key: ShardedKey::new(storage_key, highest),
+                        hashed_address: *hashed_address,
+                        sharded_key: ShardedKey::new(*storage_key, highest),
                     },
                 )?;
             }
@@ -697,18 +707,21 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         let mut counts = WriteCounts::default();
 
         // ---- Account Trie ----
+        //
+        // Open all three cursors (state, changeset, history) up front and
+        // inline the bitmap append so we avoid collecting a Vec of keys.
         {
             let mut state_cursor = self.tx.cursor_write::<AccountsTrie>()?;
             let mut cs_cursor = self.tx.cursor_dup_write::<AccountTrieChangeSets>()?;
-            let mut history_keys = Vec::new();
+            let mut hist_cursor = self.tx.cursor_write::<AccountsTrieHistory>()?;
 
             for (nibbles, maybe_node) in sorted_trie_updates.account_nodes_ref() {
                 let stored = StoredNibbles(nibbles.clone());
 
-                // Read old value from current state
-                let old_node = state_cursor
-                    .seek_exact(stored.clone())?
-                    .map(|(_, node)| node);
+                // Read old value from current state (cursor positioned for reuse)
+                let old_entry = state_cursor.seek_exact(stored.clone())?;
+                let old_node = old_entry.as_ref().map(|(_, node)| node.clone());
+                let had_old = old_entry.is_some();
 
                 // Write old value to changeset
                 let cs_entry = TrieChangeSetsEntry {
@@ -717,17 +730,23 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 };
                 cs_cursor.append_dup(block_number, cs_entry)?;
 
-                // Track for history bitmap
-                history_keys.push(stored.clone());
+                // Inline history bitmap append (avoids Vec + second loop)
+                {
+                    let key = stored.clone();
+                    Self::append_history_index_with_cursor::<AccountsTrieHistory>(
+                        &mut hist_cursor,
+                        block_number,
+                        |highest| AccountTrieShardedKey::new(key.clone(), highest),
+                    )?;
+                }
 
-                // Update current state
+                // Update current state — reuse cursor position for deletions
                 match maybe_node {
                     Some(node) => {
                         state_cursor.upsert(stored, node)?;
                     }
                     None => {
-                        // Node removed — delete from current state if it exists
-                        if state_cursor.seek_exact(stored)?.is_some() {
+                        if had_old {
                             state_cursor.delete_current()?;
                         }
                     }
@@ -735,15 +754,13 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
                 counts.account_trie_updates_written_total += 1;
             }
-
-            self.append_account_trie_history(&history_keys, block_number)?;
         }
 
         // ---- Storage Trie ----
         {
             let mut state_cursor = self.tx.cursor_dup_write::<StoragesTrie>()?;
             let mut cs_cursor = self.tx.cursor_dup_write::<StorageTrieChangeSets>()?;
-            let mut history_entries = Vec::new();
+            let mut hist_cursor = self.tx.cursor_write::<StoragesTrieHistory>()?;
 
             for (hashed_address, nodes) in sorted_trie_updates.storage_tries_ref() {
                 let cs_key = BlockNumberHashedAddress((block_number, *hashed_address));
@@ -760,7 +777,15 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                             node: Some(first_entry.node.clone()),
                         };
                         cs_cursor.append_dup(cs_key.clone(), cs_entry)?;
-                        history_entries.push((*hashed_address, StoredNibbles(first_entry.nibbles.0)));
+                        Self::append_history_index_with_cursor::<StoragesTrieHistory>(
+                            &mut hist_cursor,
+                            block_number,
+                            |highest| StorageTrieShardedKey::new(
+                                *hashed_address,
+                                StoredNibbles(first_entry.nibbles.0.clone()),
+                                highest,
+                            ),
+                        )?;
 
                         // Record remaining entries
                         while let Some((_, entry)) = state_cursor.next_dup()? {
@@ -769,7 +794,15 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                                 node: Some(entry.node.clone()),
                             };
                             cs_cursor.append_dup(cs_key.clone(), cs_entry)?;
-                            history_entries.push((*hashed_address, StoredNibbles(entry.nibbles.0)));
+                            Self::append_history_index_with_cursor::<StoragesTrieHistory>(
+                                &mut hist_cursor,
+                                block_number,
+                                |highest| StorageTrieShardedKey::new(
+                                    *hashed_address,
+                                    StoredNibbles(entry.nibbles.0.clone()),
+                                    highest,
+                                ),
+                            )?;
                         }
 
                         // Delete all entries for this address
@@ -784,11 +817,14 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 for (nibbles, maybe_node) in nodes.storage_nodes_ref() {
                     let subkey = StoredNibblesSubKey(nibbles.clone());
 
-                    // Read old value from current state
-                    let old_node = state_cursor
+                    // Read old value from current state (first seek positions
+                    // the cursor — we reuse that position for the delete below
+                    // to avoid a second seek_by_key_subkey).
+                    let old_entry = state_cursor
                         .seek_by_key_subkey(*hashed_address, subkey.clone())?
-                        .filter(|e| e.nibbles == subkey)
-                        .map(|e| e.node);
+                        .filter(|e| e.nibbles == subkey);
+                    let had_old = old_entry.is_some();
+                    let old_node = old_entry.map(|e| e.node);
 
                     // Write old value to changeset
                     let cs_entry = TrieChangeSetsEntry {
@@ -796,17 +832,24 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                         node: old_node,
                     };
                     cs_cursor.append_dup(cs_key.clone(), cs_entry)?;
-                    history_entries.push((*hashed_address, StoredNibbles(nibbles.clone())));
 
-                    // Update current state
+                    // Inline history bitmap append (avoids clone + Vec)
+                    {
+                        let addr = *hashed_address;
+                        let nib = StoredNibbles(nibbles.clone());
+                        Self::append_history_index_with_cursor::<StoragesTrieHistory>(
+                            &mut hist_cursor,
+                            block_number,
+                            |highest| StorageTrieShardedKey::new(addr, nib.clone(), highest),
+                        )?;
+                    }
+
+                    // Update current state — the state_cursor position is
+                    // preserved across the cs_cursor / hist_cursor operations
+                    // above, so we can delete_current() without re-seeking.
                     match maybe_node {
                         Some(node) => {
-                            // Delete old entry if it exists
-                            if state_cursor
-                                .seek_by_key_subkey(*hashed_address, subkey.clone())?
-                                .filter(|e| e.nibbles == subkey)
-                                .is_some()
-                            {
+                            if had_old {
                                 state_cursor.delete_current()?;
                             }
                             state_cursor.upsert(
@@ -818,11 +861,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                             )?;
                         }
                         None => {
-                            if state_cursor
-                                .seek_by_key_subkey(*hashed_address, subkey)?
-                                .filter(|e| e.nibbles == StoredNibblesSubKey(nibbles.clone()))
-                                .is_some()
-                            {
+                            if had_old {
                                 state_cursor.delete_current()?;
                             }
                         }
@@ -831,37 +870,41 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                     counts.storage_trie_updates_written_total += 1;
                 }
             }
-
-            self.append_storage_trie_history(&history_entries, block_number)?;
         }
 
         // ---- Hashed Accounts ----
         {
             let mut state_cursor = self.tx.cursor_write::<HashedAccounts>()?;
             let mut cs_cursor = self.tx.cursor_dup_write::<HashedAccountChangeSets>()?;
-            let mut history_keys = Vec::new();
+            let mut hist_cursor = self.tx.cursor_write::<HashedAccountsHistory>()?;
 
             for (hashed_address, maybe_account) in sorted_post_state.accounts.iter() {
-                // Read old value from current state
-                let old_account = state_cursor
-                    .seek_exact(*hashed_address)?
-                    .map(|(_, acc)| acc);
+                // Read old value from current state (cursor positioned for reuse)
+                let old_entry = state_cursor.seek_exact(*hashed_address)?;
+                let old_account = old_entry.as_ref().map(|(_, acc)| *acc);
+                let had_old = old_entry.is_some();
 
                 // Write old value to changeset
                 let cs_entry = HashedAccountBeforeTx::new(*hashed_address, old_account);
                 cs_cursor.append_dup(block_number, cs_entry)?;
 
-                // Track for history bitmap
-                history_keys.push(*hashed_address);
+                // Inline history bitmap append
+                {
+                    let key = *hashed_address;
+                    Self::append_history_index_with_cursor::<HashedAccountsHistory>(
+                        &mut hist_cursor,
+                        block_number,
+                        |highest| HashedAccountShardedKey::new(key, highest),
+                    )?;
+                }
 
-                // Update current state
+                // Update current state — reuse cursor position for deletions
                 match maybe_account {
                     Some(account) => {
                         state_cursor.upsert(*hashed_address, account)?;
                     }
                     None => {
-                        // Account deleted
-                        if state_cursor.seek_exact(*hashed_address)?.is_some() {
+                        if had_old {
                             state_cursor.delete_current()?;
                         }
                     }
@@ -869,15 +912,13 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
                 counts.hashed_accounts_written_total += 1;
             }
-
-            self.append_account_history(&history_keys, block_number)?;
         }
 
         // ---- Hashed Storages ----
         {
             let mut state_cursor = self.tx.cursor_dup_write::<HashedStorages>()?;
             let mut cs_cursor = self.tx.cursor_dup_write::<HashedStorageChangeSets>()?;
-            let mut history_entries = Vec::new();
+            let mut hist_cursor = self.tx.cursor_write::<HashedStoragesHistory>()?;
 
             for (hashed_address, storage) in &sorted_post_state.storages {
                 let cs_key = BlockNumberHashedAddress((block_number, *hashed_address));
@@ -893,7 +934,14 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                             cs_key.clone(),
                             StorageEntry { key: entry.key, value: entry.value },
                         )?;
-                        history_entries.push((*hashed_address, entry.key));
+                        Self::append_history_index_with_cursor::<HashedStoragesHistory>(
+                            &mut hist_cursor,
+                            block_number,
+                            |highest| HashedStorageShardedKey {
+                                hashed_address: *hashed_address,
+                                sharded_key: ShardedKey::new(entry.key, highest),
+                            },
+                        )?;
 
                         // Record remaining entries
                         while let Some(entry) = state_cursor.next_dup_val()? {
@@ -901,7 +949,14 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                                 cs_key.clone(),
                                 StorageEntry { key: entry.key, value: entry.value },
                             )?;
-                            history_entries.push((*hashed_address, entry.key));
+                            Self::append_history_index_with_cursor::<HashedStoragesHistory>(
+                                &mut hist_cursor,
+                                block_number,
+                                |highest| HashedStorageShardedKey {
+                                    hashed_address: *hashed_address,
+                                    sharded_key: ShardedKey::new(entry.key, highest),
+                                },
+                            )?;
                         }
 
                         // Delete all entries for this address
@@ -912,35 +967,40 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 }
 
                 for (storage_key, value) in storage.storage_slots_ref() {
-                    // Read old value from current state
-                    let old_value = state_cursor
+                    // Read old value from current state (first seek positions
+                    // the cursor — reused for delete below).
+                    let old_entry = state_cursor
                         .seek_by_key_subkey(*hashed_address, *storage_key)?
-                        .filter(|e| e.key == *storage_key)
-                        .map(|e| e.value)
-                        .unwrap_or(U256::ZERO);
+                        .filter(|e| e.key == *storage_key);
+                    let had_old = old_entry.is_some();
+                    let old_value = old_entry.map(|e| e.value).unwrap_or(U256::ZERO);
 
                     // Write old value to changeset
                     let cs_entry = StorageEntry { key: *storage_key, value: old_value };
                     cs_cursor.append_dup(cs_key.clone(), cs_entry)?;
-                    history_entries.push((*hashed_address, *storage_key));
 
-                    // Update current state
+                    // Inline history bitmap append
+                    {
+                        let addr = *hashed_address;
+                        let sk = *storage_key;
+                        Self::append_history_index_with_cursor::<HashedStoragesHistory>(
+                            &mut hist_cursor,
+                            block_number,
+                            |highest| HashedStorageShardedKey {
+                                hashed_address: addr,
+                                sharded_key: ShardedKey::new(sk, highest),
+                            },
+                        )?;
+                    }
+
+                    // Update current state — cursor position preserved, no
+                    // re-seek needed.
                     if *value == U256::ZERO {
-                        // Slot cleared: delete from current state
-                        if state_cursor
-                            .seek_by_key_subkey(*hashed_address, *storage_key)?
-                            .filter(|e| e.key == *storage_key)
-                            .is_some()
-                        {
+                        if had_old {
                             state_cursor.delete_current()?;
                         }
                     } else {
-                        // Delete old entry then insert new
-                        if state_cursor
-                            .seek_by_key_subkey(*hashed_address, *storage_key)?
-                            .filter(|e| e.key == *storage_key)
-                            .is_some()
-                        {
+                        if had_old {
                             state_cursor.delete_current()?;
                         }
                         state_cursor.upsert(
@@ -952,8 +1012,6 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                     counts.hashed_storages_written_total += 1;
                 }
             }
-
-            self.append_storage_history(&history_entries, block_number)?;
         }
 
         Ok(counts)
@@ -1357,54 +1415,146 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
 
         let range = (earliest + 1)..=target_block;
 
-        // Count entries being pruned (for reporting)
+        // ---- Single-pass per changeset table: DupSort-aware walk that
+        //      collects unique keys, counts entries, and bulk-deletes each
+        //      primary key via delete_current_duplicates() — all in one
+        //      cursor traversal. ----
+
         let mut counts = WriteCounts::default();
 
-        // Count account trie changeset entries
-        {
-            let mut cursor = self.tx.cursor_read::<AccountTrieChangeSets>()?;
-            let mut walker = cursor.walk_range(range.clone())?;
-            while walker.next().is_some() {
+        // Account trie  (Key = BlockNumber, SubKey = StoredNibblesSubKey)
+        let acct_trie_keys = {
+            let mut keys: BTreeSet<StoredNibbles> = BTreeSet::new();
+            let mut cursor = self.tx.cursor_dup_write::<AccountTrieChangeSets>()?;
+            let mut entry = cursor.seek(*range.start())?;
+            while let Some((block_num, first_val)) = entry {
+                if block_num > *range.end() { break; }
                 counts.account_trie_updates_written_total += 1;
+                keys.insert(StoredNibbles(first_val.nibbles.0));
+                while let Some((_, val)) = cursor.next_dup()? {
+                    counts.account_trie_updates_written_total += 1;
+                    keys.insert(StoredNibbles(val.nibbles.0));
+                }
+                cursor.delete_current_duplicates()?;
+                entry = cursor.current()?;
             }
-        }
+            keys
+        };
 
-        // Count storage trie changeset entries
-        {
-            let mut cursor = self.tx.cursor_read::<StorageTrieChangeSets>()?;
+        // Storage trie  (Key = BlockNumberHashedAddress, SubKey = StoredNibblesSubKey)
+        let stor_trie_keys = {
+            let mut keys: BTreeSet<(B256, StoredNibbles)> = BTreeSet::new();
+            let mut cursor = self.tx.cursor_dup_write::<StorageTrieChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
-            let mut walker = cursor.walk_range(start..=end)?;
-            while walker.next().is_some() {
+            let mut entry = cursor.seek(start)?;
+            while let Some((key, first_val)) = entry {
+                if key > end { break; }
                 counts.storage_trie_updates_written_total += 1;
+                keys.insert((key.0 .1, StoredNibbles(first_val.nibbles.0)));
+                while let Some((k, val)) = cursor.next_dup()? {
+                    counts.storage_trie_updates_written_total += 1;
+                    keys.insert((k.0 .1, StoredNibbles(val.nibbles.0)));
+                }
+                cursor.delete_current_duplicates()?;
+                entry = cursor.current()?;
             }
-        }
+            keys
+        };
 
-        // Count account changeset entries
-        {
-            let mut cursor = self.tx.cursor_read::<HashedAccountChangeSets>()?;
-            let mut walker = cursor.walk_range(range.clone())?;
-            while walker.next().is_some() {
+        // Hashed accounts  (Key = BlockNumber, SubKey = B256)
+        let acct_keys = {
+            let mut keys: BTreeSet<B256> = BTreeSet::new();
+            let mut cursor = self.tx.cursor_dup_write::<HashedAccountChangeSets>()?;
+            let mut entry = cursor.seek(*range.start())?;
+            while let Some((block_num, first_val)) = entry {
+                if block_num > *range.end() { break; }
                 counts.hashed_accounts_written_total += 1;
+                keys.insert(first_val.hashed_address);
+                while let Some((_, val)) = cursor.next_dup()? {
+                    counts.hashed_accounts_written_total += 1;
+                    keys.insert(val.hashed_address);
+                }
+                cursor.delete_current_duplicates()?;
+                entry = cursor.current()?;
             }
-        }
+            keys
+        };
 
-        // Count storage changeset entries
-        {
-            let mut cursor = self.tx.cursor_read::<HashedStorageChangeSets>()?;
+        // Hashed storages  (Key = BlockNumberHashedAddress, SubKey = B256)
+        let stor_keys = {
+            let mut keys: BTreeSet<(B256, B256)> = BTreeSet::new();
+            let mut cursor = self.tx.cursor_dup_write::<HashedStorageChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
-            let mut walker = cursor.walk_range(start..=end)?;
-            while walker.next().is_some() {
+            let mut entry = cursor.seek(start)?;
+            while let Some((key, first_val)) = entry {
+                if key > end { break; }
                 counts.hashed_storages_written_total += 1;
+                keys.insert((key.0 .1, first_val.key));
+                while let Some((k, val)) = cursor.next_dup()? {
+                    counts.hashed_storages_written_total += 1;
+                    keys.insert((k.0 .1, val.key));
+                }
+                cursor.delete_current_duplicates()?;
+                entry = cursor.current()?;
+            }
+            keys
+        };
+
+        // ---- Phase B: history bitmap removal — 1 seek per unique key, range filter ----
+        {
+            let mut cursor = self.tx.cursor_write::<AccountsTrieHistory>()?;
+            for nibbles in &acct_trie_keys {
+                Self::prune_history_range_for_key(
+                    &mut cursor,
+                    &range,
+                    AccountTrieShardedKey::new(nibbles.clone(), 0),
+                    |k| k.key == *nibbles,
+                )?;
+            }
+        }
+        {
+            let mut cursor = self.tx.cursor_write::<StoragesTrieHistory>()?;
+            for (hashed_address, nibbles) in &stor_trie_keys {
+                Self::prune_history_range_for_key(
+                    &mut cursor,
+                    &range,
+                    StorageTrieShardedKey::new(*hashed_address, nibbles.clone(), 0),
+                    |k| k.hashed_address == *hashed_address && k.key == *nibbles,
+                )?;
+            }
+        }
+        {
+            let mut cursor = self.tx.cursor_write::<HashedAccountsHistory>()?;
+            for addr in &acct_keys {
+                Self::prune_history_range_for_key(
+                    &mut cursor,
+                    &range,
+                    HashedAccountShardedKey::new(*addr, 0),
+                    |k| k.0.key == *addr,
+                )?;
+            }
+        }
+        {
+            let mut cursor = self.tx.cursor_write::<HashedStoragesHistory>()?;
+            for (hashed_address, storage_key) in &stor_keys {
+                Self::prune_history_range_for_key(
+                    &mut cursor,
+                    &range,
+                    HashedStorageShardedKey {
+                        hashed_address: *hashed_address,
+                        sharded_key: ShardedKey::new(*storage_key, 0),
+                    },
+                    |k| {
+                        k.hashed_address == *hashed_address
+                            && k.sharded_key.key == *storage_key
+                    },
+                )?;
             }
         }
 
-        // Remove pruned block numbers from history bitmaps
-        self.remove_all_history_entries(range.clone())?;
-
-        // Delete changesets for pruned blocks
-        self.prune_changesets(range)?;
+        // Changesets already deleted during the single-pass walk above.
 
         self.set_earliest_block_number_inner(target_block, new_earliest_block_ref.block.hash)?;
 
@@ -1564,19 +1714,17 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
 
     fn store_account_branches(
         &self,
-        mut account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
+        account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
     ) -> OpProofsStorageResult<()> {
         if account_nodes.is_empty() {
             return Ok(());
         }
-        account_nodes.sort_by_key(|(key, _)| *key);
 
         let mut cursor = self.tx.cursor_write::<AccountsTrie>()?;
         for (nibbles, maybe_node) in account_nodes {
             if let Some(node) = maybe_node {
-                cursor.upsert(StoredNibbles(nibbles), &node)?;
+                cursor.append(StoredNibbles(nibbles), &node)?;
             }
-            // None means node doesn't exist — skip (no need to insert tombstones in current state)
         }
         Ok(())
     }
@@ -1584,19 +1732,18 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
     fn store_storage_branches(
         &self,
         hashed_address: B256,
-        mut storage_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
+        storage_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
     ) -> OpProofsStorageResult<()> {
         if storage_nodes.is_empty() {
             return Ok(());
         }
-        storage_nodes.sort_by_key(|(key, _)| *key);
 
         let mut cursor = self.tx.cursor_dup_write::<StoragesTrie>()?;
         for (nibbles, maybe_node) in storage_nodes {
             if let Some(node) = maybe_node {
-                cursor.upsert(
+                cursor.append_dup(
                     hashed_address,
-                    &StorageTrieEntry {
+                    StorageTrieEntry {
                         nibbles: StoredNibblesSubKey(nibbles),
                         node,
                     },
@@ -1608,19 +1755,17 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
 
     fn store_hashed_accounts(
         &self,
-        mut accounts: Vec<(B256, Option<Account>)>,
+        accounts: Vec<(B256, Option<Account>)>,
     ) -> OpProofsStorageResult<()> {
         if accounts.is_empty() {
             return Ok(());
         }
-        accounts.sort_by_key(|(key, _)| *key);
 
         let mut cursor = self.tx.cursor_write::<HashedAccounts>()?;
         for (hashed_address, maybe_account) in accounts {
             if let Some(account) = maybe_account {
-                cursor.upsert(hashed_address, &account)?;
+                cursor.append(hashed_address, &account)?;
             }
-            // None: account doesn't exist, skip
         }
         Ok(())
     }
@@ -1628,18 +1773,17 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
     fn store_hashed_storages(
         &self,
         hashed_address: B256,
-        mut storages: Vec<(B256, U256)>,
+        storages: Vec<(B256, U256)>,
     ) -> OpProofsStorageResult<()> {
         if storages.is_empty() {
             return Ok(());
         }
-        storages.sort_by_key(|(key, _)| *key);
 
         let mut cursor = self.tx.cursor_dup_write::<HashedStorages>()?;
         for (storage_key, value) in storages {
-            cursor.upsert(
+            cursor.append_dup(
                 hashed_address,
-                &StorageEntry { key: storage_key, value },
+                StorageEntry { key: storage_key, value },
             )?;
         }
         Ok(())

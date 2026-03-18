@@ -19,7 +19,7 @@ use reth_primitives_traits::{Account, StorageEntry};
 use reth_trie_common::{
     BranchNodeCompact, Nibbles, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey,
 };
-use std::{collections::HashMap, time::Instant};
+use std::time::Instant;
 use tracing::{debug, info};
 
 /// Batch size threshold for storing entries during initialization
@@ -399,26 +399,36 @@ impl<C> InitTable for HashedStoragesInit<C> {
     type Value = StorageEntry;
 
     /// Save mapping of hashed addresses to storage entries to storage.
+    ///
+    /// Entries arrive from the source DupSort cursor in `(address ASC, slot ASC)`
+    /// order.  We group consecutive entries by address — preserving that order —
+    /// so the V2 implementation can use `append_dup` (O(1) per entry, no B-tree
+    /// traversal).  This keeps page-cache pressure constant regardless of table
+    /// size, which is critical on 16 GB machines.
     fn store_entries(
         store: &impl OpProofsStore,
         entries: impl IntoIterator<Item = (Self::Key, Self::Value)>,
     ) -> Result<(), OpProofsStorageError> {
-        let entries_iter = entries.into_iter();
-        let mut by_address: HashMap<B256, Vec<(B256, U256)>> =
-            HashMap::with_capacity(entries_iter.size_hint().0);
-
-        // Group entries by hashed address
-        for (address, entry) in entries_iter {
-            by_address.entry(address).or_default().push((entry.key, entry.value));
-        }
-
         let provider = store.initialization_provider()?;
-        // Store each address's storage entries
-        for (address, storages) in by_address {
-            provider.store_hashed_storages(address, storages)?;
-        }
-        provider.commit()?;
 
+        let mut current_address: Option<B256> = None;
+        let mut current_slots: Vec<(B256, U256)> = Vec::new();
+
+        for (address, entry) in entries {
+            if current_address.as_ref() != Some(&address) {
+                if let Some(addr) = current_address.take() {
+                    provider.store_hashed_storages(addr, std::mem::take(&mut current_slots))?;
+                }
+                current_address = Some(address);
+            }
+            current_slots.push((entry.key, entry.value));
+        }
+
+        if let Some(addr) = current_address {
+            provider.store_hashed_storages(addr, current_slots)?;
+        }
+
+        provider.commit()?;
         Ok(())
     }
 }
@@ -447,29 +457,33 @@ impl<C> InitTable for StoragesTrieInit<C> {
     type Value = StorageTrieEntry;
 
     /// Save mapping of hashed addresses to storage trie entries to storage.
+    ///
+    /// Same consecutive-grouping approach as `HashedStoragesInit` — preserves
+    /// source order for `append_dup`.
     fn store_entries(
         store: &impl OpProofsStore,
         entries: impl IntoIterator<Item = (Self::Key, Self::Value)>,
     ) -> Result<(), OpProofsStorageError> {
-        let entries_iter = entries.into_iter();
-        let mut by_address: HashMap<B256, Vec<(Nibbles, Option<BranchNodeCompact>)>> =
-            HashMap::with_capacity(entries_iter.size_hint().0);
-
-        // Group entries by hashed address
-        for (hashed_address, storage_entry) in entries_iter {
-            by_address
-                .entry(hashed_address)
-                .or_default()
-                .push((storage_entry.nibbles.0, Some(storage_entry.node)));
-        }
-
         let provider = store.initialization_provider()?;
-        // Store each address's storage trie branches
-        for (address, branches) in by_address {
-            provider.store_storage_branches(address, branches)?;
-        }
-        provider.commit()?;
 
+        let mut current_address: Option<B256> = None;
+        let mut current_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)> = Vec::new();
+
+        for (hashed_address, storage_entry) in entries {
+            if current_address.as_ref() != Some(&hashed_address) {
+                if let Some(addr) = current_address.take() {
+                    provider.store_storage_branches(addr, std::mem::take(&mut current_nodes))?;
+                }
+                current_address = Some(hashed_address);
+            }
+            current_nodes.push((storage_entry.nibbles.0, Some(storage_entry.node)));
+        }
+
+        if let Some(addr) = current_address {
+            provider.store_storage_branches(addr, current_nodes)?;
+        }
+
+        provider.commit()?;
         Ok(())
     }
 }

@@ -11531,6 +11531,7 @@ dependencies = [
  "auto_impl",
  "bincode 2.0.1",
  "bytes",
+ "codspeed-criterion-compat",
  "crossbeam-channel",
  "derive_more",
  "eyre",

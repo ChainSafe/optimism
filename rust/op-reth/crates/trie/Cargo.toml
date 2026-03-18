@@ -77,8 +77,14 @@ secp256k1 = { workspace = true, features = ["rand", "std"] }
 mockall.workspace = true
 eyre.workspace = true
 
+criterion.workspace = true
+
 # misc
 serial_test.workspace = true
+
+[[bench]]
+name = "prune_bench"
+harness = false
 
 [features]
 serde-bincode-compat = [
