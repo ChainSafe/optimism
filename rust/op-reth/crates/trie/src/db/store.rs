@@ -982,12 +982,9 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
         &self,
         account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
     ) -> OpProofsStorageResult<()> {
-        let mut account_nodes = account_nodes;
         if account_nodes.is_empty() {
             return Ok(());
         }
-
-        account_nodes.sort_by_key(|(key, _)| *key);
 
         self.env.update(|tx| {
             self.persist_history_batch(tx, 0, account_nodes.into_iter(), true)?;
@@ -1000,12 +997,9 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
         hashed_address: B256,
         storage_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
     ) -> OpProofsStorageResult<()> {
-        let mut storage_nodes = storage_nodes;
         if storage_nodes.is_empty() {
             return Ok(());
         }
-
-        storage_nodes.sort_by_key(|(key, _)| *key);
 
         self.env.update(|tx| {
             self.persist_history_batch(
@@ -1022,13 +1016,9 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
         &self,
         accounts: Vec<(B256, Option<Account>)>,
     ) -> OpProofsStorageResult<()> {
-        let mut accounts = accounts;
         if accounts.is_empty() {
             return Ok(());
         }
-
-        // sort the accounts by key to ensure insertion is efficient
-        accounts.sort_by_key(|(key, _)| *key);
 
         self.env.update(|tx| {
             self.persist_history_batch(tx, 0, accounts.into_iter(), true)?;
@@ -1041,13 +1031,9 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
         hashed_address: B256,
         storages: Vec<(B256, U256)>,
     ) -> OpProofsStorageResult<()> {
-        let mut storages = storages;
         if storages.is_empty() {
             return Ok(());
         }
-
-        // sort the storages by key to ensure insertion is efficient
-        storages.sort_by_key(|(key, _)| *key);
 
         self.env.update(|tx| {
             self.persist_history_batch(
