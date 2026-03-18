@@ -227,6 +227,7 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
             }
 
             if batch.len() >= storage_threshold {
+                log_memory_stats(&format!("{name} before_store entries={total_entries}"));
                 info!("Storing {} entries, total entries: {}", name, total_entries);
                 I::store_entries(storage, batch.drain(..))?;
                 log_memory_stats(&format!("{name} after_store entries={total_entries}"));
