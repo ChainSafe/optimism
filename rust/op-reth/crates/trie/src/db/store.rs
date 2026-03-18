@@ -1103,20 +1103,32 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
         info!("[REOPEN] Dropping and reopening MDBX environment to reclaim internal memory");
         log_memory_stats_store("before_reopen");
 
-        let new_env = init_db_for::<_, Tables>(&self.path, DatabaseArguments::default())
-            .map_err(|e| DatabaseError::Other(format!("Failed to reopen database: {e}")))?;
-
         // SAFETY: This is called ONLY during single-threaded initialization.
         // At this point:
         //   - No MDBX transactions are open (we're between batch commits)
         //   - No cursors or references to `self.env` are alive
-        //   - The old DatabaseEnv is properly dropped (closing the old MDBX env handle)
-        // This is a diagnostic test to verify that environment reopen reclaims
-        // libmdbx's internal anonymous memory.
+        //
+        // We MUST drop the old env FIRST to release MDBX's exclusive file lock
+        // before opening a new one, otherwise the second open fails with EAGAIN.
+        // If the reopen fails after dropping, we panic because the struct is in
+        // an irrecoverable state (env field already consumed). This is acceptable
+        // since failing to open the DB is fatal for init anyway.
+        #[allow(invalid_reference_casting)]
         unsafe {
             let env_ptr = &self.env as *const DatabaseEnv as *mut DatabaseEnv;
-            let old = std::ptr::replace(env_ptr, new_env);
+
+            // Move the old env out and drop it to release the MDBX file lock
+            let old = std::ptr::read(env_ptr);
             drop(old);
+
+            // Now open a fresh env (lock is released, free to acquire)
+            let new_env = init_db_for::<_, Tables>(&self.path, DatabaseArguments::default())
+                .unwrap_or_else(|e| {
+                    panic!("Fatal: failed to reopen MDBX database after dropping old env: {e}")
+                });
+
+            // Write the new env into the struct field
+            std::ptr::write(env_ptr, new_env);
         }
 
         log_memory_stats_store("after_reopen");
