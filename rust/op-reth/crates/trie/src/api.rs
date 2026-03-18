@@ -231,8 +231,6 @@ pub trait OpProofsInitialStateStore: Send + Sync + Debug {
 
     /// Reopen the underlying database environment to reclaim internal metadata memory.
     /// Called periodically during init to prevent unbounded anonymous memory growth.
-    /// Default implementation is a no-op for backends that don't need it.
-    fn reopen_env_for_init(&self) -> OpProofsStorageResult<()> {
-        Ok(())
-    }
+    /// Backends that don't need this should return `Ok(())`.
+    fn reopen_env_for_init(&self) -> OpProofsStorageResult<()>;
 }

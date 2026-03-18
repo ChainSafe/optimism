@@ -827,6 +827,10 @@ impl OpProofsInitialStateStore for InMemoryProofsStorage {
             Err(OpProofsStorageError::NoBlocksFound)
         }
     }
+
+    fn reopen_env_for_init(&self) -> OpProofsStorageResult<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
