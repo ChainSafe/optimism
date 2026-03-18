@@ -197,8 +197,7 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
         };
 
         let storage = &self.storage;
-        let source_size_hint = source.size_hint().0;
-        let mut batch = Vec::with_capacity(source_size_hint.min(storage_threshold));
+        let mut batch = Vec::with_capacity(storage_threshold);
         let mut total_entries: usize = 0;
 
         for entry in source {
@@ -229,17 +228,14 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
 
             if batch.len() >= storage_threshold {
                 info!("Storing {} entries, total entries: {}", name, total_entries);
-                I::store_entries(storage, batch)?;
+                I::store_entries(storage, batch.drain(..))?;
                 log_memory_stats(&format!("{name} after_store entries={total_entries}"));
-                batch = Vec::with_capacity(
-                    (source_size_hint.saturating_sub(total_entries)).min(storage_threshold),
-                );
             }
         }
 
         if !batch.is_empty() {
             info!("Storing final {} entries", name);
-            I::store_entries(storage, batch)?;
+            I::store_entries(storage, batch.drain(..))?;
             log_memory_stats(&format!("{name} after_final_store entries={total_entries}"));
         }
 
