@@ -1086,7 +1086,7 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
                     .map(|(key, val)| (hashed_address, key, Some(StorageValue(val)))),
                 true,
             )?;
-            Ok(())
+            Ok::<(), OpProofsStorageError>(())
         })?;
         log_memory_stats_store(&format!("HashedStorageHistory after_commit count={count}"));
         Ok(())
