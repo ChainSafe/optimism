@@ -28,6 +28,11 @@ const INITIALIZE_STORAGE_THRESHOLD: usize = 100000;
 /// Threshold for logging progress during initialization
 const INITIALIZE_LOG_THRESHOLD: usize = 100000;
 
+/// Threshold for reopening the MDBX environment during initialization.
+/// This reclaims anonymous memory accumulated by libmdbx's internal page management.
+/// ~20 bytes/entry × 10M entries = ~200MB reclaimed per reopen cycle.
+const REOPEN_ENV_THRESHOLD: usize = 10_000_000;
+
 /// Initialization job for external storage.
 #[derive(Debug, Constructor)]
 pub struct InitializationJob<Tx: DbTx, S: OpProofsStore + Send> {
@@ -231,6 +236,17 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + OpProofsInitialStateStore + Send>
                 info!("Storing {} entries, total entries: {}", name, total_entries);
                 I::store_entries(storage, batch.drain(..))?;
                 log_memory_stats(&format!("{name} after_store entries={total_entries}"));
+
+                // Periodically reopen the MDBX environment to reclaim anonymous memory
+                // that accumulates in libmdbx's internal page management metadata
+                // (~20 bytes/entry). No-op for InMemoryProofsStorage.
+                if total_entries.is_multiple_of(REOPEN_ENV_THRESHOLD) {
+                    info!(
+                        "[REOPEN] Triggering env reopen at {} entries for {}",
+                        total_entries, name
+                    );
+                    storage.reopen_env_for_init()?;
+                }
             }
         }
 

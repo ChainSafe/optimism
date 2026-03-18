@@ -31,7 +31,7 @@ use reth_trie_common::{
     BranchNodeCompact, HashedPostState, Nibbles, StoredNibbles,
     updates::{StorageTrieUpdates, TrieUpdates},
 };
-use std::{ops::RangeBounds, path::Path};
+use std::{ops::RangeBounds, path::{Path, PathBuf}};
 use tracing::info;
 
 /// Log memory statistics from /proc/self/status (Linux only).
@@ -68,6 +68,7 @@ fn log_memory_stats_store(context: &str) {
 #[derive(Debug)]
 pub struct MdbxProofsStorage {
     env: DatabaseEnv,
+    path: PathBuf,
 }
 
 struct ProofWindowValue {
@@ -99,7 +100,7 @@ impl MdbxProofsStorage {
     pub fn new(path: &Path) -> Result<Self, OpProofsStorageError> {
         let env = init_db_for::<_, Tables>(path, DatabaseArguments::default())
             .map_err(|e| DatabaseError::Other(format!("Failed to open database: {e}")))?;
-        Ok(Self { env })
+        Ok(Self { env, path: path.to_path_buf() })
     }
 
     fn inner_get_latest_block_number_hash(
@@ -1096,6 +1097,30 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
         let anchor = self.get_initial_state_anchor()?.ok_or(NoBlocksFound)?;
         self.set_earliest_block_number(anchor.number, anchor.hash)?;
         Ok(anchor)
+    }
+
+    fn reopen_env_for_init(&self) -> OpProofsStorageResult<()> {
+        info!("[REOPEN] Dropping and reopening MDBX environment to reclaim internal memory");
+        log_memory_stats_store("before_reopen");
+
+        let new_env = init_db_for::<_, Tables>(&self.path, DatabaseArguments::default())
+            .map_err(|e| DatabaseError::Other(format!("Failed to reopen database: {e}")))?;
+
+        // SAFETY: This is called ONLY during single-threaded initialization.
+        // At this point:
+        //   - No MDBX transactions are open (we're between batch commits)
+        //   - No cursors or references to `self.env` are alive
+        //   - The old DatabaseEnv is properly dropped (closing the old MDBX env handle)
+        // This is a diagnostic test to verify that environment reopen reclaims
+        // libmdbx's internal anonymous memory.
+        unsafe {
+            let env_ptr = &self.env as *const DatabaseEnv as *mut DatabaseEnv;
+            let old = std::ptr::replace(env_ptr, new_env);
+            drop(old);
+        }
+
+        log_memory_stats_store("after_reopen");
+        Ok(())
     }
 }
 

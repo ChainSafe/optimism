@@ -228,4 +228,11 @@ pub trait OpProofsInitialStateStore: Send + Sync + Debug {
     /// Commit the initial state - mark the anchor as completed and also set the earliest block
     /// number to anchor.
     fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash>;
+
+    /// Reopen the underlying database environment to reclaim internal metadata memory.
+    /// Called periodically during init to prevent unbounded anonymous memory growth.
+    /// Default implementation is a no-op for backends that don't need it.
+    fn reopen_env_for_init(&self) -> OpProofsStorageResult<()> {
+        Ok(())
+    }
 }
