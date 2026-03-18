@@ -1077,7 +1077,7 @@ impl OpProofsInitialStateStore for MdbxProofsStorage {
         }
 
         let count = storages.len();
-        self.env.update(|tx| {
+        let _ = self.env.update(|tx| {
             self.persist_history_batch(
                 tx,
                 0,
