@@ -70,7 +70,6 @@ alloy-consensus.workspace = true
 alloy-genesis.workspace = true
 reth-chainspec.workspace = true
 reth-db-common.workspace = true
-reth-ethereum-primitives.workspace = true
 reth-evm-ethereum.workspace = true
 reth-storage-errors.workspace = true
 secp256k1 = { workspace = true, features = ["rand", "std"] }

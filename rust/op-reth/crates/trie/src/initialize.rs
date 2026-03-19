@@ -405,6 +405,24 @@ impl<C> InitTable for HashedStoragesInit<C> {
     /// so the V2 implementation can use `append_dup` (O(1) per entry, no B-tree
     /// traversal).  This keeps page-cache pressure constant regardless of table
     /// size, which is critical on 16 GB machines.
+    ///
+    /// # Why sequential grouping (not `HashMap`)
+    ///
+    /// An earlier version collected entries into a `HashMap<B256, Vec<…>>` to
+    /// group by address. This silently randomized iteration order, which
+    /// broke the resume-on-restart guarantee:
+    ///
+    /// 1. `store_hashed_storages` commits each call inside its own MDBX
+    ///    transaction (via `initialization_provider()` → `commit()`).
+    /// 2. If the process dies mid-batch, the resume key is set to the
+    ///    maximum address successfully committed.
+    /// 3. With HashMap ordering, addresses are flushed in arbitrary order
+    ///    (e.g. B, D, A, C). If we crash after committing B and D, the
+    ///    resume key is D — and addresses A and C are permanently lost.
+    ///
+    /// Sequential grouping preserves the cursor's sorted order, so the
+    /// committed prefix is always a contiguous range `[min..=resume_key]`,
+    /// and no data is skipped on restart.
     fn store_entries(
         store: &impl OpProofsStore,
         entries: impl IntoIterator<Item = (Self::Key, Self::Value)>,
@@ -460,6 +478,24 @@ impl<C> InitTable for StoragesTrieInit<C> {
     ///
     /// Same consecutive-grouping approach as `HashedStoragesInit` — preserves
     /// source order for `append_dup`.
+    ///
+    /// # Why sequential grouping (not `HashMap`)
+    ///
+    /// An earlier version collected entries into a `HashMap<B256, Vec<…>>` to
+    /// group by address. This silently randomized iteration order, which
+    /// broke the resume-on-restart guarantee:
+    ///
+    /// 1. `store_storage_branches` commits each call inside its own MDBX
+    ///    transaction (via `initialization_provider()` → `commit()`).
+    /// 2. If the process dies mid-batch, the resume key is set to the
+    ///    maximum address successfully committed.
+    /// 3. With HashMap ordering, addresses are flushed in arbitrary order
+    ///    (e.g. B, D, A, C). If we crash after committing B and D, the
+    ///    resume key is D — and addresses A and C are permanently lost.
+    ///
+    /// Sequential grouping preserves the cursor's sorted order, so the
+    /// committed prefix is always a contiguous range `[min..=resume_key]`,
+    /// and no data is skipped on restart.
     fn store_entries(
         store: &impl OpProofsStore,
         entries: impl IntoIterator<Item = (Self::Key, Self::Value)>,
@@ -1201,5 +1237,208 @@ mod tests {
             }
             assert_eq!(got, vec![n2.0, n3.0]);
         }
+    }
+
+    // ── RecordingStore spy ─────────────────────────────────────────────
+    //
+    // Wraps `MdbxProofsStorage` and records the order of hashed addresses
+    // passed to `store_hashed_storages` / `store_storage_branches`.
+    // Used by the two `_preserves_sorted_address_order` tests below to
+    // assert that sequential grouping is used (not HashMap).
+
+    use crate::OpProofsStorageResult;
+    use std::sync::Mutex;
+
+    /// Recording wrapper around any [`OpProofsInitProvider`] that logs the
+    /// hashed addresses passed to `store_hashed_storages` and
+    /// `store_storage_branches` in call order.
+    #[derive(Debug)]
+    struct RecordingInitProvider<T> {
+        inner: T,
+        hashed_storage_addresses: Arc<Mutex<Vec<B256>>>,
+        storage_branch_addresses: Arc<Mutex<Vec<B256>>>,
+    }
+
+    impl<T: OpProofsInitProvider> OpProofsInitProvider for RecordingInitProvider<T> {
+        fn initial_state_anchor(&self) -> OpProofsStorageResult<InitialStateAnchor> {
+            self.inner.initial_state_anchor()
+        }
+
+        fn set_initial_state_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()> {
+            self.inner.set_initial_state_anchor(anchor)
+        }
+
+        fn store_account_branches(
+            &self,
+            account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
+        ) -> OpProofsStorageResult<()> {
+            self.inner.store_account_branches(account_nodes)
+        }
+
+        fn store_storage_branches(
+            &self,
+            hashed_address: B256,
+            storage_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
+        ) -> OpProofsStorageResult<()> {
+            self.storage_branch_addresses.lock().unwrap().push(hashed_address);
+            self.inner.store_storage_branches(hashed_address, storage_nodes)
+        }
+
+        fn store_hashed_accounts(
+            &self,
+            accounts: Vec<(B256, Option<Account>)>,
+        ) -> OpProofsStorageResult<()> {
+            self.inner.store_hashed_accounts(accounts)
+        }
+
+        fn store_hashed_storages(
+            &self,
+            hashed_address: B256,
+            storages: Vec<(B256, U256)>,
+        ) -> OpProofsStorageResult<()> {
+            self.hashed_storage_addresses.lock().unwrap().push(hashed_address);
+            self.inner.store_hashed_storages(hashed_address, storages)
+        }
+
+        fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash> {
+            self.inner.commit_initial_state()
+        }
+
+        fn commit(self) -> OpProofsStorageResult<()> {
+            self.inner.commit()
+        }
+    }
+
+    /// Spy around [`MdbxProofsStorage`] that records the order of addresses
+    /// passed to `store_hashed_storages` / `store_storage_branches`, while
+    /// delegating the actual storage to the real MDBX backend.
+    #[derive(Debug)]
+    struct RecordingStore {
+        inner: MdbxProofsStorage,
+        hashed_storage_addresses: Arc<Mutex<Vec<B256>>>,
+        storage_branch_addresses: Arc<Mutex<Vec<B256>>>,
+    }
+
+    impl RecordingStore {
+        fn new(inner: MdbxProofsStorage) -> Self {
+            Self {
+                inner,
+                hashed_storage_addresses: Arc::new(Mutex::new(Vec::new())),
+                storage_branch_addresses: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl OpProofsStore for RecordingStore {
+        type ProviderRO<'a> = <MdbxProofsStorage as OpProofsStore>::ProviderRO<'a>;
+        type ProviderRw<'a> = <MdbxProofsStorage as OpProofsStore>::ProviderRw<'a>;
+        type Initializer<'a> = RecordingInitProvider<
+            <MdbxProofsStorage as OpProofsStore>::Initializer<'a>,
+        >;
+
+        fn provider_ro<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRO<'a>> {
+            self.inner.provider_ro()
+        }
+
+        fn provider_rw<'a>(&'a self) -> OpProofsStorageResult<Self::ProviderRw<'a>> {
+            self.inner.provider_rw()
+        }
+
+        fn initialization_provider<'a>(
+            &'a self,
+        ) -> OpProofsStorageResult<Self::Initializer<'a>> {
+            Ok(RecordingInitProvider {
+                inner: self.inner.initialization_provider()?,
+                hashed_storage_addresses: self.hashed_storage_addresses.clone(),
+                storage_branch_addresses: self.storage_branch_addresses.clone(),
+            })
+        }
+    }
+
+    // ── Regression tests: address order must be preserved ──────────────
+    //
+    // These tests guard against replacing the sequential grouping with a
+    // HashMap (or any other order-randomizing collection). If someone does,
+    // the asserted address vector will no longer match the sorted input.
+
+    #[test]
+    fn test_store_hashed_storages_preserves_sorted_address_order() {
+        let dir = TempDir::new().unwrap();
+        let store =
+            RecordingStore::new(MdbxProofsStorage::new(dir.path()).expect("env"));
+
+        // Three addresses in ascending order
+        let a = k(0x11);
+        let b = k(0x22);
+        let c = k(0x33);
+
+        // Entries sorted by (address, slot) – the order the source cursor provides
+        let entries = vec![
+            (a, StorageEntry { key: k(0x01), value: U256::from(1) }),
+            (a, StorageEntry { key: k(0x02), value: U256::from(2) }),
+            (b, StorageEntry { key: k(0x03), value: U256::from(3) }),
+            (c, StorageEntry { key: k(0x04), value: U256::from(4) }),
+            (c, StorageEntry { key: k(0x05), value: U256::from(5) }),
+        ];
+
+        HashedStoragesInit::<()>::store_entries(&store, entries).unwrap();
+
+        let addresses = store.hashed_storage_addresses.lock().unwrap();
+        assert_eq!(
+            *addresses,
+            vec![a, b, c],
+            "addresses must be flushed in sorted (cursor) order"
+        );
+    }
+
+    #[test]
+    fn test_store_storage_branches_preserves_sorted_address_order() {
+        let dir = TempDir::new().unwrap();
+        let store =
+            RecordingStore::new(MdbxProofsStorage::new(dir.path()).expect("env"));
+
+        let a = k(0x11);
+        let b = k(0x22);
+        let c = k(0x33);
+
+        let entries = vec![
+            (
+                a,
+                StorageTrieEntry {
+                    nibbles: StoredNibblesSubKey(Nibbles::from_nibbles_unchecked(vec![1])),
+                    node: create_test_branch_node(),
+                },
+            ),
+            (
+                b,
+                StorageTrieEntry {
+                    nibbles: StoredNibblesSubKey(Nibbles::from_nibbles_unchecked(vec![2])),
+                    node: create_test_branch_node(),
+                },
+            ),
+            (
+                b,
+                StorageTrieEntry {
+                    nibbles: StoredNibblesSubKey(Nibbles::from_nibbles_unchecked(vec![3])),
+                    node: create_test_branch_node(),
+                },
+            ),
+            (
+                c,
+                StorageTrieEntry {
+                    nibbles: StoredNibblesSubKey(Nibbles::from_nibbles_unchecked(vec![4])),
+                    node: create_test_branch_node(),
+                },
+            ),
+        ];
+
+        StoragesTrieInit::<()>::store_entries(&store, entries).unwrap();
+
+        let addresses = store.storage_branch_addresses.lock().unwrap();
+        assert_eq!(
+            *addresses,
+            vec![a, b, c],
+            "addresses must be flushed in sorted (cursor) order"
+        );
     }
 }

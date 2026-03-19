@@ -8,7 +8,7 @@ use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_trie::{
-    db::MdbxProofsStorageV2, InitializationJob, OpProofsStorage, OpProofsStore, OpProofsProviderRO,
+    db::MdbxProofsStorageV2, InitializationJob, OpProofsStore, OpProofsProviderRO,
 };
 use reth_provider::{BlockNumReader, DBProvider, DatabaseProviderFactory};
 use std::{path::PathBuf, sync::Arc};
@@ -47,11 +47,10 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> InitCommand<C> {
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
         // Create the proofs storage
-        let storage: OpProofsStorage<Arc<MdbxProofsStorageV2>> = Arc::new(
+        let storage: Arc<MdbxProofsStorageV2> = Arc::new(
             MdbxProofsStorageV2::new(&self.storage_path)
                 .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
-        )
-        .into();
+        );
 
         // Check if already initialized
         if let Some((block_number, block_hash)) = storage.provider_ro()?.get_earliest_block_number()? {
