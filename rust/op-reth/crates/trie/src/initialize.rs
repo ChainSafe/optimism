@@ -465,7 +465,6 @@ impl<C> InitTable for StoragesTrieInit<C> {
     /// Entries must arrive in sorted order (address ASC, nibbles ASC) from the
     /// source cursor. We group consecutively by address to preserve that
     /// order for the backend's `append_dup` calls.
-    ///
     // See [`HashedStoragesInit::store_entries`] for why HashMap must not be
     // used here — the same silent-data-loss-on-resume bug applies.
     fn store_entries(
@@ -479,10 +478,7 @@ impl<C> InitTable for StoragesTrieInit<C> {
             if current_address.as_ref() != Some(&hashed_address) {
                 // Flush previous address group
                 if let Some(addr) = current_address.take() {
-                    store.store_storage_branches(
-                        addr,
-                        std::mem::take(&mut current_branches),
-                    )?;
+                    store.store_storage_branches(addr, std::mem::take(&mut current_branches))?;
                 }
                 current_address = Some(hashed_address);
             }
@@ -1264,7 +1260,7 @@ mod tests {
     /// Verifies that `HashedStoragesInit::store_entries` calls
     /// `store_hashed_storages` in strictly ascending address order.
     ///
-    /// This is the regression test for the HashMap ordering bug: HashMap
+    /// This is the regression test for the `HashMap` ordering bug: `HashMap`
     /// randomised iteration order, caused silent data loss in case where
     /// the batch contains multiple addresses and
     /// the batch was partially processed before a failure.
@@ -1274,7 +1270,7 @@ mod tests {
 
         // Build entries for 5 addresses in ascending order, each with 2 slots.
         // These simulate what the source cursor yields in a single batch.
-        let addresses: Vec<B256> = (1u8..=5).map(|b| k(b)).collect();
+        let addresses: Vec<B256> = (1u8..=5).map(k).collect();
         let slot_a = k(0xAA);
         let slot_b = k(0xBB);
 
@@ -1301,12 +1297,7 @@ mod tests {
 
         // Strictly ascending — no duplicates, no out-of-order
         for w in recorded.windows(2) {
-            assert!(
-                w[0] < w[1],
-                "addresses must be strictly ascending: {:?} >= {:?}",
-                w[0],
-                w[1]
-            );
+            assert!(w[0] < w[1], "addresses must be strictly ascending: {:?} >= {:?}", w[0], w[1]);
         }
     }
 
@@ -1317,7 +1308,7 @@ mod tests {
         let spy = RecordingStore::default();
 
         // Build entries for 5 addresses in ascending order, each with 2 trie paths.
-        let addresses: Vec<B256> = (1u8..=5).map(|b| k(b)).collect();
+        let addresses: Vec<B256> = (1u8..=5).map(k).collect();
         let path_a = Nibbles::from_nibbles_unchecked(vec![0x0A]);
         let path_b = Nibbles::from_nibbles_unchecked(vec![0x0B]);
 
@@ -1328,14 +1319,14 @@ mod tests {
                     (
                         *addr,
                         StorageTrieEntry {
-                            nibbles: StoredNibblesSubKey(path_a.clone()),
+                            nibbles: StoredNibblesSubKey(path_a),
                             node: create_test_branch_node(),
                         },
                     ),
                     (
                         *addr,
                         StorageTrieEntry {
-                            nibbles: StoredNibblesSubKey(path_b.clone()),
+                            nibbles: StoredNibblesSubKey(path_b),
                             node: create_test_branch_node(),
                         },
                     ),
@@ -1343,8 +1334,7 @@ mod tests {
             })
             .collect();
 
-        StoragesTrieInit::<()>::store_entries(&spy, entries)
-            .expect("store_entries should succeed");
+        StoragesTrieInit::<()>::store_entries(&spy, entries).expect("store_entries should succeed");
 
         let recorded = spy.storage_branch_addresses.lock().unwrap().clone();
 
@@ -1356,12 +1346,7 @@ mod tests {
 
         // Strictly ascending
         for w in recorded.windows(2) {
-            assert!(
-                w[0] < w[1],
-                "addresses must be strictly ascending: {:?} >= {:?}",
-                w[0],
-                w[1]
-            );
+            assert!(w[0] < w[1], "addresses must be strictly ascending: {:?} >= {:?}", w[0], w[1]);
         }
     }
 }
