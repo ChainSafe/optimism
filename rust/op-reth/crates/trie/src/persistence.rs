@@ -123,7 +123,10 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
         debug!(target: "live-trie::persistence", ?count, ?first, ?last, "Writing batch to storage");
 
         // Store updates and prune in a single transaction
+        let provider_rw_start = Instant::now();
         let result = self.storage.provider_rw().and_then(|provider| {
+            let open_tx_duration = provider_rw_start.elapsed();
+
             // 1. Store the new block updates (without pruning — pass None)
             let write_start = Instant::now();
             let res = provider.store_trie_updates_batch(updates)?;
@@ -153,15 +156,18 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
             prune_result.map_err(|e| crate::OpProofsStorageError::Other(e.to_string()))?;
 
             // 4. Commit both store and prune atomically
+            let commit_start = Instant::now();
             provider.commit()?;
-            Ok((res, write_duration, prune_duration))
+            let commit_duration = commit_start.elapsed();
+
+            Ok((res, open_tx_duration, write_duration, prune_duration, commit_duration))
         });
 
-        let (successful_last, total_write_count, write_duration, prune_duration) = match result {
-            Ok((counts, wd, pd)) => (last, counts, Some(wd), Some(pd)),
+        let (successful_last, total_write_count, open_tx_duration, write_duration, prune_duration, commit_duration) = match result {
+            Ok((counts, otd, wd, pd, cd)) => (last, counts, Some(otd), Some(wd), Some(pd), Some(cd)),
             Err(e) => {
                 error!(target: "live-trie::persistence", ?e, "Failed to persist batch trie updates");
-                (None, WriteCounts::default(), None, None)
+                (None, WriteCounts::default(), None, None, None, None)
             }
         };
 
@@ -170,8 +176,10 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
             target: "live-trie::persistence",
             ?successful_last,
             ?duration,
+            ?open_tx_duration,
             ?write_duration,
             ?prune_duration,
+            ?commit_duration,
             ?total_write_count,
             blocks_count = count,
             "Batch write complete"
