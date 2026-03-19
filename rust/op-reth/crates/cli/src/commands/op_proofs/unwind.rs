@@ -36,10 +36,7 @@ pub struct UnwindCommand<C: ChainSpecParser> {
 
 impl<C: ChainSpecParser> UnwindCommand<C> {
     /// Validates that the target block number is within a valid range for unwinding.
-    fn validate_unwind_range<Store: OpProofsStore>(
-        &self,
-        storage: Store,
-    ) -> eyre::Result<bool> {
+    fn validate_unwind_range<Store: OpProofsStore>(&self, storage: Store) -> eyre::Result<bool> {
         let (Some((earliest, _)), Some((latest, _))) =
             (storage.get_earliest_block_number()?, storage.get_latest_block_number()?)
         else {
