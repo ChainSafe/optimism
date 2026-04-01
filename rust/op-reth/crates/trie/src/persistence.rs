@@ -5,6 +5,8 @@ use crate::{
     prune::OpProofStoragePruner,
     BlockStateDiff, OpProofsStore, OpProofsStorage,
 };
+#[cfg(feature = "metrics")]
+use crate::metrics::PersistenceMetrics;
 use alloy_eips::eip1898::BlockWithParent;
 use reth_provider::BlockHashReader;
 use crossbeam_channel::{Receiver, Sender};
@@ -80,12 +82,22 @@ pub struct LiveTriePersistenceService<H, S> {
     pruner: OpProofStoragePruner<S, H>,
     storage: OpProofsStorage<S>,
     incoming: Receiver<LiveTriePersistenceAction>,
+
+    #[cfg(feature = "metrics")]
+    metrics: PersistenceMetrics,
 }
 
 impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
     /// Create a new persistence service.
     pub fn new(pruner: OpProofStoragePruner<S, H>, storage: OpProofsStorage<S>, incoming: Receiver<LiveTriePersistenceAction>) -> Self {
-        Self { pruner, storage, incoming }
+        Self {
+            pruner,
+            storage,
+            incoming,
+
+            #[cfg(feature = "metrics")]
+            metrics: PersistenceMetrics::new_with_labels(&[] as &[(&str, &str)]),
+        }
     }
 
     /// Main loop for the service.
@@ -170,6 +182,23 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
                 (None, WriteCounts::default(), None, None, None, None)
             }
         };
+
+        #[cfg(feature = "metrics")]
+        {
+            self.metrics.increment_write_counts(&total_write_count);
+            if let Some(d) = open_tx_duration {
+                self.metrics.open_tx_duration_seconds.record(d);
+            }
+            if let Some(d) = write_duration {
+                self.metrics.write_duration_seconds.record(d);
+            }
+            if let Some(d) = prune_duration {
+                self.metrics.prune_duration_seconds.record(d);
+            }
+            if let Some(d) = commit_duration {
+                self.metrics.commit_duration_seconds.record(d);
+            }
+        }
 
         let duration = start.elapsed();
         info!(

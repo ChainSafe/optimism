@@ -16,7 +16,7 @@ use reth_trie::{
 use reth_trie_common::{
     updates::TrieUpdatesSorted, BranchNodeCompact, HashedPostStateSorted, Nibbles, StoredNibbles,
 };
-use std::{fmt::Debug, time::Duration};
+use std::fmt::Debug;
 
 /// Diff of trie updates and post state for a block.
 #[derive(Debug, Clone, Default)]
@@ -48,18 +48,6 @@ pub struct WriteCounts {
     pub hashed_storages_written_total: u64,
 }
 
-/// Duration metrics for block processing.
-#[derive(Debug, Default, Clone)]
-pub struct OperationDurations {
-    /// Total time to process a block (end-to-end) in seconds
-    pub total_duration_seconds: Duration,
-    /// Time spent executing the block (EVM) in seconds
-    pub execution_duration_seconds: Duration,
-    /// Time spent calculating state root in seconds
-    pub state_root_duration_seconds: Duration,
-    /// Time spent writing trie updates to storage in seconds
-    pub write_duration_seconds: Duration,
-}
 
 /// Provider for interacting with the proofs storage within a transaction.
 #[auto_impl(Arc)]

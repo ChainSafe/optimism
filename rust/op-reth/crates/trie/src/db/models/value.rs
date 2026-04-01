@@ -48,7 +48,7 @@ impl Decode for HashedStorageShardedKey {
 
 /// Keys Storage `ChangeSets` by: Block Number + Hashed Address.
 /// Replaces `BlockNumberAddress` which uses unhashed Address.
-#[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct BlockNumberHashedAddress(pub (BlockNumber, B256));
 
 impl Encode for BlockNumberHashedAddress {

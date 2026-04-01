@@ -1,11 +1,12 @@
 //! Live trie collector for external proofs storage.
 
 use crate::{
-    api::OperationDurations,
     provider::OpProofsStateProviderRef, state::LiveTrieState, BlockStateDiff, OpProofsStorage,
     OpProofsStorageError, OpProofsStore, OpProofsProviderRO, persistence::LiveTriePersistenceHandle,
     OpProofStoragePruner,
 };
+#[cfg(feature = "metrics")]
+use crate::metrics::LiveMetrics;
 use alloy_primitives::B256;
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
 use crossbeam_channel::{bounded, RecvTimeoutError};
@@ -45,6 +46,9 @@ where
     /// Tracks if a persistence task is currently running.
     /// (is_persisting, condvar)
     persistence_status: Arc<(Mutex<bool>, Condvar)>,
+
+    #[cfg(feature = "metrics")]
+    metrics: LiveMetrics,
 }
 
 impl<Evm, Provider, Store> LiveTrieCollector<Evm, Provider, Store>
@@ -71,6 +75,9 @@ where
             backpressure_threshold: DEFAULT_BACKPRESSURE_THRESHOLD,
             persistence_handle,
             persistence_status: Arc::new((Mutex::new(false), Condvar::new())),
+
+            #[cfg(feature = "metrics")]
+            metrics: LiveMetrics::new_with_labels(&[] as &[(&str, &str)]),
         }
     }
 
@@ -91,7 +98,6 @@ where
         &self,
         block: &RecoveredBlock<BlockTy<Evm::Primitives>>,
     ) -> Result<(), OpProofsStorageError> {
-        let mut operation_durations = OperationDurations::default();
         let start = Instant::now();
 
         // Check if we have the parent state
@@ -125,15 +131,14 @@ where
 
         let execution_result = block_executor.execute(&(*block).clone())?;
 
-        operation_durations.execution_duration_seconds = start.elapsed();
+        let execution_duration = start.elapsed();
 
         // 4. Calculate state root
         let hashed_state = state_provider.hashed_post_state(&execution_result.state);
         let (state_root, trie_updates) =
             state_provider.state_root_with_updates(hashed_state.clone())?;
 
-        operation_durations.state_root_duration_seconds =
-            start.elapsed() - operation_durations.execution_duration_seconds;
+        let state_root_duration = start.elapsed() - execution_duration;
 
         // 5. Verify root
         if state_root != block.state_root() {
@@ -144,9 +149,6 @@ where
             });
         }
 
-        operation_durations.state_root_duration_seconds =
-            start.elapsed() - operation_durations.execution_duration_seconds;
-
         // 6. Store Diff to Memory
         self.memory.insert(
             block_ref,
@@ -156,21 +158,20 @@ where
             },
         );
 
-        operation_durations.total_duration_seconds = start.elapsed();
-        operation_durations.write_duration_seconds = operation_durations.total_duration_seconds -
-            operation_durations.state_root_duration_seconds -
-            operation_durations.execution_duration_seconds;
+        let total_duration = start.elapsed();
 
         #[cfg(feature = "metrics")]
         {
-            let block_metrics = self.storage.metrics().block_metrics();
-            block_metrics.record_operation_durations(&operation_durations);
-            // block_metrics.increment_write_counts(&update_result);
+            self.metrics.total_duration_seconds.record(total_duration);
+            self.metrics.execution_duration_seconds.record(execution_duration);
+            self.metrics.state_root_duration_seconds.record(state_root_duration);
         }
 
         info!(
             block_number = block.number(),
-            ?operation_durations,
+            ?total_duration,
+            ?execution_duration,
+            ?state_root_duration,
             "Block executed and trie updates buffered successfully",
         );
 
@@ -188,7 +189,6 @@ where
         sorted_post_state: HashedPostStateSorted,
     ) -> Result<(), OpProofsStorageError> {
         let start = Instant::now();
-        let mut operation_durations = OperationDurations::default();
 
         // Check if we have the parent state
         let tip = self.get_tip()?;
@@ -206,20 +206,14 @@ where
             BlockStateDiff { sorted_trie_updates, sorted_post_state },
         );
 
-        let write_duration = start.elapsed();
-        operation_durations.total_duration_seconds = write_duration;
-        operation_durations.write_duration_seconds = write_duration;
+        let total_duration = start.elapsed();
 
         #[cfg(feature = "metrics")]
-        {
-            let block_metrics = self.storage.metrics().block_metrics();
-            block_metrics.record_operation_durations(&operation_durations);
-            // block_metrics.increment_write_counts(&storage_result);
-        }
+        self.metrics.total_duration_seconds.record(total_duration);
 
         info!(
             block_number = block.block.number,
-            ?operation_durations,
+            ?total_duration,
             "Trie updates buffered successfully",
         );
 
@@ -248,7 +242,6 @@ where
         }
 
         let start = Instant::now();
-        let mut operation_durations = OperationDurations::default();
         let first = &block_updates[0].0;
          let latest_common_block = BlockWithParent {
             block: BlockNumHash::new(first.block.number.saturating_sub(1), first.parent),
@@ -263,6 +256,7 @@ where
             "Handling reorg: unwinding and buffering new path"
         );
 
+        let unwind_start = Instant::now();
         // 1. Unwind Persistence (Disk)
         // We must perform this to ensure the disk state is valid.
         // We use a dedicated helper that talks to the service.
@@ -271,6 +265,7 @@ where
         // 2. Unwind Memory
         // Remove everything strictly after the common ancestor.
         self.memory.prune_after(latest_common_block.block.number);
+        let unwind_duration = unwind_start.elapsed();
 
         // 3. Store new blocks in In-Memory Buffer
         // Just insert them. They become the new tip.
@@ -284,20 +279,19 @@ where
             );
         }
 
-        let write_duration = start.elapsed();
-        operation_durations.total_duration_seconds = write_duration;
-        operation_durations.write_duration_seconds = write_duration;
+        let total_duration = start.elapsed();
 
         #[cfg(feature = "metrics")]
         {
-            let block_metrics = self.storage.metrics().block_metrics();
-            block_metrics.record_operation_durations(&operation_durations);
+            self.metrics.total_duration_seconds.record(total_duration);
+            self.metrics.unwind_duration_seconds.record(unwind_duration);
         }
 
         info!(
             start_block_number = block_updates.first().map(|(b, _, _)| b.block.number),
             end_block_number = block_updates.last().map(|(b, _, _)| b.block.number),
-            ?operation_durations,
+            ?total_duration,
+            ?unwind_duration,
             "Trie updates rewound and buffered successfully",
         );
 
