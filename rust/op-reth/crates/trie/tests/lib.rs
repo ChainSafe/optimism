@@ -3,7 +3,7 @@
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
 use alloy_primitives::{B256, U256};
 use reth_optimism_trie::{
-    db::{MdbxProofsStorage}, BlockStateDiff, InMemoryProofsStorage, OpProofsInitProvider,
+    db::MdbxProofsStorage, BlockStateDiff, InMemoryProofsStorage, OpProofsInitProvider,
     OpProofsStorageError, OpProofsStore, OpProofsProviderRO, OpProofsProviderRw
 };
 use reth_primitives_traits::Account;
@@ -75,7 +75,6 @@ fn create_mdbx_proofs_storage() -> MdbxProofsStorage {
     let path = TempDir::new().unwrap();
     MdbxProofsStorage::new(path.path()).unwrap()
 }
-
 
 /// Test basic storage and retrieval of earliest block number
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
