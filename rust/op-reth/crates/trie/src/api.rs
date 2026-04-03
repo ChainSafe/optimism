@@ -231,7 +231,7 @@ pub trait OpProofsInitProvider: Send + Sync + Debug {
     fn set_initial_state_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()>;
 
     /// Store a batch of account trie branches. Used for saving existing state. For live state
-    /// capture, use [store_trie_updates](OpProofsProviderRw::store_trie_updates).
+    /// capture, use [`store_trie_updates`](OpProofsProviderRw::store_trie_updates).
     fn store_account_branches(
         &self,
         account_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,

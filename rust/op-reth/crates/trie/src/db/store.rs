@@ -82,7 +82,7 @@ pub struct MdbxProofsProvider<TX> {
 
 impl<TX> MdbxProofsProvider<TX> {
     /// Creates a new `MdbxProofsProvider` instance with the given transaction.
-    pub fn new(tx: TX) -> Self {
+    pub const fn new(tx: TX) -> Self {
         Self { tx }
     }
 }
@@ -222,10 +222,10 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         {
             let mut del_cur = self.tx.cursor_dup_write::<T>()?;
             for (k, _) in &pairs {
-                if let Some(vv) = del_cur.seek_by_key_subkey(k.clone(), 0)? {
-                     if vv.block_number == 0 {
-                        del_cur.delete_current()?;
-                     }
+                if let Some(vv) = del_cur.seek_by_key_subkey(k.clone(), 0)?
+                    && vv.block_number == 0
+                {
+                    del_cur.delete_current()?;
                 }
             }
         }
@@ -254,10 +254,10 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
     {
         let mut cur = self.tx.cursor_dup_write::<T>()?;
         for (key, subkey) in items {
-            if let Some(vv) = cur.seek_by_key_subkey(key, subkey)? {
-                if vv.block_number == subkey {
-                    cur.delete_current()?;
-                }
+            if let Some(vv) = cur.seek_by_key_subkey(key, subkey)?
+                && vv.block_number == subkey
+            {
+                cur.delete_current()?;
             }
         }
         Ok(())
@@ -3712,7 +3712,7 @@ mod tests {
     // ============= Wipe + re-add regression tests =============
 
     /// Regression: wiped storage with overlapping new slots must write the new
-    /// values (not just tombstones) and must not panic on append_dup ordering.
+    /// values (not just tombstones) and must not panic on `append_dup` ordering.
     #[test]
     fn store_trie_updates_wiped_storage_with_readd() {
         let dir = TempDir::new().unwrap();
@@ -3783,7 +3783,7 @@ mod tests {
     }
 
     /// Regression: wiped storage trie with overlapping new nodes must write the
-    /// new nodes (not just tombstones) and must not panic on append_dup ordering.
+    /// new nodes (not just tombstones) and must not panic on `append_dup` ordering.
     #[test]
     fn store_trie_updates_wiped_storage_trie_with_readd() {
         use reth_trie::updates::StorageTrieUpdates;

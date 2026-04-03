@@ -400,7 +400,7 @@ impl<C> InitTable for HashedStoragesInit<C> {
 
     /// Save mapping of hashed addresses to storage entries to storage.
     ///
-    /// Entries arrive from the source DupSort cursor in `(address ASC, slot ASC)`
+    /// Entries arrive from the source `DupSort` cursor in `(address ASC, slot ASC)`
     /// order.  We group consecutive entries by address — preserving that order —
     /// so the V2 implementation can use `append_dup` (O(1) per entry, no B-tree
     /// traversal).  This keeps page-cache pressure constant regardless of table
@@ -416,7 +416,7 @@ impl<C> InitTable for HashedStoragesInit<C> {
     ///    transaction (via `initialization_provider()` → `commit()`).
     /// 2. If the process dies mid-batch, the resume key is set to the
     ///    maximum address successfully committed.
-    /// 3. With HashMap ordering, addresses are flushed in arbitrary order
+    /// 3. With `HashMap` ordering, addresses are flushed in arbitrary order
     ///    (e.g. B, D, A, C). If we crash after committing B and D, the
     ///    resume key is D — and addresses A and C are permanently lost.
     ///
@@ -489,7 +489,7 @@ impl<C> InitTable for StoragesTrieInit<C> {
     ///    transaction (via `initialization_provider()` → `commit()`).
     /// 2. If the process dies mid-batch, the resume key is set to the
     ///    maximum address successfully committed.
-    /// 3. With HashMap ordering, addresses are flushed in arbitrary order
+    /// 3. With `HashMap` ordering, addresses are flushed in arbitrary order
     ///    (e.g. B, D, A, C). If we crash after committing B and D, the
     ///    resume key is D — and addresses A and C are permanently lost.
     ///

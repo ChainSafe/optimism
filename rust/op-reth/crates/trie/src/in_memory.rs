@@ -577,11 +577,7 @@ impl OpProofsProviderRO for InMemoryProofsProvider {
     fn get_latest_block_number(&self) -> OpProofsStorageResult<Option<(u64, B256)>> {
         let inner = self.inner.read();
         let latest_block = inner.trie_updates.keys().max().copied();
-        if let Some(block) = latest_block {
-            Ok(Some((block, B256::ZERO)))
-        } else {
-            Ok(inner.earliest_block)
-        }
+        latest_block.map_or_else(|| Ok(inner.earliest_block), |block| Ok(Some((block, B256::ZERO))))
     }
 
     fn storage_trie_cursor<'tx>(
