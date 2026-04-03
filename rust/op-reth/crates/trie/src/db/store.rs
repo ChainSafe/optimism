@@ -105,6 +105,8 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
         self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)
     }
 
+    /// Phase 1 of pruning: Calculate survivors.
+    /// Scans change sets to find the LATEST update for every key in the range.
     fn calculate_prune_plan(&self, target_block: u64) -> OpProofsStorageResult<Option<PrunePlan>> {
         let Some((earliest, _)) =
             self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?
@@ -160,6 +162,8 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
         }))
     }
 
+    /// Helper to flatten `HashMap` into a sorted Vector of survivors.
+    /// Sorting is required to ensure optimal sequential seek performance in MDBX.
     fn flatten_and_sort<K: Ord>(map: HashMap<K, u64>) -> Vec<(K, u64)> {
         let mut v: Vec<_> = map.into_iter().collect();
         v.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -188,6 +192,19 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         Ok(())
     }
 
+    /// Persist a batch of versioned history entries to a dup-sorted table.
+    ///
+    /// # Parameters
+    /// - `block_number`: Target block number for versioning entries
+    /// - `items`: **Must be sorted** - iterator of entries to persist
+    /// - `append_mode`: Mode selector for write strategy:
+    ///   - `true` (Append): Appends all entries including tombstones for forward progress
+    ///   - `false` (Prune): Removes tombstones, writes non-tombstones to block 0
+    ///
+    /// The cost of pruning is the cost of (append + deleting tombstones + deleting old block 0).
+    /// The tombstones deletion is expensive as it requires a seek for each (key + subkey).
+    ///
+    /// Uses [`reth_db::mdbx::cursor::Cursor::upsert`] for upsert operation.
     fn persist_history_batch<T, I, V>(
         &self,
         block_number: T::SubKey,
@@ -203,6 +220,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         let mut cur = self.tx.cursor_dup_write::<T>()?;
         let mut keys = Vec::<T::Key>::new();
 
+        // Materialize iterator to enable partitioning and collect keys
         let mut pairs: Vec<(T::Key, T::Value)> = Vec::new();
         for it in items {
             let (k, vv) = it.into_kv(block_number);
@@ -211,17 +229,22 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         }
 
         if append_mode {
+            // Append all entries (including tombstones) to preserve full history
             for (k, vv) in pairs {
                 cur.append_dup(k.clone(), vv)?;
             }
             return Ok(keys);
         }
 
+        // Drop current cursor to start clean for Phase 1
         drop(cur);
 
+        // Phase 1: Batch Delete (Sequential)
+        // Remove all existing state at Block 0 for these keys.
         {
             let mut del_cur = self.tx.cursor_dup_write::<T>()?;
             for (k, _) in &pairs {
+                // Seek to (Key, Block 0)
                 if let Some(vv) = del_cur.seek_by_key_subkey(k.clone(), 0)?
                     && vv.block_number == 0
                 {
@@ -230,6 +253,8 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
             }
         }
 
+        // Phase 2: Batch Write (Sequential)
+        // Write new values (skipping tombstones).
         {
             let mut write_cur = self.tx.cursor_dup_write::<T>()?;
             for (k, vv) in pairs {
@@ -242,6 +267,8 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         Ok(keys)
     }
 
+    /// Delete entries for `items` at exactly `block_number` in a dup-sorted table.
+    /// Seeks (key, block) and deletes current if the subkey matches.
     fn delete_dup_sorted<T, I, V>(
         &self,
         items: I,
@@ -255,6 +282,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         let mut cur = self.tx.cursor_dup_write::<T>()?;
         for (key, subkey) in items {
             if let Some(vv) = cur.seek_by_key_subkey(key, subkey)?
+                // ensure we didn't land on a >subkey
                 && vv.block_number == subkey
             {
                 cur.delete_current()?;
@@ -263,6 +291,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         Ok(())
     }
 
+    /// Delete history versions for `items` that are strictly older than the provided block number.
+    /// `items` is a list of (Key, `SurvivorBlock`). Everything strictly older than `SurvivorBlock`
+    /// is deleted. Returns the number of entries deleted.
     fn prune_history_preceding<T, V>(
         &self,
         cutoff_items: Vec<(T::Key, u64)>,
@@ -278,9 +309,16 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         let mut deleted_count = 0;
         let mut cur = self.tx.cursor_dup_write::<T>()?;
         for (key, survivor_block) in cutoff_items {
+            // Seek to the start of history for this key (Block 0)
             if let Some(mut entry) = cur.seek_by_key_subkey(key.clone(), 0)? {
                 loop {
                     if entry.block_number >= survivor_block {
+                        // Reached the survivor version (or newer). Stop deleting for this key.
+
+                        // If the survivor is a tombstone (None), delete it too.
+                        // Since we just deleted all older history, a tombstone at the start of
+                        // history is redundant (it implies "does not
+                        // exist").
                         if entry.block_number == survivor_block && entry.value.0.is_none() {
                             cur.delete_current()?;
                             deleted_count += 1;
@@ -288,17 +326,20 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
                         break;
                     }
 
+                    // Entry is strictly older than survivor. Delete it.
                     cur.delete_current()?;
                     deleted_count += 1;
 
+                    // MDBX delete_current() automatically advances the cursor to the next item.
+                    // We check if the next item is still the same key.
                     match cur.current() {
                         Ok(Some((k, v))) => {
                             if k != key {
-                                break;
+                                break;  // Moved past the key
                             }
                             entry = v;
                         }
-                        _ => break,
+                        _ => break,  // End of table or error
                     }
                 }
             }
@@ -306,6 +347,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         Ok(deleted_count)
     }
 
+    /// Collect versioned history over `block_range` using `BlockChangeSet`.
     fn collect_history_ranged(
         &self,
         block_range: impl RangeBounds<u64>,
@@ -315,6 +357,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         let mut walker = change_set_cursor.walk_range(block_range)?;
 
         while let Some(Ok((block_number, change_set))) = walker.next() {
+            // Push (key, subkey=block_number) pairs
             history
                 .account_trie
                 .extend(change_set.account_trie_keys.into_iter().map(|k| (k, block_number)));
@@ -329,6 +372,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
                 .extend(change_set.hashed_storage_keys.into_iter().map(|k| (k, block_number)));
         }
 
+        // Sorting by tuple sorts by key first, then by block_number.
         history.account_trie.sort_by(|(k1, b1), (k2, b2)| k1.cmp(k2).then_with(|| b1.cmp(b2)));
         history.storage_trie.sort_by(|(k1, b1), (k2, b2)| k1.cmp(k2).then_with(|| b1.cmp(b2)));
         history.hashed_account.sort_by(|(k1, b1), (k2, b2)| k1.cmp(k2).then_with(|| b1.cmp(b2)));
@@ -337,6 +381,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         Ok(history)
     }
 
+    /// Delete versioned history over `block_range` using history batch.
     fn delete_history_ranged(
         &self,
         block_range: impl RangeBounds<u64>,
@@ -349,6 +394,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
             walker.delete_current()?;
         }
 
+        // Delete using the simplified API: iterator of (key, subkey)
         self.delete_dup_sorted::<AccountTrieHistory, _, _>(history.clone().account_trie)?;
         self.delete_dup_sorted::<StorageTrieHistory, _, _>(history.clone().storage_trie)?;
         self.delete_dup_sorted::<HashedAccountHistory, _, _>(history.clone().hashed_account)?;
@@ -362,6 +408,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         })
     }
 
+     /// Write trie/state history for `block_number` from `block_state_diff`.
     fn store_trie_updates_for_block(
         &self,
         block_number: u64,
@@ -386,6 +433,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
 
         let mut storage_trie_keys = Vec::<StorageTrieKey>::with_capacity(storage_trie_len);
         for (hashed_address, nodes) in sorted_trie_updates.storage_tries_ref() {
+             // Handle wiped - mark all storage trie as deleted at the current block number
             if nodes.is_deleted && append_mode {
                 let cursor = self.tx.cursor_dup_read::<StorageTrieHistory>()?;
                 let mut ro = MdbxTrieCursor::new(cursor, block_number - 1, Some(*hashed_address));
