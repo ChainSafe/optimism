@@ -4,9 +4,9 @@
 //!
 //! | Purpose | Accounts | Storages | Account Trie | Storage Trie |
 //! |---------|----------|----------|-------------|-------------|
-//! | Current state | [`HashedAccounts`] | [`HashedStorages`] | [`AccountsTrie`] | [`StoragesTrie`] |
-//! | ChangeSets | [`HashedAccountChangeSets`] | [`HashedStorageChangeSets`] | [`AccountTrieChangeSets`] | [`StorageTrieChangeSets`] |
-//! | History | [`HashedAccountsHistory`] | [`HashedStoragesHistory`] | [`AccountsTrieHistory`] | [`StoragesTrieHistory`] |
+//! | Current state | [`V2HashedAccounts`] | [`V2HashedStorages`] | [`V2AccountsTrie`] | [`V2StoragesTrie`] |
+//! | ChangeSets | [`V2HashedAccountChangeSets`] | [`V2HashedStorageChangeSets`] | [`V2AccountTrieChangeSets`] | [`V2StorageTrieChangeSets`] |
+//! | History | [`V2HashedAccountsHistory`] | [`V2HashedStoragesHistory`] | [`V2AccountsTrieHistory`] | [`V2StoragesTrieHistory`] |
 //!
 //! # Historical Lookup Strategy
 //!
@@ -41,11 +41,11 @@ use reth_trie::{
 
 use crate::db::{
     models::{
-        AccountTrieShardedKey, AccountsTrie, AccountTrieChangeSets, AccountsTrieHistory,
-        BlockNumberHashedAddress, HashedAccountChangeSets, HashedAccountShardedKey,
-        HashedAccounts, HashedAccountsHistory, HashedStorageChangeSets,
-        HashedStorageShardedKey, HashedStorages, HashedStoragesHistory, StorageTrieShardedKey,
-        StoragesTrie, StorageTrieChangeSets, StoragesTrieHistory,
+        AccountTrieShardedKey, V2AccountsTrie, V2AccountTrieChangeSets, V2AccountsTrieHistory,
+        BlockNumberHashedAddress, V2HashedAccountChangeSets, HashedAccountShardedKey,
+        V2HashedAccounts, V2HashedAccountsHistory, V2HashedStorageChangeSets,
+        HashedStorageShardedKey, V2HashedStorages, V2HashedStoragesHistory, StorageTrieShardedKey,
+        V2StoragesTrie, V2StorageTrieChangeSets, V2StoragesTrieHistory,
     },
 };
 
@@ -106,7 +106,7 @@ where
     Ok(ResolvedSource::FromCurrentState)
 }
 
-/// History-aware cursor over the [`HashedAccounts`] v2 tables.
+/// History-aware cursor over the [`V2HashedAccounts`] v2 tables.
 ///
 /// Uses a **dual-cursor merge** to discover all account keys that existed at
 /// `max_block_number`. This is necessary because an account deleted *after*
@@ -164,9 +164,9 @@ impl<C, HC, CC> V2AccountCursor<C, HC, CC> {
 
 impl<C, HC, CC> V2AccountCursor<C, HC, CC>
 where
-    C: DbCursorRO<HashedAccounts>,
-    HC: DbCursorRO<HashedAccountsHistory>,
-    CC: DbCursorRO<HashedAccountChangeSets> + DbDupCursorRO<HashedAccountChangeSets>,
+    C: DbCursorRO<V2HashedAccounts>,
+    HC: DbCursorRO<V2HashedAccountsHistory>,
+    CC: DbCursorRO<V2HashedAccountChangeSets> + DbDupCursorRO<V2HashedAccountChangeSets>,
 {
     /// Resolve an account using a pre-fetched current-state value.
     ///
@@ -178,7 +178,7 @@ where
         cs_value: Option<&Account>,
     ) -> Result<Option<Account>, DatabaseError> {
         let history_key = HashedAccountShardedKey::new(hashed_address, self.max_block_number);
-        let source = find_source::<HashedAccountsHistory, _>(
+        let source = find_source::<V2HashedAccountsHistory, _>(
             &mut self.history_cursor,
             history_key,
             self.max_block_number,
@@ -254,9 +254,9 @@ where
 
 impl<C, HC, CC> HashedCursor for V2AccountCursor<C, HC, CC>
 where
-    C: DbCursorRO<HashedAccounts> + Send,
-    HC: DbCursorRO<HashedAccountsHistory> + Send,
-    CC: DbCursorRO<HashedAccountChangeSets> + DbDupCursorRO<HashedAccountChangeSets> + Send,
+    C: DbCursorRO<V2HashedAccounts> + Send,
+    HC: DbCursorRO<V2HashedAccountsHistory> + Send,
+    CC: DbCursorRO<V2HashedAccountChangeSets> + DbDupCursorRO<V2HashedAccountChangeSets> + Send,
 {
     type Value = Account;
 
@@ -296,7 +296,7 @@ where
     }
 }
 
-/// History-aware cursor over the [`HashedStorages`] v2 DupSort table.
+/// History-aware cursor over the [`V2HashedStorages`] v2 DupSort table.
 ///
 /// Uses the same dual-cursor merge strategy as [`V2AccountCursor`] but
 /// scoped to a single `hashed_address`. Both the current-state DupSort
@@ -354,9 +354,9 @@ impl<C, HC, CC> V2StorageCursor<C, HC, CC> {
 
 impl<C, HC, CC> V2StorageCursor<C, HC, CC>
 where
-    C: DbCursorRO<HashedStorages> + DbDupCursorRO<HashedStorages>,
-    HC: DbCursorRO<HashedStoragesHistory>,
-    CC: DbCursorRO<HashedStorageChangeSets> + DbDupCursorRO<HashedStorageChangeSets>,
+    C: DbCursorRO<V2HashedStorages> + DbDupCursorRO<V2HashedStorages>,
+    HC: DbCursorRO<V2HashedStoragesHistory>,
+    CC: DbCursorRO<V2HashedStorageChangeSets> + DbDupCursorRO<V2HashedStorageChangeSets>,
 {
     /// Resolve a storage slot using a pre-fetched current-state value.
     ///
@@ -373,7 +373,7 @@ where
         };
 
         let addr = self.hashed_address;
-        let source = find_source::<HashedStoragesHistory, _>(
+        let source = find_source::<V2HashedStoragesHistory, _>(
             &mut self.history_cursor,
             history_key,
             self.max_block_number,
@@ -466,10 +466,10 @@ where
 
 impl<C, HC, CC> HashedCursor for V2StorageCursor<C, HC, CC>
 where
-    C: DbCursorRO<HashedStorages> + DbDupCursorRO<HashedStorages> + Send,
-    HC: DbCursorRO<HashedStoragesHistory> + Send,
-    CC: DbCursorRO<HashedStorageChangeSets>
-        + DbDupCursorRO<HashedStorageChangeSets>
+    C: DbCursorRO<V2HashedStorages> + DbDupCursorRO<V2HashedStorages> + Send,
+    HC: DbCursorRO<V2HashedStoragesHistory> + Send,
+    CC: DbCursorRO<V2HashedStorageChangeSets>
+        + DbDupCursorRO<V2HashedStorageChangeSets>
         + Send,
 {
     type Value = U256;
@@ -532,10 +532,10 @@ where
 
 impl<C, HC, CC> HashedStorageCursor for V2StorageCursor<C, HC, CC>
 where
-    C: DbCursorRO<HashedStorages> + DbDupCursorRO<HashedStorages> + Send,
-    HC: DbCursorRO<HashedStoragesHistory> + Send,
-    CC: DbCursorRO<HashedStorageChangeSets>
-        + DbDupCursorRO<HashedStorageChangeSets>
+    C: DbCursorRO<V2HashedStorages> + DbDupCursorRO<V2HashedStorages> + Send,
+    HC: DbCursorRO<V2HashedStoragesHistory> + Send,
+    CC: DbCursorRO<V2HashedStorageChangeSets>
+        + DbDupCursorRO<V2HashedStorageChangeSets>
         + Send,
 {
     fn is_storage_empty(&mut self) -> Result<bool, DatabaseError> {
@@ -550,7 +550,7 @@ where
     }
 }
 
-/// History-aware cursor over the [`AccountsTrie`] v2 tables.
+/// History-aware cursor over the [`V2AccountsTrie`] v2 tables.
 ///
 /// Uses a **dual-cursor merge** to discover all trie paths that existed at
 /// `max_block_number`. This is necessary because a key deleted *after* the
@@ -610,9 +610,9 @@ impl<C, HC, CC> V2AccountTrieCursor<C, HC, CC> {
 
 impl<C, HC, CC> V2AccountTrieCursor<C, HC, CC>
 where
-    C: DbCursorRO<AccountsTrie>,
-    HC: DbCursorRO<AccountsTrieHistory>,
-    CC: DbCursorRO<AccountTrieChangeSets> + DbDupCursorRO<AccountTrieChangeSets>,
+    C: DbCursorRO<V2AccountsTrie>,
+    HC: DbCursorRO<V2AccountsTrieHistory>,
+    CC: DbCursorRO<V2AccountTrieChangeSets> + DbDupCursorRO<V2AccountTrieChangeSets>,
 {
     /// Resolve a key using the walk cursor for the `FromCurrentState` case.
     ///
@@ -624,7 +624,7 @@ where
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
         let seek_key = AccountTrieShardedKey::new(path.clone(), self.max_block_number);
         let target = path.clone();
-        let source = find_source::<AccountsTrieHistory, _>(
+        let source = find_source::<V2AccountsTrieHistory, _>(
             &mut self.history_cursor,
             seek_key,
             self.max_block_number,
@@ -656,7 +656,7 @@ where
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
         let seek_key = AccountTrieShardedKey::new(path.clone(), self.max_block_number);
         let target = path.clone();
-        let source = find_source::<AccountsTrieHistory, _>(
+        let source = find_source::<V2AccountsTrieHistory, _>(
             &mut self.history_cursor,
             seek_key,
             self.max_block_number,
@@ -736,10 +736,10 @@ where
 
 impl<C, HC, CC> TrieCursor for V2AccountTrieCursor<C, HC, CC>
 where
-    C: DbCursorRO<AccountsTrie> + Send,
-    HC: DbCursorRO<AccountsTrieHistory> + Send,
-    CC: DbCursorRO<AccountTrieChangeSets>
-        + DbDupCursorRO<AccountTrieChangeSets>
+    C: DbCursorRO<V2AccountsTrie> + Send,
+    HC: DbCursorRO<V2AccountsTrieHistory> + Send,
+    CC: DbCursorRO<V2AccountTrieChangeSets>
+        + DbDupCursorRO<V2AccountTrieChangeSets>
         + Send,
 {
     fn seek_exact(
@@ -821,7 +821,7 @@ where
     fn reset(&mut self) {}
 }
 
-/// History-aware cursor over the [`StoragesTrie`] v2 DupSort table.
+/// History-aware cursor over the [`V2StoragesTrie`] v2 DupSort table.
 ///
 /// Uses the same dual-cursor merge strategy as [`V2AccountTrieCursor`] but
 /// scoped to a single `hashed_address`. Both the current-state DupSort
@@ -882,9 +882,9 @@ impl<C, HC, CC> V2StorageTrieCursor<C, HC, CC> {
 
 impl<C, HC, CC> V2StorageTrieCursor<C, HC, CC>
 where
-    C: DbCursorRO<StoragesTrie> + DbDupCursorRO<StoragesTrie>,
-    HC: DbCursorRO<StoragesTrieHistory>,
-    CC: DbCursorRO<StorageTrieChangeSets> + DbDupCursorRO<StorageTrieChangeSets>,
+    C: DbCursorRO<V2StoragesTrie> + DbDupCursorRO<V2StoragesTrie>,
+    HC: DbCursorRO<V2StoragesTrieHistory>,
+    CC: DbCursorRO<V2StorageTrieChangeSets> + DbDupCursorRO<V2StorageTrieChangeSets>,
 {
     /// Resolve a key using the walk cursor for the `FromCurrentState` case.
     ///
@@ -902,7 +902,7 @@ where
 
         let addr = self.hashed_address;
         let nibbles_cmp = nibbles.clone();
-        let source = find_source::<StoragesTrieHistory, _>(
+        let source = find_source::<V2StoragesTrieHistory, _>(
             &mut self.history_cursor,
             seek_key,
             self.max_block_number,
@@ -943,7 +943,7 @@ where
 
         let addr = self.hashed_address;
         let nibbles_cmp = nibbles.clone();
-        let source = find_source::<StoragesTrieHistory, _>(
+        let source = find_source::<V2StoragesTrieHistory, _>(
             &mut self.history_cursor,
             seek_key,
             self.max_block_number,
@@ -1039,10 +1039,10 @@ where
 
 impl<C, HC, CC> TrieCursor for V2StorageTrieCursor<C, HC, CC>
 where
-    C: DbCursorRO<StoragesTrie> + DbDupCursorRO<StoragesTrie> + Send,
-    HC: DbCursorRO<StoragesTrieHistory> + Send,
-    CC: DbCursorRO<StorageTrieChangeSets>
-        + DbDupCursorRO<StorageTrieChangeSets>
+    C: DbCursorRO<V2StoragesTrie> + DbDupCursorRO<V2StoragesTrie> + Send,
+    HC: DbCursorRO<V2StoragesTrieHistory> + Send,
+    CC: DbCursorRO<V2StorageTrieChangeSets>
+        + DbDupCursorRO<V2StorageTrieChangeSets>
         + Send,
 {
     fn seek_exact(
@@ -1140,10 +1140,10 @@ where
 
 impl<C, HC, CC> TrieStorageCursor for V2StorageTrieCursor<C, HC, CC>
 where
-    C: DbCursorRO<StoragesTrie> + DbDupCursorRO<StoragesTrie> + Send,
-    HC: DbCursorRO<StoragesTrieHistory> + Send,
-    CC: DbCursorRO<StorageTrieChangeSets>
-        + DbDupCursorRO<StorageTrieChangeSets>
+    C: DbCursorRO<V2StoragesTrie> + DbDupCursorRO<V2StoragesTrie> + Send,
+    HC: DbCursorRO<V2StoragesTrieHistory> + Send,
+    CC: DbCursorRO<V2StorageTrieChangeSets>
+        + DbDupCursorRO<V2StorageTrieChangeSets>
         + Send,
 {
     fn set_hashed_address(&mut self, hashed_address: B256) {
@@ -1197,9 +1197,9 @@ mod tests {
         let addr = B256::from([0xAA; 32]);
 
         let tx = db.tx().expect("ro tx");
-        let mut cursor = tx.cursor_read::<HashedAccountsHistory>().expect("c");
+        let mut cursor = tx.cursor_read::<V2HashedAccountsHistory>().expect("c");
 
-        let result = find_source::<HashedAccountsHistory, _>(
+        let result = find_source::<V2HashedAccountsHistory, _>(
             &mut cursor,
             HashedAccountShardedKey::new(addr, 10),
             10,
@@ -1217,7 +1217,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(addr, u64::MAX),
@@ -1228,10 +1228,10 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cursor = tx.cursor_read::<HashedAccountsHistory>().expect("c");
+        let mut cursor = tx.cursor_read::<V2HashedAccountsHistory>().expect("c");
 
         // Target block 7 → first block > 7 in [5, 10, 15] is 10
-        let result = find_source::<HashedAccountsHistory, _>(
+        let result = find_source::<V2HashedAccountsHistory, _>(
             &mut cursor,
             HashedAccountShardedKey::new(addr, 7),
             7,
@@ -1249,7 +1249,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(addr, u64::MAX),
@@ -1260,10 +1260,10 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cursor = tx.cursor_read::<HashedAccountsHistory>().expect("c");
+        let mut cursor = tx.cursor_read::<V2HashedAccountsHistory>().expect("c");
 
         // Target block 10 → no block > 10 in [3, 7]
-        let result = find_source::<HashedAccountsHistory, _>(
+        let result = find_source::<V2HashedAccountsHistory, _>(
             &mut cursor,
             HashedAccountShardedKey::new(addr, 10),
             10,
@@ -1281,7 +1281,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(addr, u64::MAX),
@@ -1292,10 +1292,10 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cursor = tx.cursor_read::<HashedAccountsHistory>().expect("c");
+        let mut cursor = tx.cursor_read::<V2HashedAccountsHistory>().expect("c");
 
         // Target block 10 (exactly in the bitmap) → first block > 10 is 15
-        let result = find_source::<HashedAccountsHistory, _>(
+        let result = find_source::<V2HashedAccountsHistory, _>(
             &mut cursor,
             HashedAccountShardedKey::new(addr, 10),
             10,
@@ -1321,7 +1321,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut cursor = wtx.cursor_write::<AccountsTrieHistory>().expect("c");
+            let mut cursor = wtx.cursor_write::<V2AccountsTrieHistory>().expect("c");
             // Root path history: modified at blocks 10, 15
             cursor
                 .upsert(
@@ -1340,11 +1340,11 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cursor = tx.cursor_read::<AccountsTrieHistory>().expect("c");
+        let mut cursor = tx.cursor_read::<V2AccountsTrieHistory>().expect("c");
 
         // Query at block 12 — should find changeset at block 15
         // (the first modification after block 12).
-        let result = find_source::<AccountsTrieHistory, _>(
+        let result = find_source::<V2AccountsTrieHistory, _>(
             &mut cursor,
             AccountTrieShardedKey::new(root_path.clone(), 12),
             12,
@@ -1361,9 +1361,9 @@ mod tests {
         let root_path = StoredNibbles(Nibbles::default());
 
         let tx = db.tx().expect("ro tx");
-        let mut cursor = tx.cursor_read::<AccountsTrieHistory>().expect("c");
+        let mut cursor = tx.cursor_read::<V2AccountsTrieHistory>().expect("c");
 
-        let result = find_source::<AccountsTrieHistory, _>(
+        let result = find_source::<V2AccountsTrieHistory, _>(
             &mut cursor,
             AccountTrieShardedKey::new(root_path.clone(), 10),
             10,
@@ -1381,7 +1381,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(root_path.clone(), u64::MAX),
@@ -1392,10 +1392,10 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cursor = tx.cursor_read::<AccountsTrieHistory>().expect("c");
+        let mut cursor = tx.cursor_read::<V2AccountsTrieHistory>().expect("c");
 
         // Target block 10 — all modifications (5, 8) are ≤ 10
-        let result = find_source::<AccountsTrieHistory, _>(
+        let result = find_source::<V2AccountsTrieHistory, _>(
             &mut cursor,
             AccountTrieShardedKey::new(root_path.clone(), 10),
             10,
@@ -1418,7 +1418,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut cursor = wtx.cursor_write::<AccountsTrieHistory>().expect("c");
+            let mut cursor = wtx.cursor_write::<V2AccountsTrieHistory>().expect("c");
             cursor
                 .upsert(
                     AccountTrieShardedKey::new(root_path.clone(), u64::MAX),
@@ -1435,10 +1435,10 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cursor = tx.cursor_read::<AccountsTrieHistory>().expect("c");
+        let mut cursor = tx.cursor_read::<V2AccountsTrieHistory>().expect("c");
 
         // find_source with AccountTrieShardedKey correctly returns FromChangeset(15)
-        let result = find_source::<AccountsTrieHistory, _>(
+        let result = find_source::<V2AccountsTrieHistory, _>(
             &mut cursor,
             AccountTrieShardedKey::new(root_path.clone(), 12),
             12,
@@ -1463,7 +1463,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_write::<HashedAccounts>()
+            wtx.cursor_write::<V2HashedAccounts>()
                 .expect("c")
                 .upsert(addr, &acc)
                 .expect("upsert");
@@ -1472,10 +1472,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountCursor::new(
-            tx.cursor_read::<HashedAccounts>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedAccountChangeSets>().expect("c"),
+            tx.cursor_read::<V2HashedAccounts>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("c"),
             u64::MAX,
             true,
         );
@@ -1494,13 +1494,13 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state: nonce=10 (applied at block 5)
-            wtx.cursor_write::<HashedAccounts>()
+            wtx.cursor_write::<V2HashedAccounts>()
                 .expect("c")
                 .upsert(addr, &sample_account(10))
                 .expect("upsert");
 
             // History bitmap: block 5 modified this account
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(addr, u64::MAX),
@@ -1509,7 +1509,7 @@ mod tests {
                 .expect("upsert");
 
             // Changeset: before block 5, account had nonce=3
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(5u64, HashedAccountBeforeTx::new(addr, Some(sample_account(3))))
                 .expect("append");
@@ -1521,10 +1521,10 @@ mod tests {
 
         // Query at block 4 (before the modification at block 5)
         let mut cur = V2AccountCursor::new(
-            tx.cursor_read::<HashedAccounts>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedAccountChangeSets>().expect("c"),
+            tx.cursor_read::<V2HashedAccounts>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("c"),
             4,
             false,
         );
@@ -1543,13 +1543,13 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state: nonce=20
-            wtx.cursor_write::<HashedAccounts>()
+            wtx.cursor_write::<V2HashedAccounts>()
                 .expect("c")
                 .upsert(addr, &sample_account(20))
                 .expect("upsert");
 
             // History bitmap: [3, 7]
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(addr, u64::MAX),
@@ -1558,13 +1558,13 @@ mod tests {
                 .expect("upsert");
 
             // Changeset at 3
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(3u64, HashedAccountBeforeTx::new(addr, Some(sample_account(1))))
                 .expect("append");
 
             // Changeset at 7
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(7u64, HashedAccountBeforeTx::new(addr, Some(sample_account(5))))
                 .expect("append");
@@ -1576,10 +1576,10 @@ mod tests {
 
         // Query at block 10 (after last modification at block 7)
         let mut cur = V2AccountCursor::new(
-            tx.cursor_read::<HashedAccounts>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedAccountChangeSets>().expect("c"),
+            tx.cursor_read::<V2HashedAccounts>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("c"),
             10,
             true,
         );
@@ -1598,13 +1598,13 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state: account exists (created at block 5)
-            wtx.cursor_write::<HashedAccounts>()
+            wtx.cursor_write::<V2HashedAccounts>()
                 .expect("c")
                 .upsert(addr, &sample_account(1))
                 .expect("upsert");
 
             // History: first write at block 5
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(addr, u64::MAX),
@@ -1613,7 +1613,7 @@ mod tests {
                 .expect("upsert");
 
             // Changeset at 5: didn't exist before (info = None)
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(5u64, HashedAccountBeforeTx::new(addr, None))
                 .expect("append");
@@ -1627,10 +1627,10 @@ mod tests {
         // The changeset at block 5 says info=None → the cursor's resolve returns None
         // → next_live_from skips this entry → seek returns None
         let mut cur = V2AccountCursor::new(
-            tx.cursor_read::<HashedAccounts>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedAccountChangeSets>().expect("c"),
+            tx.cursor_read::<V2HashedAccounts>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("c"),
             4,
             false,
         );
@@ -1648,13 +1648,13 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<HashedAccounts>().expect("c");
+            let mut c = wtx.cursor_write::<V2HashedAccounts>().expect("c");
             c.upsert(k1, &sample_account(1)).expect("upsert");
             c.upsert(k2, &sample_account(2)).expect("upsert");
             c.upsert(k3, &sample_account(3)).expect("upsert");
 
             // k2 was created at block 10
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(k2, u64::MAX),
@@ -1663,7 +1663,7 @@ mod tests {
                 .expect("upsert");
 
             // Changeset at 10: k2 didn't exist before
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(10u64, HashedAccountBeforeTx::new(k2, None))
                 .expect("append");
@@ -1675,10 +1675,10 @@ mod tests {
 
         // Query at block 5 (before k2 was created)
         let mut cur = V2AccountCursor::new(
-            tx.cursor_read::<HashedAccounts>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedAccountChangeSets>().expect("c"),
+            tx.cursor_read::<V2HashedAccounts>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("c"),
             5,
             false,
         );
@@ -1705,13 +1705,13 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<HashedAccounts>().expect("c");
+            let mut c = wtx.cursor_write::<V2HashedAccounts>().expect("c");
             // k1 and k3 exist in current state; k2 was deleted at block 10
             c.upsert(k1, &sample_account(1)).expect("upsert");
             c.upsert(k3, &sample_account(3)).expect("upsert");
 
             // k2 history: modified at blocks [5, 10]
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(k2, u64::MAX),
@@ -1720,7 +1720,7 @@ mod tests {
                 .expect("upsert");
 
             // Changeset at block 10: value before block 10 = nonce 7
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(10u64, HashedAccountBeforeTx::new(k2, Some(sample_account(7))))
                 .expect("append");
@@ -1731,10 +1731,10 @@ mod tests {
         let tx = db.tx().expect("ro tx");
         // Query at block 9: k2 existed with nonce=7
         let mut cur = V2AccountCursor::new(
-            tx.cursor_read::<HashedAccounts>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedAccountChangeSets>().expect("c"),
+            tx.cursor_read::<V2HashedAccounts>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("c"),
             9,
             false,
         );
@@ -1767,27 +1767,27 @@ mod tests {
             // Nothing in current state.
 
             // k1 modified at block 5
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(k1, u64::MAX),
                     &BlockNumberList::new_pre_sorted([5]),
                 )
                 .expect("upsert");
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(5u64, HashedAccountBeforeTx::new(k1, Some(sample_account(11))))
                 .expect("append");
 
             // k2 modified at block 8
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(k2, u64::MAX),
                     &BlockNumberList::new_pre_sorted([8]),
                 )
                 .expect("upsert");
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(8u64, HashedAccountBeforeTx::new(k2, Some(sample_account(22))))
                 .expect("append");
@@ -1797,10 +1797,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountCursor::new(
-            tx.cursor_read::<HashedAccounts>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedAccountChangeSets>().expect("c"),
+            tx.cursor_read::<V2HashedAccounts>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("c"),
             4,
             false,
         );
@@ -1825,19 +1825,19 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_write::<HashedAccounts>()
+            wtx.cursor_write::<V2HashedAccounts>()
                 .expect("c")
                 .upsert(k, &sample_account(99))
                 .expect("upsert");
 
-            wtx.cursor_write::<HashedAccountsHistory>()
+            wtx.cursor_write::<V2HashedAccountsHistory>()
                 .expect("c")
                 .upsert(
                     HashedAccountShardedKey::new(k, u64::MAX),
                     &BlockNumberList::new_pre_sorted([5]),
                 )
                 .expect("upsert");
-            wtx.cursor_dup_write::<HashedAccountChangeSets>()
+            wtx.cursor_dup_write::<V2HashedAccountChangeSets>()
                 .expect("c")
                 .append_dup(5u64, HashedAccountBeforeTx::new(k, Some(sample_account(50))))
                 .expect("append");
@@ -1848,10 +1848,10 @@ mod tests {
         let tx = db.tx().expect("ro tx");
         // At block 4 → changeset at 5 gives nonce=50
         let mut cur = V2AccountCursor::new(
-            tx.cursor_read::<HashedAccounts>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_read::<HashedAccountsHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedAccountChangeSets>().expect("c"),
+            tx.cursor_read::<V2HashedAccounts>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_read::<V2HashedAccountsHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("c"),
             4,
             false,
         );
@@ -1872,7 +1872,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_write::<AccountsTrie>()
+            wtx.cursor_write::<V2AccountsTrie>()
                 .expect("c")
                 .upsert(StoredNibbles(path), &n)
                 .expect("upsert");
@@ -1881,10 +1881,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             u64::MAX,
             true,
         );
@@ -1905,13 +1905,13 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state has new_node (applied at block 10)
-            wtx.cursor_write::<AccountsTrie>()
+            wtx.cursor_write::<V2AccountsTrie>()
                 .expect("c")
                 .upsert(StoredNibbles(path), &new_node)
                 .expect("upsert");
 
             // History: modified at block 10
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(path), u64::MAX),
@@ -1924,7 +1924,7 @@ mod tests {
                 nibbles: StoredNibblesSubKey(path),
                 node: Some(old_node.clone()),
             };
-            wtx.cursor_dup_write::<AccountTrieChangeSets>()
+            wtx.cursor_dup_write::<V2AccountTrieChangeSets>()
                 .expect("c")
                 .append_dup(10u64, cs_entry)
                 .expect("append");
@@ -1936,10 +1936,10 @@ mod tests {
 
         // Query at block 9 (before modification at 10)
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             9,
             false,
         );
@@ -1958,13 +1958,13 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut c = wtx.cursor_write::<V2AccountsTrie>().expect("c");
             c.upsert(StoredNibbles(p1), &node()).expect("upsert");
             c.upsert(StoredNibbles(p2), &node()).expect("upsert");
             c.upsert(StoredNibbles(p3), &node()).expect("upsert");
 
             // p2 was created at block 5, didn't exist before
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(p2), u64::MAX),
@@ -1976,7 +1976,7 @@ mod tests {
                 nibbles: StoredNibblesSubKey(p2),
                 node: None,
             };
-            wtx.cursor_dup_write::<AccountTrieChangeSets>()
+            wtx.cursor_dup_write::<V2AccountTrieChangeSets>()
                 .expect("c")
                 .append_dup(5u64, cs_entry)
                 .expect("append");
@@ -1988,10 +1988,10 @@ mod tests {
 
         // Query at block 3 (before p2 was created)
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             3,
             false,
         );
@@ -2014,7 +2014,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut c = wtx.cursor_write::<V2AccountsTrie>().expect("c");
             c.upsert(StoredNibbles(p_a), &node()).expect("upsert");
             c.upsert(StoredNibbles(p_c), &node()).expect("upsert");
             wtx.commit().expect("commit");
@@ -2022,10 +2022,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             u64::MAX,
             true,
         );
@@ -2040,10 +2040,10 @@ mod tests {
         let db = setup_db();
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             u64::MAX,
             true,
         );
@@ -2068,7 +2068,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut c = wtx.cursor_write::<V2AccountsTrie>().expect("c");
 
             // Current state after block 3: {b1, c1, d1, z1} (a1 deleted)
             c.upsert(StoredNibbles(b1), &n).expect("upsert");
@@ -2077,7 +2077,7 @@ mod tests {
             c.upsert(StoredNibbles(z1), &n).expect("upsert");
 
             // History bitmaps
-            let mut hc = wtx.cursor_write::<AccountsTrieHistory>().expect("c");
+            let mut hc = wtx.cursor_write::<V2AccountsTrieHistory>().expect("c");
             // a1 modified at blocks 2 and 3
             hc.upsert(
                 AccountTrieShardedKey::new(StoredNibbles(a1), u64::MAX),
@@ -2110,7 +2110,7 @@ mod tests {
             .expect("upsert");
 
             // Changesets
-            let mut csc = wtx.cursor_dup_write::<AccountTrieChangeSets>().expect("c");
+            let mut csc = wtx.cursor_dup_write::<V2AccountTrieChangeSets>().expect("c");
 
             // Block 2 changesets: a1, b1, c1 didn't exist before
             csc.append_dup(
@@ -2154,10 +2154,10 @@ mod tests {
         // Query at block 2: a1 should be visible even though it's deleted
         // from current state (deleted at block 3).
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             2,
             false,
         );
@@ -2195,7 +2195,7 @@ mod tests {
             // Current state: empty (p was deleted at block 4)
 
             // History: [2, 4]
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(p), u64::MAX),
@@ -2204,7 +2204,7 @@ mod tests {
                 .expect("upsert");
 
             // Changeset block 2: p didn't exist before
-            let mut csc = wtx.cursor_dup_write::<AccountTrieChangeSets>().expect("c");
+            let mut csc = wtx.cursor_dup_write::<V2AccountTrieChangeSets>().expect("c");
             csc.append_dup(
                 2u64,
                 TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(p), node: None },
@@ -2224,10 +2224,10 @@ mod tests {
 
         // Query at block 3: p should be visible (created at 2, deleted at 4)
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             3,
             false,
         );
@@ -2243,10 +2243,10 @@ mod tests {
 
         // Also: query at block 1 → p didn't exist yet
         let mut cur2 = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             1,
             false,
         );
@@ -2268,7 +2268,7 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
             // Current state: empty (p deleted at block 10)
 
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(p), u64::MAX),
@@ -2276,7 +2276,7 @@ mod tests {
                 )
                 .expect("upsert");
 
-            let mut csc = wtx.cursor_dup_write::<AccountTrieChangeSets>().expect("c");
+            let mut csc = wtx.cursor_dup_write::<V2AccountTrieChangeSets>().expect("c");
             // Block 5: created (old = None)
             csc.append_dup(
                 5u64,
@@ -2297,10 +2297,10 @@ mod tests {
 
         // seek_exact at block 8 → should find p
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             8,
             false,
         );
@@ -2310,10 +2310,10 @@ mod tests {
 
         // seek_exact at block 3 → should NOT find p (created at 5)
         let mut cur2 = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             3,
             false,
         );
@@ -2330,7 +2330,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut c = wtx.cursor_write::<V2AccountsTrie>().expect("c");
             c.upsert(StoredNibbles(p1), &n).expect("upsert");
             c.upsert(StoredNibbles(p2), &n).expect("upsert");
             wtx.commit().expect("commit");
@@ -2338,10 +2338,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             u64::MAX,
             true,
         );
@@ -2367,7 +2367,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut c = wtx.cursor_write::<V2AccountsTrie>().expect("c");
             c.upsert(StoredNibbles(p1), &n).expect("upsert");
             c.upsert(StoredNibbles(p2), &n).expect("upsert");
             c.upsert(StoredNibbles(p3), &n).expect("upsert");
@@ -2376,10 +2376,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             u64::MAX,
             true,
         );
@@ -2407,13 +2407,13 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut c = wtx.cursor_write::<V2AccountsTrie>().expect("c");
             c.upsert(StoredNibbles(p_a), &node()).expect("upsert");
             c.upsert(StoredNibbles(p_b), &node()).expect("upsert");
             c.upsert(StoredNibbles(p_c), &node()).expect("upsert");
 
             // p_b was created at block 10
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(p_b), u64::MAX),
@@ -2421,7 +2421,7 @@ mod tests {
                 )
                 .expect("upsert");
 
-            wtx.cursor_dup_write::<AccountTrieChangeSets>()
+            wtx.cursor_dup_write::<V2AccountTrieChangeSets>()
                 .expect("c")
                 .append_dup(
                     10u64,
@@ -2436,10 +2436,10 @@ mod tests {
 
         // At block 5, seek(p_b) → p_b is dead → should skip to p_c
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             5,
             false,
         );
@@ -2458,11 +2458,11 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut c = wtx.cursor_write::<V2AccountsTrie>().expect("c");
             c.upsert(StoredNibbles(p1), &node()).expect("upsert");
             c.upsert(StoredNibbles(p2), &node()).expect("upsert");
 
-            let mut hc = wtx.cursor_write::<AccountsTrieHistory>().expect("c");
+            let mut hc = wtx.cursor_write::<V2AccountsTrieHistory>().expect("c");
             // Both created at block 5
             hc.upsert(
                 AccountTrieShardedKey::new(StoredNibbles(p1), u64::MAX),
@@ -2475,7 +2475,7 @@ mod tests {
             )
             .expect("upsert");
 
-            let mut csc = wtx.cursor_dup_write::<AccountTrieChangeSets>().expect("c");
+            let mut csc = wtx.cursor_dup_write::<V2AccountTrieChangeSets>().expect("c");
             csc.append_dup(
                 5u64,
                 TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(p1), node: None },
@@ -2494,10 +2494,10 @@ mod tests {
 
         // At block 3 → both dead
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             3,
             false,
         );
@@ -2519,12 +2519,12 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut cs = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut cs = wtx.cursor_write::<V2AccountsTrie>().expect("c");
             // Current state: {b, d}
             cs.upsert(StoredNibbles(b), &n).expect("upsert");
             cs.upsert(StoredNibbles(d), &n).expect("upsert");
 
-            let mut hc = wtx.cursor_write::<AccountsTrieHistory>().expect("c");
+            let mut hc = wtx.cursor_write::<V2AccountsTrieHistory>().expect("c");
             // a: created block 2, deleted block 10
             hc.upsert(
                 AccountTrieShardedKey::new(StoredNibbles(a), u64::MAX),
@@ -2556,7 +2556,7 @@ mod tests {
             )
             .expect("upsert");
 
-            let mut csc = wtx.cursor_dup_write::<AccountTrieChangeSets>().expect("c");
+            let mut csc = wtx.cursor_dup_write::<V2AccountTrieChangeSets>().expect("c");
             // Block 2: all created (old = None)
             csc.append_dup(
                 2u64,
@@ -2607,10 +2607,10 @@ mod tests {
 
         // At block 5: a, b, c, d, e all alive (a, c, e via changeset at 10)
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             5,
             false,
         );
@@ -2646,13 +2646,13 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state: p -> n2 (updated at block 10)
-            wtx.cursor_write::<AccountsTrie>()
+            wtx.cursor_write::<V2AccountsTrie>()
                 .expect("c")
                 .upsert(StoredNibbles(p), &n2)
                 .expect("upsert");
 
             // History: modified at block 10
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(p), u64::MAX),
@@ -2660,7 +2660,7 @@ mod tests {
                 )
                 .expect("upsert");
 
-            wtx.cursor_dup_write::<AccountTrieChangeSets>()
+            wtx.cursor_dup_write::<V2AccountTrieChangeSets>()
                 .expect("c")
                 .append_dup(
                     10u64,
@@ -2678,10 +2678,10 @@ mod tests {
 
         // At block 8: resolve from changeset at 10 → old value n
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             8,
             false,
         );
@@ -2706,12 +2706,12 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_write::<AccountsTrie>().expect("c");
+            let mut c = wtx.cursor_write::<V2AccountsTrie>().expect("c");
             c.upsert(StoredNibbles(p1), &node()).expect("upsert");
             c.upsert(StoredNibbles(p2), &n2).expect("upsert");
 
             // p2 has history at block 5
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(p2), u64::MAX),
@@ -2719,7 +2719,7 @@ mod tests {
                 )
                 .expect("upsert");
 
-            wtx.cursor_dup_write::<AccountTrieChangeSets>()
+            wtx.cursor_dup_write::<V2AccountTrieChangeSets>()
                 .expect("c")
                 .append_dup(
                     5u64,
@@ -2732,10 +2732,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             u64::MAX,
             true,
         );
@@ -2766,7 +2766,7 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state: {b1, c1} (a1 deleted at block 5)
-            let mut sc = wtx.cursor_dup_write::<StoragesTrie>().expect("c");
+            let mut sc = wtx.cursor_dup_write::<V2StoragesTrie>().expect("c");
             sc.upsert(
                 addr,
                 &StorageTrieEntry { nibbles: StoredNibblesSubKey(b1), node: n.clone() },
@@ -2778,7 +2778,7 @@ mod tests {
             )
             .expect("upsert");
 
-            let mut hc = wtx.cursor_write::<StoragesTrieHistory>().expect("c");
+            let mut hc = wtx.cursor_write::<V2StoragesTrieHistory>().expect("c");
             // a1: created at block 2, deleted at block 5
             hc.upsert(
                 StorageTrieShardedKey::new(addr, StoredNibbles(a1), u64::MAX),
@@ -2798,7 +2798,7 @@ mod tests {
             )
             .expect("upsert");
 
-            let mut csc = wtx.cursor_dup_write::<StorageTrieChangeSets>().expect("c");
+            let mut csc = wtx.cursor_dup_write::<V2StorageTrieChangeSets>().expect("c");
             // Block 2: all created
             let cs_key2 = BlockNumberHashedAddress((2u64, addr));
             csc.append_dup(
@@ -2831,10 +2831,10 @@ mod tests {
 
         // Query at block 3: a1 should be visible
         let mut cur = V2StorageTrieCursor::new(
-            tx.cursor_dup_read::<StoragesTrie>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<StorageTrieChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2StoragesTrie>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2StorageTrieChangeSets>().expect("c"),
             addr,
             3,
             false,
@@ -2868,7 +2868,7 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state: addr_a has {p1}, addr_b is empty (p2 deleted)
-            let mut sc = wtx.cursor_dup_write::<StoragesTrie>().expect("c");
+            let mut sc = wtx.cursor_dup_write::<V2StoragesTrie>().expect("c");
             sc.upsert(
                 addr_a,
                 &StorageTrieEntry { nibbles: StoredNibblesSubKey(p1), node: n.clone() },
@@ -2876,7 +2876,7 @@ mod tests {
             .expect("upsert");
 
             // addr_b: p2 history (created block 2, deleted block 5)
-            wtx.cursor_write::<StoragesTrieHistory>()
+            wtx.cursor_write::<V2StoragesTrieHistory>()
                 .expect("c")
                 .upsert(
                     StorageTrieShardedKey::new(addr_b, StoredNibbles(p2), u64::MAX),
@@ -2884,7 +2884,7 @@ mod tests {
                 )
                 .expect("upsert");
 
-            let mut csc = wtx.cursor_dup_write::<StorageTrieChangeSets>().expect("c");
+            let mut csc = wtx.cursor_dup_write::<V2StorageTrieChangeSets>().expect("c");
             csc.append_dup(
                 BlockNumberHashedAddress((2u64, addr_b)),
                 TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(p2), node: None },
@@ -2906,10 +2906,10 @@ mod tests {
 
         // Walk addr_a at block 3 → only p1
         let mut cur = V2StorageTrieCursor::new(
-            tx.cursor_dup_read::<StoragesTrie>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<StorageTrieChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2StoragesTrie>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2StorageTrieChangeSets>().expect("c"),
             addr_a,
             3,
             true,
@@ -2936,7 +2936,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_dup_write::<StoragesTrie>().expect("c");
+            let mut c = wtx.cursor_dup_write::<V2StoragesTrie>().expect("c");
             c.upsert(
                 addr_a,
                 &StorageTrieEntry { nibbles: StoredNibblesSubKey(p1), node: n.clone() },
@@ -2952,10 +2952,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageTrieCursor::new(
-            tx.cursor_dup_read::<StoragesTrie>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<StorageTrieChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2StoragesTrie>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2StorageTrieChangeSets>().expect("c"),
             addr_a,
             u64::MAX,
             true,
@@ -2983,7 +2983,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_dup_write::<HashedStorages>()
+            wtx.cursor_dup_write::<V2HashedStorages>()
                 .expect("c")
                 .upsert(addr, &StorageEntry { key: slot, value: U256::from(42u64) })
                 .expect("upsert");
@@ -2992,10 +2992,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageCursor::new(
-            tx.cursor_dup_read::<HashedStorages>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedStorageChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorages>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorageChangeSets>().expect("c"),
             addr,
             u64::MAX,
             true,
@@ -3015,13 +3015,13 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state: value=1000
-            wtx.cursor_dup_write::<HashedStorages>()
+            wtx.cursor_dup_write::<V2HashedStorages>()
                 .expect("c")
                 .upsert(addr, &StorageEntry { key: slot, value: U256::from(1000u64) })
                 .expect("upsert");
 
             // History: modified at block 8
-            wtx.cursor_write::<HashedStoragesHistory>()
+            wtx.cursor_write::<V2HashedStoragesHistory>()
                 .expect("c")
                 .upsert(
                     HashedStorageShardedKey {
@@ -3034,7 +3034,7 @@ mod tests {
 
             // Changeset at block 8: old value was 500
             let cs_key = BlockNumberHashedAddress((8u64, addr));
-            wtx.cursor_dup_write::<HashedStorageChangeSets>()
+            wtx.cursor_dup_write::<V2HashedStorageChangeSets>()
                 .expect("c")
                 .append_dup(cs_key, StorageEntry { key: slot, value: U256::from(500u64) })
                 .expect("append");
@@ -3046,10 +3046,10 @@ mod tests {
 
         // Query at block 7 (before modification at 8)
         let mut cur = V2StorageCursor::new(
-            tx.cursor_dup_read::<HashedStorages>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedStorageChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorages>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorageChangeSets>().expect("c"),
             addr,
             7,
             false,
@@ -3068,7 +3068,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_dup_write::<HashedStorages>()
+            wtx.cursor_dup_write::<V2HashedStorages>()
                 .expect("c")
                 .upsert(
                     addr_with,
@@ -3081,10 +3081,10 @@ mod tests {
         let tx = db.tx().expect("ro tx");
 
         let mut cur_with = V2StorageCursor::new(
-            tx.cursor_dup_read::<HashedStorages>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedStorageChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorages>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorageChangeSets>().expect("c"),
             addr_with,
             u64::MAX,
             true,
@@ -3092,10 +3092,10 @@ mod tests {
         assert!(!cur_with.is_storage_empty().expect("ok"));
 
         let mut cur_without = V2StorageCursor::new(
-            tx.cursor_dup_read::<HashedStorages>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedStorageChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorages>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorageChangeSets>().expect("c"),
             addr_without,
             u64::MAX,
             true,
@@ -3103,7 +3103,7 @@ mod tests {
         assert!(cur_without.is_storage_empty().expect("ok"));
     }
 
-    /// Storage slot was zeroed (deleted from HashedStorages) after the target
+    /// Storage slot was zeroed (deleted from V2HashedStorages) after the target
     /// block. The history walk must discover it.
     #[test]
     fn storage_cursor_discovers_slot_deleted_after_target_block() {
@@ -3115,7 +3115,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_dup_write::<HashedStorages>().expect("c");
+            let mut c = wtx.cursor_dup_write::<V2HashedStorages>().expect("c");
             // s1 and s3 exist; s2 was zeroed at block 10
             c.upsert(addr, &StorageEntry { key: s1, value: U256::from(100u64) })
                 .expect("upsert");
@@ -3123,7 +3123,7 @@ mod tests {
                 .expect("upsert");
 
             // s2 history: modified at [5, 10]
-            wtx.cursor_write::<HashedStoragesHistory>()
+            wtx.cursor_write::<V2HashedStoragesHistory>()
                 .expect("c")
                 .upsert(
                     HashedStorageShardedKey {
@@ -3136,7 +3136,7 @@ mod tests {
 
             // Changeset at block 10: s2 = 200 before block 10
             let cs_key = BlockNumberHashedAddress((10u64, addr));
-            wtx.cursor_dup_write::<HashedStorageChangeSets>()
+            wtx.cursor_dup_write::<V2HashedStorageChangeSets>()
                 .expect("c")
                 .append_dup(cs_key, StorageEntry { key: s2, value: U256::from(200u64) })
                 .expect("append");
@@ -3146,10 +3146,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageCursor::new(
-            tx.cursor_dup_read::<HashedStorages>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedStorageChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorages>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorageChangeSets>().expect("c"),
             addr,
             9,
             false,
@@ -3183,7 +3183,7 @@ mod tests {
             // No current state for addr — all storage was wiped at block 10.
 
             // History: slot modified at [5, 10]
-            wtx.cursor_write::<HashedStoragesHistory>()
+            wtx.cursor_write::<V2HashedStoragesHistory>()
                 .expect("c")
                 .upsert(
                     HashedStorageShardedKey {
@@ -3196,7 +3196,7 @@ mod tests {
 
             // Changeset at 10: value=42 before block 10
             let cs_key = BlockNumberHashedAddress((10u64, addr));
-            wtx.cursor_dup_write::<HashedStorageChangeSets>()
+            wtx.cursor_dup_write::<V2HashedStorageChangeSets>()
                 .expect("c")
                 .append_dup(cs_key, StorageEntry { key: slot, value: U256::from(42u64) })
                 .expect("append");
@@ -3206,10 +3206,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageCursor::new(
-            tx.cursor_dup_read::<HashedStorages>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedStorageChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorages>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorageChangeSets>().expect("c"),
             addr,
             9,
             false,
@@ -3230,7 +3230,7 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
             // No current storage for addr1.
             // addr2 has a history entry for the same slot.
-            wtx.cursor_write::<HashedStoragesHistory>()
+            wtx.cursor_write::<V2HashedStoragesHistory>()
                 .expect("c")
                 .upsert(
                     HashedStorageShardedKey {
@@ -3242,7 +3242,7 @@ mod tests {
                 .expect("upsert");
 
             let cs_key = BlockNumberHashedAddress((5u64, addr2));
-            wtx.cursor_dup_write::<HashedStorageChangeSets>()
+            wtx.cursor_dup_write::<V2HashedStorageChangeSets>()
                 .expect("c")
                 .append_dup(cs_key, StorageEntry { key: slot, value: U256::from(99u64) })
                 .expect("append");
@@ -3252,10 +3252,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageCursor::new(
-            tx.cursor_dup_read::<HashedStorages>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedStorageChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorages>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorageChangeSets>().expect("c"),
             addr1,
             4,
             true,
@@ -3276,7 +3276,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_dup_write::<HashedStorages>().expect("c");
+            let mut c = wtx.cursor_dup_write::<V2HashedStorages>().expect("c");
             c.upsert(addr1, &StorageEntry { key: slot, value: U256::from(11u64) })
                 .expect("upsert");
             c.upsert(addr2, &StorageEntry { key: slot, value: U256::from(22u64) })
@@ -3286,10 +3286,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageCursor::new(
-            tx.cursor_dup_read::<HashedStorages>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_read::<HashedStoragesHistory>().expect("c"),
-            tx.cursor_dup_read::<HashedStorageChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorages>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_read::<V2HashedStoragesHistory>().expect("c"),
+            tx.cursor_dup_read::<V2HashedStorageChangeSets>().expect("c"),
             addr1,
             u64::MAX,
             true,
@@ -3338,17 +3338,17 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state: root has block 10's node, child has block 10's node
-            wtx.cursor_write::<AccountsTrie>()
+            wtx.cursor_write::<V2AccountsTrie>()
                 .expect("c")
                 .upsert(StoredNibbles(root_path), &root_node_at_block10)
                 .expect("upsert root");
-            wtx.cursor_write::<AccountsTrie>()
+            wtx.cursor_write::<V2AccountsTrie>()
                 .expect("c")
                 .upsert(StoredNibbles(child_path), &child_node_at_block10)
                 .expect("upsert child");
 
             // Changeset at block 10: root had block5's node before block 10
-            wtx.cursor_dup_write::<AccountTrieChangeSets>()
+            wtx.cursor_dup_write::<V2AccountTrieChangeSets>()
                 .expect("c")
                 .append_dup(
                     10,
@@ -3360,7 +3360,7 @@ mod tests {
                 .expect("append root cs");
 
             // History: root modified at block 10
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(root_path), u64::MAX),
@@ -3369,7 +3369,7 @@ mod tests {
                 .expect("upsert root history");
 
             // History: child [0] modified at block 10
-            wtx.cursor_write::<AccountsTrieHistory>()
+            wtx.cursor_write::<V2AccountsTrieHistory>()
                 .expect("c")
                 .upsert(
                     AccountTrieShardedKey::new(StoredNibbles(child_path), u64::MAX),
@@ -3382,10 +3382,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2AccountTrieCursor::new(
-            tx.cursor_read::<AccountsTrie>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_read::<AccountsTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<AccountTrieChangeSets>().expect("c"),
+            tx.cursor_read::<V2AccountsTrie>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_read::<V2AccountsTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2AccountTrieChangeSets>().expect("c"),
             8,     // max_block_number: query at block 8 (before block 10's change)
             false, // is_latest = false (historical query)
         );
@@ -3410,7 +3410,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_dup_write::<StoragesTrie>()
+            wtx.cursor_dup_write::<V2StoragesTrie>()
                 .expect("c")
                 .upsert(
                     addr,
@@ -3422,10 +3422,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageTrieCursor::new(
-            tx.cursor_dup_read::<StoragesTrie>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<StorageTrieChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2StoragesTrie>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2StorageTrieChangeSets>().expect("c"),
             addr,
             u64::MAX,
             true,
@@ -3447,7 +3447,7 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
 
             // Current state
-            wtx.cursor_dup_write::<StoragesTrie>()
+            wtx.cursor_dup_write::<V2StoragesTrie>()
                 .expect("c")
                 .upsert(
                     addr,
@@ -3456,7 +3456,7 @@ mod tests {
                 .expect("upsert");
 
             // History: modified at block 6
-            wtx.cursor_write::<StoragesTrieHistory>()
+            wtx.cursor_write::<V2StoragesTrieHistory>()
                 .expect("c")
                 .upsert(
                     StorageTrieShardedKey::new(addr, StoredNibbles(path), u64::MAX),
@@ -3470,7 +3470,7 @@ mod tests {
                 nibbles: StoredNibblesSubKey(path),
                 node: Some(old_node.clone()),
             };
-            wtx.cursor_dup_write::<StorageTrieChangeSets>()
+            wtx.cursor_dup_write::<V2StorageTrieChangeSets>()
                 .expect("c")
                 .append_dup(cs_key, cs_entry)
                 .expect("append");
@@ -3482,10 +3482,10 @@ mod tests {
 
         // Query at block 5 (before modification at 6)
         let mut cur = V2StorageTrieCursor::new(
-            tx.cursor_dup_read::<StoragesTrie>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<StorageTrieChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2StoragesTrie>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2StorageTrieChangeSets>().expect("c"),
             addr,
             5,
             false,
@@ -3506,7 +3506,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_dup_write::<StoragesTrie>().expect("c");
+            let mut c = wtx.cursor_dup_write::<V2StoragesTrie>().expect("c");
             c.upsert(
                 addr_a,
                 &StorageTrieEntry { nibbles: StoredNibblesSubKey(p1), node: node() },
@@ -3522,10 +3522,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageTrieCursor::new(
-            tx.cursor_dup_read::<StoragesTrie>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<StorageTrieChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2StoragesTrie>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2StorageTrieChangeSets>().expect("c"),
             addr_a,
             u64::MAX,
             true,
@@ -3548,7 +3548,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            let mut c = wtx.cursor_dup_write::<StoragesTrie>().expect("c");
+            let mut c = wtx.cursor_dup_write::<V2StoragesTrie>().expect("c");
             c.upsert(
                 addr_a,
                 &StorageTrieEntry { nibbles: StoredNibblesSubKey(path), node: node() },
@@ -3564,10 +3564,10 @@ mod tests {
 
         let tx = db.tx().expect("ro tx");
         let mut cur = V2StorageTrieCursor::new(
-            tx.cursor_dup_read::<StoragesTrie>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_read::<StoragesTrieHistory>().expect("c"),
-            tx.cursor_dup_read::<StorageTrieChangeSets>().expect("c"),
+            tx.cursor_dup_read::<V2StoragesTrie>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_read::<V2StoragesTrieHistory>().expect("c"),
+            tx.cursor_dup_read::<V2StorageTrieChangeSets>().expect("c"),
             addr_a,
             u64::MAX,
             true,

@@ -4,12 +4,12 @@
 //!
 //! | Domain | Current State | ChangeSet | History Bitmap |
 //! |--------|--------------|-----------|----------------|
-//! | Hashed Accounts | [`HashedAccounts`] | [`HashedAccountChangeSets`] | [`HashedAccountsHistory`] |
-//! | Hashed Storages | [`HashedStorages`] | [`HashedStorageChangeSets`] | [`HashedStoragesHistory`] |
-//! | Account Trie | [`AccountsTrie`] | [`AccountTrieChangeSets`] | [`AccountsTrieHistory`] |
-//! | Storage Trie | [`StoragesTrie`] | [`StorageTrieChangeSets`] | [`StoragesTrieHistory`] |
+//! | Hashed Accounts | [`V2HashedAccounts`] | [`V2HashedAccountChangeSets`] | [`V2HashedAccountsHistory`] |
+//! | Hashed Storages | [`V2HashedStorages`] | [`V2HashedStorageChangeSets`] | [`V2HashedStoragesHistory`] |
+//! | Account Trie | [`V2AccountsTrie`] | [`V2AccountTrieChangeSets`] | [`V2AccountsTrieHistory`] |
+//! | Storage Trie | [`V2StoragesTrie`] | [`V2StorageTrieChangeSets`] | [`V2StoragesTrieHistory`] |
 
-use super::{BlockNumberHash, ProofWindow, ProofWindowKey, Tables};
+use super::{BlockNumberHash, V2ProofWindow, ProofWindowKey, Tables};
 use crate::{
     api::{
         InitialStateAnchor, InitialStateStatus, OpProofsInitProvider, OpProofsProviderRO,
@@ -18,12 +18,12 @@ use crate::{
     db::{
         cursor_v2::{V2AccountCursor, V2AccountTrieCursor, V2StorageCursor, V2StorageTrieCursor},
         models::{
-            AccountTrieShardedKey, AccountsTrie, AccountTrieChangeSets,
-            AccountsTrieHistory, BlockNumberHashedAddress, HashedAccountBeforeTx,
-            HashedAccountChangeSets, HashedAccountShardedKey, HashedAccounts,
-            HashedAccountsHistory, HashedStorageChangeSets, HashedStorageShardedKey,
-            HashedStorages, HashedStoragesHistory, StorageTrieShardedKey, StoragesTrie,
-            StorageTrieChangeSets, StoragesTrieHistory, TrieChangeSetsEntry,
+            AccountTrieShardedKey, V2AccountsTrie, V2AccountTrieChangeSets,
+            V2AccountsTrieHistory, BlockNumberHashedAddress, HashedAccountBeforeTx,
+            V2HashedAccountChangeSets, HashedAccountShardedKey, V2HashedAccounts,
+            V2HashedAccountsHistory, V2HashedStorageChangeSets, HashedStorageShardedKey,
+            V2HashedStorages, V2HashedStoragesHistory, StorageTrieShardedKey, V2StoragesTrie,
+            V2StorageTrieChangeSets, V2StoragesTrieHistory, TrieChangeSetsEntry,
         },
         HashedStorageKey, StorageTrieKey,
     },
@@ -203,7 +203,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
         &self,
         key: ProofWindowKey,
     ) -> OpProofsStorageResult<Option<(u64, B256)>> {
-        let mut cursor = self.tx.cursor_read::<ProofWindow>()?;
+        let mut cursor = self.tx.cursor_read::<V2ProofWindow>()?;
         Ok(cursor.seek_exact(key)?.map(|(_, val)| (val.number(), *val.hash())))
     }
 
@@ -229,7 +229,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
     fn get_proof_window_inner(
         &self,
     ) -> OpProofsStorageResult<Option<(NumHash, NumHash)>> {
-        let mut cursor = self.tx.cursor_read::<ProofWindow>()?;
+        let mut cursor = self.tx.cursor_read::<V2ProofWindow>()?;
 
         let earliest = match cursor.seek_exact(ProofWindowKey::EarliestBlock)? {
             Some((_, val)) => NumHash::new(val.number(), *val.hash()),
@@ -245,7 +245,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
     }
 
     fn get_initial_state_anchor_inner(&self) -> OpProofsStorageResult<Option<BlockNumHash>> {
-        let mut cur = self.tx.cursor_read::<ProofWindow>()?;
+        let mut cur = self.tx.cursor_read::<V2ProofWindow>()?;
         Ok(cur.seek_exact(ProofWindowKey::InitialStateAnchor)?.map(|(_k, v)| v.into()))
     }
 
@@ -258,7 +258,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
 
         // Account trie changesets
         {
-            let mut cs_cursor = self.tx.cursor_read::<AccountTrieChangeSets>()?;
+            let mut cs_cursor = self.tx.cursor_read::<V2AccountTrieChangeSets>()?;
             let mut walker = cs_cursor.walk(Some(block_number))?;
             while let Some(Ok((bn, entry))) = walker.next() {
                 if bn != block_number {
@@ -267,7 +267,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
                 let path = entry.nibbles.0;
                 let current_node = self
                     .tx
-                    .cursor_read::<AccountsTrie>()?
+                    .cursor_read::<V2AccountsTrie>()?
                     .seek_exact(StoredNibbles(path))?
                     .map(|(_, node)| node);
 
@@ -284,7 +284,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
 
         // Storage trie changesets
         {
-            let mut cs_cursor = self.tx.cursor_read::<StorageTrieChangeSets>()?;
+            let mut cs_cursor = self.tx.cursor_read::<V2StorageTrieChangeSets>()?;
             let start = BlockNumberHashedAddress((block_number, B256::ZERO));
             let end = BlockNumberHashedAddress((block_number, B256::repeat_byte(0xff)));
             let mut walker = cs_cursor.walk_range(start..=end)?;
@@ -295,7 +295,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
 
                 let current_node = self
                     .tx
-                    .cursor_dup_read::<StoragesTrie>()?
+                    .cursor_dup_read::<V2StoragesTrie>()?
                     .seek_by_key_subkey(hashed_address, StoredNibblesSubKey(path))?
                     .filter(|e| e.nibbles == StoredNibblesSubKey(path))
                     .map(|e| e.node);
@@ -319,7 +319,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
         // Hashed account changesets
         let mut post_state = HashedPostState::default();
         {
-            let mut cs_cursor = self.tx.cursor_read::<HashedAccountChangeSets>()?;
+            let mut cs_cursor = self.tx.cursor_read::<V2HashedAccountChangeSets>()?;
             let mut walker = cs_cursor.walk(Some(block_number))?;
             while let Some(Ok((bn, entry))) = walker.next() {
                 if bn != block_number {
@@ -327,7 +327,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
                 }
                 let current_account = self
                     .tx
-                    .cursor_read::<HashedAccounts>()?
+                    .cursor_read::<V2HashedAccounts>()?
                     .seek_exact(entry.hashed_address)?
                     .map(|(_, acc)| acc);
 
@@ -337,7 +337,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
 
         // Hashed storage changesets
         {
-            let mut cs_cursor = self.tx.cursor_read::<HashedStorageChangeSets>()?;
+            let mut cs_cursor = self.tx.cursor_read::<V2HashedStorageChangeSets>()?;
             let start = BlockNumberHashedAddress((block_number, B256::ZERO));
             let end = BlockNumberHashedAddress((block_number, B256::repeat_byte(0xff)));
             let mut walker = cs_cursor.walk_range(start..=end)?;
@@ -347,7 +347,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
 
                 let current_value = self
                     .tx
-                    .cursor_dup_read::<HashedStorages>()?
+                    .cursor_dup_read::<V2HashedStorages>()?
                     .seek_by_key_subkey(hashed_address, entry.key)?
                     .filter(|e| e.key == entry.key)
                     .map(|e| e.value)
@@ -391,27 +391,27 @@ struct HistoryCollector {
 /// has measurable overhead, and for a 5-block batch this turns 40 cursor
 /// open+drop cycles into 8.
 struct WriteCursors<TX: DbTxMut + DbTx> {
-    account_trie_state: <TX as DbTxMut>::CursorMut<AccountsTrie>,
-    account_trie_cs: <TX as DbTxMut>::DupCursorMut<AccountTrieChangeSets>,
-    storage_trie_state: <TX as DbTxMut>::DupCursorMut<StoragesTrie>,
-    storage_trie_cs: <TX as DbTxMut>::DupCursorMut<StorageTrieChangeSets>,
-    hashed_accounts_state: <TX as DbTxMut>::CursorMut<HashedAccounts>,
-    hashed_accounts_cs: <TX as DbTxMut>::DupCursorMut<HashedAccountChangeSets>,
-    hashed_storages_state: <TX as DbTxMut>::DupCursorMut<HashedStorages>,
-    hashed_storages_cs: <TX as DbTxMut>::DupCursorMut<HashedStorageChangeSets>,
+    account_trie_state: <TX as DbTxMut>::CursorMut<V2AccountsTrie>,
+    account_trie_cs: <TX as DbTxMut>::DupCursorMut<V2AccountTrieChangeSets>,
+    storage_trie_state: <TX as DbTxMut>::DupCursorMut<V2StoragesTrie>,
+    storage_trie_cs: <TX as DbTxMut>::DupCursorMut<V2StorageTrieChangeSets>,
+    hashed_accounts_state: <TX as DbTxMut>::CursorMut<V2HashedAccounts>,
+    hashed_accounts_cs: <TX as DbTxMut>::DupCursorMut<V2HashedAccountChangeSets>,
+    hashed_storages_state: <TX as DbTxMut>::DupCursorMut<V2HashedStorages>,
+    hashed_storages_cs: <TX as DbTxMut>::DupCursorMut<V2HashedStorageChangeSets>,
 }
 
 impl<TX: DbTxMut + DbTx> WriteCursors<TX> {
     fn new(tx: &TX) -> OpProofsStorageResult<Self> {
         Ok(Self {
-            account_trie_state: tx.cursor_write::<AccountsTrie>()?,
-            account_trie_cs: tx.cursor_dup_write::<AccountTrieChangeSets>()?,
-            storage_trie_state: tx.cursor_dup_write::<StoragesTrie>()?,
-            storage_trie_cs: tx.cursor_dup_write::<StorageTrieChangeSets>()?,
-            hashed_accounts_state: tx.cursor_write::<HashedAccounts>()?,
-            hashed_accounts_cs: tx.cursor_dup_write::<HashedAccountChangeSets>()?,
-            hashed_storages_state: tx.cursor_dup_write::<HashedStorages>()?,
-            hashed_storages_cs: tx.cursor_dup_write::<HashedStorageChangeSets>()?,
+            account_trie_state: tx.cursor_write::<V2AccountsTrie>()?,
+            account_trie_cs: tx.cursor_dup_write::<V2AccountTrieChangeSets>()?,
+            storage_trie_state: tx.cursor_dup_write::<V2StoragesTrie>()?,
+            storage_trie_cs: tx.cursor_dup_write::<V2StorageTrieChangeSets>()?,
+            hashed_accounts_state: tx.cursor_write::<V2HashedAccounts>()?,
+            hashed_accounts_cs: tx.cursor_dup_write::<V2HashedAccountChangeSets>()?,
+            hashed_storages_state: tx.cursor_dup_write::<V2HashedStorages>()?,
+            hashed_storages_cs: tx.cursor_dup_write::<V2HashedStorageChangeSets>()?,
         })
     }
 }
@@ -480,7 +480,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         block_number: u64,
         hash: B256,
     ) -> OpProofsStorageResult<()> {
-        let mut cursor = self.tx.cursor_write::<ProofWindow>()?;
+        let mut cursor = self.tx.cursor_write::<V2ProofWindow>()?;
         cursor.upsert(ProofWindowKey::EarliestBlock, &BlockNumberHash::new(block_number, hash))?;
         Ok(())
     }
@@ -490,7 +490,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         block_number: u64,
         hash: B256,
     ) -> OpProofsStorageResult<()> {
-        let mut cursor = self.tx.cursor_write::<ProofWindow>()?;
+        let mut cursor = self.tx.cursor_write::<V2ProofWindow>()?;
         cursor.upsert(ProofWindowKey::LatestBlock, &BlockNumberHash::new(block_number, hash))?;
         Ok(())
     }
@@ -601,7 +601,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         // ---- Account trie history ----
         {
             let mut dedup: BTreeMap<StoredNibbles, BTreeSet<u64>> = BTreeMap::new();
-            let mut cs_cursor = self.tx.cursor_read::<AccountTrieChangeSets>()?;
+            let mut cs_cursor = self.tx.cursor_read::<V2AccountTrieChangeSets>()?;
             let mut walker = cs_cursor.walk_range(range.clone())?;
             while let Some(Ok((block_number, entry))) = walker.next() {
                 let nibbles = StoredNibbles(entry.nibbles.0);
@@ -610,7 +610,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
             drop(walker);
             drop(cs_cursor);
 
-            let mut hist_cursor = self.tx.cursor_write::<AccountsTrieHistory>()?;
+            let mut hist_cursor = self.tx.cursor_write::<V2AccountsTrieHistory>()?;
             for (nibbles, blocks) in &dedup {
                 Self::remove_blocks_from_history_shard(
                     &mut hist_cursor,
@@ -623,7 +623,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         // ---- Storage trie history ----
         {
             let mut dedup: BTreeMap<(B256, StoredNibbles), BTreeSet<u64>> = BTreeMap::new();
-            let mut cs_cursor = self.tx.cursor_read::<StorageTrieChangeSets>()?;
+            let mut cs_cursor = self.tx.cursor_read::<V2StorageTrieChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
             let mut walker = cs_cursor.walk_range(start..=end)?;
@@ -635,7 +635,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
             drop(walker);
             drop(cs_cursor);
 
-            let mut hist_cursor = self.tx.cursor_write::<StoragesTrieHistory>()?;
+            let mut hist_cursor = self.tx.cursor_write::<V2StoragesTrieHistory>()?;
             for ((hashed_address, nibbles), blocks) in &dedup {
                 Self::remove_blocks_from_history_shard(
                     &mut hist_cursor,
@@ -650,7 +650,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         // ---- Hashed accounts history ----
         {
             let mut dedup: BTreeMap<B256, BTreeSet<u64>> = BTreeMap::new();
-            let mut cs_cursor = self.tx.cursor_read::<HashedAccountChangeSets>()?;
+            let mut cs_cursor = self.tx.cursor_read::<V2HashedAccountChangeSets>()?;
             let mut walker = cs_cursor.walk_range(range.clone())?;
             while let Some(Ok((block_number, entry))) = walker.next() {
                 dedup.entry(entry.hashed_address).or_default().insert(block_number);
@@ -658,7 +658,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
             drop(walker);
             drop(cs_cursor);
 
-            let mut hist_cursor = self.tx.cursor_write::<HashedAccountsHistory>()?;
+            let mut hist_cursor = self.tx.cursor_write::<V2HashedAccountsHistory>()?;
             for (addr, blocks) in &dedup {
                 Self::remove_blocks_from_history_shard(
                     &mut hist_cursor,
@@ -671,7 +671,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         // ---- Hashed storages history ----
         {
             let mut dedup: BTreeMap<(B256, B256), BTreeSet<u64>> = BTreeMap::new();
-            let mut cs_cursor = self.tx.cursor_read::<HashedStorageChangeSets>()?;
+            let mut cs_cursor = self.tx.cursor_read::<V2HashedStorageChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
             let mut walker = cs_cursor.walk_range(start..=end)?;
@@ -682,7 +682,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
             drop(walker);
             drop(cs_cursor);
 
-            let mut hist_cursor = self.tx.cursor_write::<HashedStoragesHistory>()?;
+            let mut hist_cursor = self.tx.cursor_write::<V2HashedStoragesHistory>()?;
             for ((hashed_address, storage_key), blocks) in &dedup {
                 Self::remove_blocks_from_history_shard(
                     &mut hist_cursor,
@@ -1022,9 +1022,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
     ) -> OpProofsStorageResult<()> {
         // Account trie history
         if !collector.account_trie.is_empty() {
-            let mut cursor = self.tx.cursor_write::<AccountsTrieHistory>()?;
+            let mut cursor = self.tx.cursor_write::<V2AccountsTrieHistory>()?;
             for (path, blocks) in collector.account_trie {
-                append_history_indices_batched::<AccountsTrieHistory>(
+                append_history_indices_batched::<V2AccountsTrieHistory>(
                     &mut cursor,
                     &blocks,
                     |highest| AccountTrieShardedKey::new(path.clone(), highest),
@@ -1034,9 +1034,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
         // Storage trie history
         if !collector.storage_trie.is_empty() {
-            let mut cursor = self.tx.cursor_write::<StoragesTrieHistory>()?;
+            let mut cursor = self.tx.cursor_write::<V2StoragesTrieHistory>()?;
             for ((addr, path), blocks) in collector.storage_trie {
-                append_history_indices_batched::<StoragesTrieHistory>(
+                append_history_indices_batched::<V2StoragesTrieHistory>(
                     &mut cursor,
                     &blocks,
                     |highest| StorageTrieShardedKey::new(addr, path.clone(), highest),
@@ -1046,9 +1046,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
         // Hashed accounts history
         if !collector.hashed_accounts.is_empty() {
-            let mut cursor = self.tx.cursor_write::<HashedAccountsHistory>()?;
+            let mut cursor = self.tx.cursor_write::<V2HashedAccountsHistory>()?;
             for (addr, blocks) in collector.hashed_accounts {
-                append_history_indices_batched::<HashedAccountsHistory>(
+                append_history_indices_batched::<V2HashedAccountsHistory>(
                     &mut cursor,
                     &blocks,
                     |highest| HashedAccountShardedKey::new(addr, highest),
@@ -1058,9 +1058,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
         // Hashed storages history
         if !collector.hashed_storages.is_empty() {
-            let mut cursor = self.tx.cursor_write::<HashedStoragesHistory>()?;
+            let mut cursor = self.tx.cursor_write::<V2HashedStoragesHistory>()?;
             for ((addr, slot), blocks) in collector.hashed_storages {
-                append_history_indices_batched::<HashedStoragesHistory>(
+                append_history_indices_batched::<V2HashedStoragesHistory>(
                     &mut cursor,
                     &blocks,
                     |highest| HashedStorageShardedKey {
@@ -1120,7 +1120,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
     fn prune_changesets(&self, range: std::ops::RangeInclusive<u64>) -> OpProofsStorageResult<()> {
         // Account trie changesets
         {
-            let mut cursor = self.tx.cursor_write::<AccountTrieChangeSets>()?;
+            let mut cursor = self.tx.cursor_write::<V2AccountTrieChangeSets>()?;
             let mut walker = cursor.walk_range(range.clone())?;
             while walker.next().is_some() {
                 walker.delete_current()?;
@@ -1129,7 +1129,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
         // Storage trie changesets
         {
-            let mut cursor = self.tx.cursor_write::<StorageTrieChangeSets>()?;
+            let mut cursor = self.tx.cursor_write::<V2StorageTrieChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
             let mut walker = cursor.walk_range(start..=end)?;
@@ -1140,7 +1140,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
         // Account changesets
         {
-            let mut cursor = self.tx.cursor_write::<HashedAccountChangeSets>()?;
+            let mut cursor = self.tx.cursor_write::<V2HashedAccountChangeSets>()?;
             let mut walker = cursor.walk_range(range.clone())?;
             while walker.next().is_some() {
                 walker.delete_current()?;
@@ -1149,7 +1149,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
         // Storage changesets
         {
-            let mut cursor = self.tx.cursor_write::<HashedStorageChangeSets>()?;
+            let mut cursor = self.tx.cursor_write::<V2HashedStorageChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
             let mut walker = cursor.walk_range(start..=end)?;
@@ -1166,8 +1166,8 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         &self,
         range: std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<()> {
-        let mut cs_cursor = self.tx.cursor_read::<AccountTrieChangeSets>()?;
-        let mut state_cursor = self.tx.cursor_write::<AccountsTrie>()?;
+        let mut cs_cursor = self.tx.cursor_read::<V2AccountTrieChangeSets>()?;
+        let mut state_cursor = self.tx.cursor_write::<V2AccountsTrie>()?;
 
         // Walk changesets in REVERSE order (newest first) to restore correctly
         for block_number in (*range.start()..=*range.end()).rev() {
@@ -1201,8 +1201,8 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         &self,
         range: std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<()> {
-        let mut cs_cursor = self.tx.cursor_read::<StorageTrieChangeSets>()?;
-        let mut state_cursor = self.tx.cursor_dup_write::<StoragesTrie>()?;
+        let mut cs_cursor = self.tx.cursor_read::<V2StorageTrieChangeSets>()?;
+        let mut state_cursor = self.tx.cursor_dup_write::<V2StoragesTrie>()?;
 
         for block_number in (*range.start()..=*range.end()).rev() {
             let start = BlockNumberHashedAddress((block_number, B256::ZERO));
@@ -1240,8 +1240,8 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         &self,
         range: std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<()> {
-        let mut cs_cursor = self.tx.cursor_read::<HashedAccountChangeSets>()?;
-        let mut state_cursor = self.tx.cursor_write::<HashedAccounts>()?;
+        let mut cs_cursor = self.tx.cursor_read::<V2HashedAccountChangeSets>()?;
+        let mut state_cursor = self.tx.cursor_write::<V2HashedAccounts>()?;
 
         for block_number in (*range.start()..=*range.end()).rev() {
             let mut walker = cs_cursor.walk(Some(block_number))?;
@@ -1272,8 +1272,8 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         &self,
         range: std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<()> {
-        let mut cs_cursor = self.tx.cursor_read::<HashedStorageChangeSets>()?;
-        let mut state_cursor = self.tx.cursor_dup_write::<HashedStorages>()?;
+        let mut cs_cursor = self.tx.cursor_read::<V2HashedStorageChangeSets>()?;
+        let mut state_cursor = self.tx.cursor_dup_write::<V2HashedStorages>()?;
 
         for block_number in (*range.start()..=*range.end()).rev() {
             let start = BlockNumberHashedAddress((block_number, B256::ZERO));
@@ -1309,9 +1309,9 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofsProviderV2<TX> {
     type StorageTrieCursor<'tx>
         = V2StorageTrieCursor<
-        TX::DupCursor<StoragesTrie>,
-        TX::Cursor<StoragesTrieHistory>,
-        TX::DupCursor<StorageTrieChangeSets>,
+        TX::DupCursor<V2StoragesTrie>,
+        TX::Cursor<V2StoragesTrieHistory>,
+        TX::DupCursor<V2StorageTrieChangeSets>,
     >
     where
         Self: 'tx,
@@ -1319,9 +1319,9 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
 
     type AccountTrieCursor<'tx>
         = V2AccountTrieCursor<
-        TX::Cursor<AccountsTrie>,
-        TX::Cursor<AccountsTrieHistory>,
-        TX::DupCursor<AccountTrieChangeSets>,
+        TX::Cursor<V2AccountsTrie>,
+        TX::Cursor<V2AccountsTrieHistory>,
+        TX::DupCursor<V2AccountTrieChangeSets>,
     >
     where
         Self: 'tx,
@@ -1329,9 +1329,9 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
 
     type StorageCursor<'tx>
         = V2StorageCursor<
-        TX::DupCursor<HashedStorages>,
-        TX::Cursor<HashedStoragesHistory>,
-        TX::DupCursor<HashedStorageChangeSets>,
+        TX::DupCursor<V2HashedStorages>,
+        TX::Cursor<V2HashedStoragesHistory>,
+        TX::DupCursor<V2HashedStorageChangeSets>,
     >
     where
         Self: 'tx,
@@ -1339,9 +1339,9 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
 
     type AccountHashedCursor<'tx>
         = V2AccountCursor<
-        TX::Cursor<HashedAccounts>,
-        TX::Cursor<HashedAccountsHistory>,
-        TX::DupCursor<HashedAccountChangeSets>,
+        TX::Cursor<V2HashedAccounts>,
+        TX::Cursor<V2HashedAccountsHistory>,
+        TX::DupCursor<V2HashedAccountChangeSets>,
     >
     where
         Self: 'tx,
@@ -1352,7 +1352,7 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
     }
 
     fn get_latest_block_number(&self) -> OpProofsStorageResult<Option<(u64, B256)>> {
-        let mut cursor = self.tx.cursor_read::<ProofWindow>()?;
+        let mut cursor = self.tx.cursor_read::<V2ProofWindow>()?;
         if let Some((_, val)) = cursor.seek_exact(ProofWindowKey::LatestBlock)? {
             return Ok(Some((val.number(), *val.hash())));
         }
@@ -1367,10 +1367,10 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
     ) -> OpProofsStorageResult<Self::StorageTrieCursor<'tx>> {
         let is_latest = self.is_latest_block(max_block_number)?;
         Ok(V2StorageTrieCursor::new(
-            self.tx.cursor_dup_read::<StoragesTrie>()?,
-            self.tx.cursor_read::<StoragesTrieHistory>()?,
-            self.tx.cursor_read::<StoragesTrieHistory>()?,
-            self.tx.cursor_dup_read::<StorageTrieChangeSets>()?,
+            self.tx.cursor_dup_read::<V2StoragesTrie>()?,
+            self.tx.cursor_read::<V2StoragesTrieHistory>()?,
+            self.tx.cursor_read::<V2StoragesTrieHistory>()?,
+            self.tx.cursor_dup_read::<V2StorageTrieChangeSets>()?,
             hashed_address,
             max_block_number,
             is_latest,
@@ -1383,10 +1383,10 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
     ) -> OpProofsStorageResult<Self::AccountTrieCursor<'tx>> {
         let is_latest = self.is_latest_block(max_block_number)?;
         Ok(V2AccountTrieCursor::new(
-            self.tx.cursor_read::<AccountsTrie>()?,
-            self.tx.cursor_read::<AccountsTrieHistory>()?,
-            self.tx.cursor_read::<AccountsTrieHistory>()?,
-            self.tx.cursor_dup_read::<AccountTrieChangeSets>()?,
+            self.tx.cursor_read::<V2AccountsTrie>()?,
+            self.tx.cursor_read::<V2AccountsTrieHistory>()?,
+            self.tx.cursor_read::<V2AccountsTrieHistory>()?,
+            self.tx.cursor_dup_read::<V2AccountTrieChangeSets>()?,
             max_block_number,
             is_latest,
         ))
@@ -1399,10 +1399,10 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
     ) -> OpProofsStorageResult<Self::StorageCursor<'tx>> {
         let is_latest = self.is_latest_block(max_block_number)?;
         Ok(V2StorageCursor::new(
-            self.tx.cursor_dup_read::<HashedStorages>()?,
-            self.tx.cursor_read::<HashedStoragesHistory>()?,
-            self.tx.cursor_read::<HashedStoragesHistory>()?,
-            self.tx.cursor_dup_read::<HashedStorageChangeSets>()?,
+            self.tx.cursor_dup_read::<V2HashedStorages>()?,
+            self.tx.cursor_read::<V2HashedStoragesHistory>()?,
+            self.tx.cursor_read::<V2HashedStoragesHistory>()?,
+            self.tx.cursor_dup_read::<V2HashedStorageChangeSets>()?,
             hashed_address,
             max_block_number,
             is_latest,
@@ -1415,10 +1415,10 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
     ) -> OpProofsStorageResult<Self::AccountHashedCursor<'tx>> {
         let is_latest = self.is_latest_block(max_block_number)?;
         Ok(V2AccountCursor::new(
-            self.tx.cursor_read::<HashedAccounts>()?,
-            self.tx.cursor_read::<HashedAccountsHistory>()?,
-            self.tx.cursor_read::<HashedAccountsHistory>()?,
-            self.tx.cursor_dup_read::<HashedAccountChangeSets>()?,
+            self.tx.cursor_read::<V2HashedAccounts>()?,
+            self.tx.cursor_read::<V2HashedAccountsHistory>()?,
+            self.tx.cursor_read::<V2HashedAccountsHistory>()?,
+            self.tx.cursor_dup_read::<V2HashedAccountChangeSets>()?,
             max_block_number,
             is_latest,
         ))
@@ -1449,7 +1449,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         let mut cursors = WriteCursors::new(&self.tx)?;
 
         // Track the latest hash in memory instead of reading/writing
-        // ProofWindow per block (saves 2 cursor opens per block).
+        // V2ProofWindow per block (saves 2 cursor opens per block).
         let mut last_hash = self
             .get_latest_block_number_hash_inner()?
             .map(|(_, hash)| hash)
@@ -1483,7 +1483,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         // blocks in the batch touched it.
         self.flush_collected_history(collector)?;
 
-        // Write ProofWindow once at the end instead of per-block.
+        // Write V2ProofWindow once at the end instead of per-block.
         if let Some((number, hash)) = last_written {
             self.set_latest_block_number_inner(number, hash)?;
         }
@@ -1514,7 +1514,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         // Account trie  (Key = BlockNumber, SubKey = StoredNibblesSubKey)
         let acct_trie_keys = {
             let mut keys: BTreeSet<StoredNibbles> = BTreeSet::new();
-            let mut cursor = self.tx.cursor_dup_write::<AccountTrieChangeSets>()?;
+            let mut cursor = self.tx.cursor_dup_write::<V2AccountTrieChangeSets>()?;
             let mut entry = cursor.seek(*range.start())?;
             while let Some((block_num, first_val)) = entry {
                 if block_num > *range.end() { break; }
@@ -1533,7 +1533,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         // Storage trie  (Key = BlockNumberHashedAddress, SubKey = StoredNibblesSubKey)
         let stor_trie_keys = {
             let mut keys: BTreeSet<(B256, StoredNibbles)> = BTreeSet::new();
-            let mut cursor = self.tx.cursor_dup_write::<StorageTrieChangeSets>()?;
+            let mut cursor = self.tx.cursor_dup_write::<V2StorageTrieChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
             let mut entry = cursor.seek(start)?;
@@ -1554,7 +1554,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         // Hashed accounts  (Key = BlockNumber, SubKey = B256)
         let acct_keys = {
             let mut keys: BTreeSet<B256> = BTreeSet::new();
-            let mut cursor = self.tx.cursor_dup_write::<HashedAccountChangeSets>()?;
+            let mut cursor = self.tx.cursor_dup_write::<V2HashedAccountChangeSets>()?;
             let mut entry = cursor.seek(*range.start())?;
             while let Some((block_num, first_val)) = entry {
                 if block_num > *range.end() { break; }
@@ -1573,7 +1573,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         // Hashed storages  (Key = BlockNumberHashedAddress, SubKey = B256)
         let stor_keys = {
             let mut keys: BTreeSet<(B256, B256)> = BTreeSet::new();
-            let mut cursor = self.tx.cursor_dup_write::<HashedStorageChangeSets>()?;
+            let mut cursor = self.tx.cursor_dup_write::<V2HashedStorageChangeSets>()?;
             let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
             let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
             let mut entry = cursor.seek(start)?;
@@ -1593,7 +1593,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
 
         // ---- Phase B: history bitmap removal — 1 seek per unique key, range filter ----
         {
-            let mut cursor = self.tx.cursor_write::<AccountsTrieHistory>()?;
+            let mut cursor = self.tx.cursor_write::<V2AccountsTrieHistory>()?;
             for nibbles in &acct_trie_keys {
                 Self::prune_history_range_for_key(
                     &mut cursor,
@@ -1604,7 +1604,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
             }
         }
         {
-            let mut cursor = self.tx.cursor_write::<StoragesTrieHistory>()?;
+            let mut cursor = self.tx.cursor_write::<V2StoragesTrieHistory>()?;
             for (hashed_address, nibbles) in &stor_trie_keys {
                 Self::prune_history_range_for_key(
                     &mut cursor,
@@ -1615,7 +1615,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
             }
         }
         {
-            let mut cursor = self.tx.cursor_write::<HashedAccountsHistory>()?;
+            let mut cursor = self.tx.cursor_write::<V2HashedAccountsHistory>()?;
             for addr in &acct_keys {
                 Self::prune_history_range_for_key(
                     &mut cursor,
@@ -1626,7 +1626,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
             }
         }
         {
-            let mut cursor = self.tx.cursor_write::<HashedStoragesHistory>()?;
+            let mut cursor = self.tx.cursor_write::<V2HashedStoragesHistory>()?;
             for (hashed_address, storage_key) in &stor_keys {
                 Self::prune_history_range_for_key(
                     &mut cursor,
@@ -1721,7 +1721,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
 
         // Re-add blocks using a shared collector + cursors, same as the batch
         // path, so history bitmap appends are batched and cursors are reused.
-        // Track block ordering in memory to avoid per-block ProofWindow I/O.
+        // Track block ordering in memory to avoid per-block V2ProofWindow I/O.
         let mut last_hash = latest_common_block.hash;
         let mut last_written: Option<(BlockNumber, B256)> = None;
         let mut collector = HistoryCollector::default();
@@ -1784,25 +1784,25 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
         // interrupted, the next run picks up where it left off.
         let latest_hashed_account_key = self
             .tx
-            .cursor_read::<HashedAccounts>()?
+            .cursor_read::<V2HashedAccounts>()?
             .last()?
             .map(|(k, _)| k);
 
         let latest_hashed_storage_key = self
             .tx
-            .cursor_read::<HashedStorages>()?
+            .cursor_read::<V2HashedStorages>()?
             .last()?
             .map(|(addr, entry)| HashedStorageKey::new(addr, entry.key));
 
         let latest_account_trie_key = self
             .tx
-            .cursor_read::<AccountsTrie>()?
+            .cursor_read::<V2AccountsTrie>()?
             .last()?
             .map(|(k, _)| k);
 
         let latest_storage_trie_key = self
             .tx
-            .cursor_read::<StoragesTrie>()?
+            .cursor_read::<V2StoragesTrie>()?
             .last()?
             .map(|(addr, entry)| StorageTrieKey::new(addr, StoredNibbles(entry.nibbles.0)));
 
@@ -1821,7 +1821,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
     }
 
     fn set_initial_state_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()> {
-        let mut cur = self.tx.cursor_write::<ProofWindow>()?;
+        let mut cur = self.tx.cursor_write::<V2ProofWindow>()?;
         cur.insert(ProofWindowKey::InitialStateAnchor, &anchor.into())?;
         Ok(())
     }
@@ -1834,7 +1834,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
             return Ok(());
         }
 
-        let mut cursor = self.tx.cursor_write::<AccountsTrie>()?;
+        let mut cursor = self.tx.cursor_write::<V2AccountsTrie>()?;
         for (nibbles, maybe_node) in account_nodes {
             if let Some(node) = maybe_node {
                 cursor.upsert(StoredNibbles(nibbles), &node)?;
@@ -1852,7 +1852,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
             return Ok(());
         }
 
-        let mut cursor = self.tx.cursor_dup_write::<StoragesTrie>()?;
+        let mut cursor = self.tx.cursor_dup_write::<V2StoragesTrie>()?;
         for (nibbles, maybe_node) in storage_nodes {
             if let Some(node) = maybe_node {
                 cursor.append_dup(
@@ -1875,7 +1875,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
             return Ok(());
         }
 
-        let mut cursor = self.tx.cursor_write::<HashedAccounts>()?;
+        let mut cursor = self.tx.cursor_write::<V2HashedAccounts>()?;
         for (hashed_address, maybe_account) in accounts {
             if let Some(account) = maybe_account {
                 cursor.append(hashed_address, &account)?;
@@ -1893,7 +1893,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
             return Ok(());
         }
 
-        let mut cursor = self.tx.cursor_dup_write::<HashedStorages>()?;
+        let mut cursor = self.tx.cursor_dup_write::<V2HashedStorages>()?;
         for (storage_key, value) in storages {
             cursor.append_dup(
                 hashed_address,
@@ -1963,7 +1963,7 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (k, v) = cur.seek_exact(addr).expect("seek").expect("exists");
         assert_eq!(k, addr);
         assert_eq!(v.nonce, account.nonce);
@@ -1984,7 +1984,7 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cur = tx.cursor_dup_read::<HashedStorages>().expect("cursor");
+        let mut cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
         let entry = cur.seek_by_key_subkey(addr, slot).expect("seek").expect("exists");
         assert_eq!(entry.key, slot);
         assert_eq!(entry.value, val);
@@ -2003,7 +2003,7 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cur = tx.cursor_read::<AccountsTrie>().expect("cursor");
+        let mut cur = tx.cursor_read::<V2AccountsTrie>().expect("cursor");
         let (k, v) = cur.seek_exact(StoredNibbles(path)).expect("seek").expect("exists");
         assert_eq!(k.0, path);
         assert_eq!(v, node);
@@ -2023,7 +2023,7 @@ mod tests {
         }
 
         let tx = db.tx().expect("ro tx");
-        let mut cur = tx.cursor_dup_read::<StoragesTrie>().expect("cursor");
+        let mut cur = tx.cursor_dup_read::<V2StoragesTrie>().expect("cursor");
         let entry = cur
             .seek_by_key_subkey(addr, StoredNibblesSubKey(path))
             .expect("seek")
@@ -2070,7 +2070,7 @@ mod tests {
         // Verify current state has the updated account
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+            let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
             let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
             assert_eq!(acc.nonce, 2, "current state should have updated nonce");
         }
@@ -2078,7 +2078,7 @@ mod tests {
         // Verify changeset has the old account
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_dup_read::<HashedAccountChangeSets>().expect("cursor");
+            let mut cur = tx.cursor_dup_read::<V2HashedAccountChangeSets>().expect("cursor");
             let entry = cur.seek_by_key_subkey(1u64, addr).expect("seek").expect("exists");
             assert_eq!(entry.hashed_address, addr);
             assert_eq!(entry.info.unwrap().nonce, 1, "changeset should have old nonce");
@@ -2121,7 +2121,7 @@ mod tests {
         // Verify v1 is current
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+            let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
             let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
             assert_eq!(acc.nonce, 1);
         }
@@ -2137,7 +2137,7 @@ mod tests {
         // Verify v0 is restored
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+            let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
             let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
             assert_eq!(acc.nonce, 0, "unwind should restore nonce to 0");
         }
@@ -2184,7 +2184,7 @@ mod tests {
         // Verify history bitmap exists and contains blocks 1, 2, 3
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_read::<HashedAccountsHistory>().expect("cursor");
+            let mut cur = tx.cursor_read::<V2HashedAccountsHistory>().expect("cursor");
             let shard_key = HashedAccountShardedKey::new(addr, u64::MAX);
             let (_, bitmap) = cur.seek_exact(shard_key).expect("seek").expect("exists");
             let blocks: Vec<u64> = bitmap.iter().collect();
@@ -2240,7 +2240,7 @@ mod tests {
         // Verify changesets for blocks 1 and 2 are gone
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_read::<HashedAccountChangeSets>().expect("cursor");
+            let mut cur = tx.cursor_read::<V2HashedAccountChangeSets>().expect("cursor");
             // Block 1 should be gone
             assert!(cur.seek_exact(1u64).expect("seek").is_none(), "block 1 changeset should be pruned");
             // Block 2 should be gone
@@ -2252,7 +2252,7 @@ mod tests {
         // Current state should still be at block 3
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+            let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
             let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
             assert_eq!(acc.nonce, 3, "current state should be at block 3");
         }
@@ -2383,18 +2383,18 @@ mod tests {
         let tx = db.tx().expect("ro");
 
         // Account: addr1 should have new account
-        let mut acc_cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut acc_cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (_, acc) = acc_cur.seek_exact(addr1).expect("seek").expect("exists");
         assert_eq!(acc.nonce, acc1_new.nonce);
         assert!(acc_cur.seek_exact(addr2).expect("seek").is_none(), "addr2 was never created");
 
         // Storage: addr1/slot1 should have new value
-        let mut stor_cur = tx.cursor_dup_read::<HashedStorages>().expect("cursor");
+        let mut stor_cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
         let entry = stor_cur.seek_by_key_subkey(addr1, slot1).expect("seek").expect("exists");
         assert_eq!(entry.value, val1_new);
 
         // Account trie: path1 new, path2 new, removed_path gone
-        let mut trie_cur = tx.cursor_read::<AccountsTrie>().expect("cursor");
+        let mut trie_cur = tx.cursor_read::<V2AccountsTrie>().expect("cursor");
         let (_, n) = trie_cur.seek_exact(StoredNibbles(path1)).expect("seek").expect("exists");
         assert_eq!(n, node1_new);
         let (_, n2) = trie_cur.seek_exact(StoredNibbles(path2)).expect("seek").expect("exists");
@@ -2405,7 +2405,7 @@ mod tests {
         );
 
         // Storage trie: addr1/storage_path1 should have new node
-        let mut strie_cur = tx.cursor_dup_read::<StoragesTrie>().expect("cursor");
+        let mut strie_cur = tx.cursor_dup_read::<V2StoragesTrie>().expect("cursor");
         let e = strie_cur
             .seek_by_key_subkey(addr1, StoredNibblesSubKey(storage_path1))
             .expect("seek")
@@ -2413,7 +2413,7 @@ mod tests {
         assert_eq!(e.node, snode1_new);
 
         // Verify account changeset has old values
-        let mut cs_cur = tx.cursor_read::<HashedAccountChangeSets>().expect("cursor");
+        let mut cs_cur = tx.cursor_read::<V2HashedAccountChangeSets>().expect("cursor");
         let mut entries = Vec::new();
         let mut walker = cs_cur.walk(Some(42u64)).expect("walk");
         while let Some(Ok((bn, entry))) = walker.next() {
@@ -2425,7 +2425,7 @@ mod tests {
         assert!(entries.iter().any(|e| e.hashed_address == addr1 && e.info == Some(acc1_old)));
 
         // Verify account trie changeset has old values
-        let mut tcs_cur = tx.cursor_read::<AccountTrieChangeSets>().expect("cursor");
+        let mut tcs_cur = tx.cursor_read::<V2AccountTrieChangeSets>().expect("cursor");
         let mut tentries = Vec::new();
         let mut walker = tcs_cur.walk(Some(42u64)).expect("walk");
         while let Some(Ok((bn, entry))) = walker.next() {
@@ -2442,8 +2442,8 @@ mod tests {
             .any(|e| e.nibbles.0 == removed_path && e.node == Some(removed_node_old.clone())));
         assert!(tentries.iter().any(|e| e.nibbles.0 == path2 && e.node.is_none()));
 
-        // Verify ProofWindow latest
-        let mut pw_cur = tx.cursor_read::<ProofWindow>().expect("cursor");
+        // Verify V2ProofWindow latest
+        let mut pw_cur = tx.cursor_read::<V2ProofWindow>().expect("cursor");
         let (_, val) =
             pw_cur.seek_exact(ProofWindowKey::LatestBlock).expect("seek").expect("exists");
         assert_eq!(val.number(), 42);
@@ -2459,13 +2459,13 @@ mod tests {
 
         // All changeset tables should be empty
         let tx = db.tx().expect("ro");
-        let mut cur1 = tx.cursor_read::<HashedAccountChangeSets>().expect("cursor");
+        let mut cur1 = tx.cursor_read::<V2HashedAccountChangeSets>().expect("cursor");
         assert!(cur1.first().expect("first").is_none(), "Account changesets should be empty");
-        let mut cur2 = tx.cursor_read::<AccountTrieChangeSets>().expect("cursor");
+        let mut cur2 = tx.cursor_read::<V2AccountTrieChangeSets>().expect("cursor");
         assert!(cur2.first().expect("first").is_none(), "Account trie changesets should be empty");
 
-        // ProofWindow should be updated
-        let mut pw_cur = tx.cursor_read::<ProofWindow>().expect("cursor");
+        // V2ProofWindow should be updated
+        let mut pw_cur = tx.cursor_read::<V2ProofWindow>().expect("cursor");
         let (_, val) =
             pw_cur.seek_exact(ProofWindowKey::LatestBlock).expect("seek").expect("exists");
         assert_eq!(val.number(), 42);
@@ -2485,12 +2485,12 @@ mod tests {
 
         // Current state should have latest nonce
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
         assert_eq!(acc.nonce, 20);
 
         // Changeset at block 1 should have old nonce (0)
-        let mut cs = tx.cursor_read::<HashedAccountChangeSets>().expect("cursor");
+        let mut cs = tx.cursor_read::<V2HashedAccountChangeSets>().expect("cursor");
         let (_, entry) = cs.seek_exact(1u64).expect("seek").expect("exists");
         assert_eq!(entry.info.unwrap().nonce, 0);
 
@@ -2529,14 +2529,14 @@ mod tests {
 
         // Current state should not have the node
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_read::<AccountsTrie>().expect("cursor");
+        let mut cur = tx.cursor_read::<V2AccountsTrie>().expect("cursor");
         assert!(
             cur.seek_exact(StoredNibbles(acc_path)).expect("seek").is_none(),
             "node should be removed from current state"
         );
 
         // Changeset should have the old node
-        let mut cs = tx.cursor_read::<AccountTrieChangeSets>().expect("cursor");
+        let mut cs = tx.cursor_read::<V2AccountTrieChangeSets>().expect("cursor");
         let (_, entry) = cs.seek_exact(7u64).expect("seek").expect("exists");
         assert_eq!(entry.node, Some(node), "changeset should have old node");
     }
@@ -2576,7 +2576,7 @@ mod tests {
 
         // Current state should not have the node
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_dup_read::<StoragesTrie>().expect("cursor");
+        let mut cur = tx.cursor_dup_read::<V2StoragesTrie>().expect("cursor");
         let result = cur
             .seek_by_key_subkey(addr, StoredNibblesSubKey(st_path))
             .expect("seek")
@@ -2584,7 +2584,7 @@ mod tests {
         assert!(result.is_none(), "node should be removed from current state");
 
         // Changeset should have the old node
-        let mut cs = tx.cursor_read::<StorageTrieChangeSets>().expect("cursor");
+        let mut cs = tx.cursor_read::<V2StorageTrieChangeSets>().expect("cursor");
         let start = BlockNumberHashedAddress((8, B256::ZERO));
         let (_, entry) = cs.seek(start).expect("seek").expect("exists");
         assert_eq!(entry.node, Some(node), "changeset should have old node");
@@ -2638,7 +2638,7 @@ mod tests {
 
         // Verify: addr_wiped's storage trie nodes should be deleted from current state
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_dup_read::<StoragesTrie>().expect("cursor");
+        let mut cur = tx.cursor_dup_read::<V2StoragesTrie>().expect("cursor");
         assert!(
             cur.seek_exact(addr_wiped).expect("seek").is_none(),
             "wiped address should have no storage trie nodes"
@@ -2685,14 +2685,14 @@ mod tests {
 
         // Current state: slots should be deleted
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_dup_read::<HashedStorages>().expect("cursor");
+        let mut cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
         assert!(
             cur.seek_exact(addr).expect("seek").is_none(),
             "wiped storage should have no entries in current state"
         );
 
         // Changeset should have old values
-        let mut cs = tx.cursor_read::<HashedStorageChangeSets>().expect("cursor");
+        let mut cs = tx.cursor_read::<V2HashedStorageChangeSets>().expect("cursor");
         let start = BlockNumberHashedAddress((42, addr));
         let mut old_values = Vec::new();
         let mut walker = cs.walk(Some(start)).expect("walk");
@@ -2746,7 +2746,7 @@ mod tests {
 
         // Verify: wiped address has no storage
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_dup_read::<HashedStorages>().expect("cursor");
+        let mut cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
         assert!(
             cur.seek_exact(addr_wiped).expect("seek").is_none(),
             "wiped addr should have no storage"
@@ -2937,12 +2937,12 @@ mod tests {
 
         // Current state should still have nonce 2 (latest)
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
         assert_eq!(acc.nonce, 2, "current state should still have latest value");
 
         // Changesets for blocks 1 and 2 should be gone
-        let mut cs = tx.cursor_read::<HashedAccountChangeSets>().expect("cursor");
+        let mut cs = tx.cursor_read::<V2HashedAccountChangeSets>().expect("cursor");
         assert!(cs.seek_exact(1u64).expect("seek").is_none());
         assert!(cs.seek_exact(2u64).expect("seek").is_none());
     }
@@ -3011,16 +3011,16 @@ mod tests {
 
         // Current state should still have latest values
         let tx = db.tx().expect("ro");
-        let mut acc_cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut acc_cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (_, acc) = acc_cur.seek_exact(addr).expect("seek").expect("exists");
         assert_eq!(acc.nonce, 2);
 
         // Changesets should be gone for blocks 1 and 2
-        let mut cs = tx.cursor_read::<HashedAccountChangeSets>().expect("cursor");
+        let mut cs = tx.cursor_read::<V2HashedAccountChangeSets>().expect("cursor");
         assert!(cs.seek_exact(1u64).expect("seek").is_none());
         assert!(cs.seek_exact(2u64).expect("seek").is_none());
 
-        let mut tcs = tx.cursor_read::<AccountTrieChangeSets>().expect("cursor");
+        let mut tcs = tx.cursor_read::<V2AccountTrieChangeSets>().expect("cursor");
         assert!(tcs.seek_exact(1u64).expect("seek").is_none());
     }
 
@@ -3072,7 +3072,7 @@ mod tests {
         // Sanity: current state has nonce 30
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+            let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
             let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
             assert_eq!(acc.nonce, 30);
         }
@@ -3097,7 +3097,7 @@ mod tests {
         // Verify: current state has nonce 400
         {
             let tx = db.tx().expect("ro");
-            let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+            let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
             let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
             assert_eq!(acc.nonce, 400);
         }
@@ -3105,7 +3105,7 @@ mod tests {
         // Verify: changesets exist for blocks 1, 2, 3', 4'
         {
             let tx = db.tx().expect("ro");
-            let mut cs = tx.cursor_read::<HashedAccountChangeSets>().expect("cursor");
+            let mut cs = tx.cursor_read::<V2HashedAccountChangeSets>().expect("cursor");
             assert!(cs.seek_exact(1u64).expect("seek").is_some(), "block 1 changeset");
             assert!(cs.seek_exact(2u64).expect("seek").is_some(), "block 2 changeset");
             assert!(cs.seek_exact(3u64).expect("seek").is_some(), "block 3' changeset");
@@ -3222,11 +3222,11 @@ mod tests {
 
         // Verify: account restored to nonce 1, storage restored to 200
         let tx = db.tx().expect("ro");
-        let mut acc_cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut acc_cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (_, acc) = acc_cur.seek_exact(addr).expect("seek").expect("exists");
         assert_eq!(acc.nonce, 1, "account should be restored to block 1 state");
 
-        let mut stor_cur = tx.cursor_dup_read::<HashedStorages>().expect("cursor");
+        let mut stor_cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
         let entry = stor_cur.seek_by_key_subkey(addr, slot).expect("seek").expect("exists");
         assert_eq!(entry.value, U256::from(200u64), "storage should be restored to block 1");
     }
@@ -3290,7 +3290,7 @@ mod tests {
 
         // Verify: path1 should be restored to node1, path2 should still have node2 (from block 1)
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_read::<AccountsTrie>().expect("cursor");
+        let mut cur = tx.cursor_read::<V2AccountsTrie>().expect("cursor");
         let (_, n) = cur.seek_exact(StoredNibbles(path1)).expect("seek").expect("exists");
         assert_eq!(n, node1, "path1 should be restored to original node");
         let (_, n2) = cur.seek_exact(StoredNibbles(path2)).expect("seek").expect("exists");
@@ -3390,14 +3390,14 @@ mod tests {
         let tx = db.tx().expect("ro");
 
         // Verify account: addr1 should have block 1 state (nonce 10)
-        let mut acc_cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut acc_cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (_, acc) = acc_cur.seek_exact(addr1).expect("seek").expect("exists");
         assert_eq!(acc.nonce, 10, "addr1 should have block 1 state");
         // addr2 should not exist (was added in block 2, unwound)
         assert!(acc_cur.seek_exact(addr2).expect("seek").is_none(), "addr2 should be removed");
 
         // Verify trie: path1 should have block 1 value
-        let mut trie_cur = tx.cursor_read::<AccountsTrie>().expect("cursor");
+        let mut trie_cur = tx.cursor_read::<V2AccountsTrie>().expect("cursor");
         assert!(trie_cur.seek_exact(StoredNibbles(path1)).expect("seek").is_some());
         // path2 should not exist (added in block 2, unwound)
         assert!(
@@ -3406,20 +3406,20 @@ mod tests {
         );
 
         // Verify storage: should have block 1 value
-        let mut stor_cur = tx.cursor_dup_read::<HashedStorages>().expect("cursor");
+        let mut stor_cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
         let entry = stor_cur.seek_by_key_subkey(addr1, slot1).expect("seek").expect("exists");
         assert_eq!(entry.value, U256::from(2222u64), "storage should have block 1 value");
 
         // Verify changesets for blocks 2+ are gone
-        let mut cs = tx.cursor_read::<HashedAccountChangeSets>().expect("cursor");
+        let mut cs = tx.cursor_read::<V2HashedAccountChangeSets>().expect("cursor");
         assert!(cs.seek_exact(1u64).expect("seek").is_some(), "block 1 changeset should remain");
         assert!(
             cs.seek_exact(2u64).expect("seek").is_none(),
             "block 2 changeset should be removed"
         );
 
-        // Verify ProofWindow latest
-        let mut pw_cur = tx.cursor_read::<ProofWindow>().expect("cursor");
+        // Verify V2ProofWindow latest
+        let mut pw_cur = tx.cursor_read::<V2ProofWindow>().expect("cursor");
         let (_, val) =
             pw_cur.seek_exact(ProofWindowKey::LatestBlock).expect("seek").expect("exists");
         assert_eq!(val.number(), 1);
@@ -3466,7 +3466,7 @@ mod tests {
 
         // Verify state
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
         assert_eq!(acc.nonce, 10, "should have block 1 state after unwind to block 2");
     }
@@ -3495,21 +3495,21 @@ mod tests {
 
         // All blocks should remain
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_read::<HashedAccounts>().expect("cursor");
+        let mut cur = tx.cursor_read::<V2HashedAccounts>().expect("cursor");
         let (_, acc) = cur.seek_exact(addr).expect("seek").expect("exists");
         assert_eq!(acc.nonce, 30, "state should be unchanged");
 
-        let mut pw_cur = tx.cursor_read::<ProofWindow>().expect("cursor");
+        let mut pw_cur = tx.cursor_read::<V2ProofWindow>().expect("cursor");
         let (_, val) =
             pw_cur.seek_exact(ProofWindowKey::LatestBlock).expect("seek").expect("exists");
         assert_eq!(val.number(), 3, "latest should be unchanged");
     }
 
     /// Helper: count the total number of duplicate entries for a given primary key
-    /// in the HashedStorages DupSort table.
+    /// in the V2HashedStorages DupSort table.
     fn count_hashed_storage_entries(db: &DatabaseEnv, addr: B256) -> usize {
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_dup_read::<HashedStorages>().expect("cursor");
+        let mut cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
         let mut count = 0;
         if cur.seek_by_key_subkey(addr, B256::ZERO).expect("seek").is_some() {
             count += 1;
@@ -3520,10 +3520,10 @@ mod tests {
         count
     }
 
-    /// Helper: collect all (slot, value) pairs for an address from HashedStorages.
+    /// Helper: collect all (slot, value) pairs for an address from V2HashedStorages.
     fn collect_hashed_storage_slots(db: &DatabaseEnv, addr: B256) -> Vec<(B256, U256)> {
         let tx = db.tx().expect("ro");
-        let mut cur = tx.cursor_dup_read::<HashedStorages>().expect("cursor");
+        let mut cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
         let mut entries = Vec::new();
         if let Some(entry) = cur.seek_by_key_subkey(addr, B256::ZERO).expect("seek") {
             entries.push((entry.key, entry.value));

@@ -89,12 +89,22 @@ tables! {
 
     // ==================== V2 Tables ====================
     //
-    // The v2 schema uses the same 3-table-per-data-type pattern:
+    // The v2 schema uses the 3-table-per-data-type pattern. All v2 tables are
+    // prefixed with `V2` to clearly distinguish them from v1 tables and to ensure
+    // each store only reads/writes its own tables.
     //
     //   - **Current state** tables hold the latest values for fast reads.
     //   - **ChangeSet** tables group changes by block number for efficient pruning/unwinding.
     //   - **History** tables store sharded bitmaps for historical lookups.
     //
+
+    // -------------------- Proof Window --------------------
+
+    /// V2 proof window tracking (independent of the v1 [`ProofWindow`] table).
+    table V2ProofWindow {
+        type Key = ProofWindowKey;
+        type Value = BlockNumberHash;
+    }
 
     // -------------------- Hashed Accounts --------------------
 
@@ -103,7 +113,7 @@ tables! {
     /// Maps `ShardedKey<B256>` (hashed address + highest block number in shard)
     /// to a bitmap of block numbers that modified this account. Used for historical
     /// lookups: find the relevant block in the bitmap, then read the changeset.
-    table HashedAccountsHistory {
+    table V2HashedAccountsHistory {
         type Key = HashedAccountShardedKey;
         type Value = BlockNumberList;
     }
@@ -114,7 +124,7 @@ tables! {
     /// block was applied (`None` if the account didn't exist). Grouped by block
     /// number for efficient pruning (delete all entries for a block in one
     /// operation) and unwinding (restore old values on reorg).
-    table HashedAccountChangeSets {
+    table V2HashedAccountChangeSets {
         type Key = BlockNumber;
         type Value = HashedAccountBeforeTx;
         type SubKey = B256;
@@ -125,7 +135,7 @@ tables! {
     /// Holds the latest account data (nonce, balance, code hash, storage root).
     /// Primary read target for state root computation and proof generation —
     /// no version lookup needed.
-    table HashedAccounts {
+    table V2HashedAccounts {
         type Key = B256;
         type Value = Account;
     }
@@ -136,7 +146,7 @@ tables! {
     ///
     /// Composite key of `(hashed_address, hashed_storage_key, highest_block_number)`.
     /// Maps to a bitmap of block numbers that modified this storage slot.
-    table HashedStoragesHistory {
+    table V2HashedStoragesHistory {
         type Key = HashedStorageShardedKey;
         type Value = BlockNumberList;
     }
@@ -147,7 +157,7 @@ tables! {
     /// hashed storage key and value **before** the block was applied.
     /// A value of [`U256::ZERO`](alloy_primitives::U256::ZERO) means the slot
     /// did not exist (needs to be removed on unwind).
-    table HashedStorageChangeSets {
+    table V2HashedStorageChangeSets {
         type Key = BlockNumberHashedAddress;
         type Value = StorageEntry;
         type SubKey = B256;
@@ -158,7 +168,7 @@ tables! {
     ///
     /// Holds the latest storage slot values for each account. Primary read target
     /// for storage proof generation.
-    table HashedStorages {
+    table V2HashedStorages {
         type Key = B256;
         type Value = StorageEntry;
         type SubKey = B256;
@@ -170,7 +180,7 @@ tables! {
     ///
     /// Maps `ShardedKey<StoredNibbles>` (trie path + highest block number in shard)
     /// to a bitmap of block numbers that modified this path.
-    table AccountsTrieHistory {
+    table V2AccountsTrieHistory {
         type Key = AccountTrieShardedKey;
         type Value = BlockNumberList;
     }
@@ -180,10 +190,7 @@ tables! {
     /// Each entry stores the trie path and the branch node value **before** the
     /// block was applied (`None` if the node didn't exist). Enables efficient
     /// pruning and unwinding of trie state.
-    ///
-    /// NOTE: Named `AccountTrieChangeSets` (singular) to avoid collision with
-    /// upstream reth's `ORPHAN_TABLES` list which drops `AccountsTrieChangeSets`.
-    table AccountTrieChangeSets {
+    table V2AccountTrieChangeSets {
         type Key = BlockNumber;
         type Value = TrieChangeSetsEntry;
         type SubKey = StoredNibblesSubKey;
@@ -193,7 +200,7 @@ tables! {
     ///
     /// Maps trie paths to the latest branch node. Primary read target during
     /// proof generation — no version lookup needed.
-    table AccountsTrie {
+    table V2AccountsTrie {
         type Key = StoredNibbles;
         type Value = BranchNodeCompact;
     }
@@ -204,7 +211,7 @@ tables! {
     ///
     /// Composite key of `(hashed_address, trie_path, highest_block_number)`.
     /// Maps to a bitmap of block numbers that modified this storage trie node.
-    table StoragesTrieHistory {
+    table V2StoragesTrieHistory {
         type Key = StorageTrieShardedKey;
         type Value = BlockNumberList;
     }
@@ -213,10 +220,7 @@ tables! {
     ///
     /// Composite key of `(block_number, hashed_address)`. Each entry stores the
     /// trie path and the branch node value **before** the block was applied.
-    ///
-    /// NOTE: Named `StorageTrieChangeSets` (singular) to avoid collision with
-    /// upstream reth's `ORPHAN_TABLES` list which drops `StoragesTrieChangeSets`.
-    table StorageTrieChangeSets {
+    table V2StorageTrieChangeSets {
         type Key = BlockNumberHashedAddress;
         type Value = TrieChangeSetsEntry;
         type SubKey = StoredNibblesSubKey;
@@ -226,7 +230,7 @@ tables! {
     ///
     /// Keyed by hashed account address, with the trie path as the `DupSort` subkey.
     /// Holds the latest branch node for each path in each account's storage trie.
-    table StoragesTrie {
+    table V2StoragesTrie {
         type Key = B256;
         type Value = StorageTrieEntry;
         type SubKey = StoredNibblesSubKey;
