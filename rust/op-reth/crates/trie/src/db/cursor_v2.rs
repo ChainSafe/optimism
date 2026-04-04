@@ -5,7 +5,7 @@
 //! | Purpose | Accounts | Storages | Account Trie | Storage Trie |
 //! |---------|----------|----------|-------------|-------------|
 //! | Current state | [`V2HashedAccounts`] | [`V2HashedStorages`] | [`V2AccountsTrie`] | [`V2StoragesTrie`] |
-//! | ChangeSets | [`V2HashedAccountChangeSets`] | [`V2HashedStorageChangeSets`] | [`V2AccountTrieChangeSets`] | [`V2StorageTrieChangeSets`] |
+//! | `ChangeSets` | [`V2HashedAccountChangeSets`] | [`V2HashedStorageChangeSets`] | [`V2AccountTrieChangeSets`] | [`V2StorageTrieChangeSets`] |
 //! | History | [`V2HashedAccountsHistory`] | [`V2HashedStoragesHistory`] | [`V2AccountsTrieHistory`] | [`V2StoragesTrieHistory`] |
 //!
 //! # Historical Lookup Strategy
@@ -97,11 +97,10 @@ where
 
     // 3. All entries in this shard are ≤ max_block_number (shard boundary hit).
     //    The next shard (if it exists for the same key) starts after this one.
-    if let Some((_, next_chunk)) = cursor.next()?.filter(|(k, _)| key_filter(k)) {
-        if let Some(block) = next_chunk.select(0) {
+    if let Some((_, next_chunk)) = cursor.next()?.filter(|(k, _)| key_filter(k))
+        && let Some(block) = next_chunk.select(0) {
             return Ok(ResolvedSource::FromChangeset(block));
         }
-    }
 
     Ok(ResolvedSource::FromCurrentState)
 }
@@ -193,7 +192,7 @@ where
                     .filter(|e| e.hashed_address == hashed_address);
                 Ok(entry.and_then(|e| e.info))
             }
-            ResolvedSource::FromCurrentState => Ok(cs_value.cloned()),
+            ResolvedSource::FromCurrentState => Ok(cs_value.copied()),
         }
     }
 
@@ -296,21 +295,21 @@ where
     }
 }
 
-/// History-aware cursor over the [`V2HashedStorages`] v2 DupSort table.
+/// History-aware cursor over the [`V2HashedStorages`] v2 `DupSort` table.
 ///
 /// Uses the same dual-cursor merge strategy as [`V2AccountCursor`] but
-/// scoped to a single `hashed_address`. Both the current-state DupSort
+/// scoped to a single `hashed_address`. Both the current-state `DupSort`
 /// entries and the history-bitmap entries are walked in parallel to discover
 /// storage slots that may have been deleted after `max_block_number`.
 #[derive(Debug)]
 pub struct V2StorageCursor<C, HC, CC> {
-    /// Current state cursor (DupSort).
+    /// Current state cursor (`DupSort`).
     cursor: C,
     /// History bitmap cursor for resolving individual keys.
     history_cursor: HC,
     /// History bitmap cursor for merge-walking deleted keys.
     history_walk_cursor: HC,
-    /// Changeset cursor (DupSort).
+    /// Changeset cursor (`DupSort`).
     changeset_cursor: CC,
     /// Target hashed address.
     hashed_address: B256,
@@ -427,7 +426,7 @@ where
         }
     }
 
-    /// Merge-walk both the current-state DupSort cursor and the history-bitmap
+    /// Merge-walk both the current-state `DupSort` cursor and the history-bitmap
     /// cursor, yielding the next storage slot whose value is live at
     /// `max_block_number`.
     fn find_next_live(
@@ -821,21 +820,21 @@ where
     fn reset(&mut self) {}
 }
 
-/// History-aware cursor over the [`V2StoragesTrie`] v2 DupSort table.
+/// History-aware cursor over the [`V2StoragesTrie`] v2 `DupSort` table.
 ///
 /// Uses the same dual-cursor merge strategy as [`V2AccountTrieCursor`] but
-/// scoped to a single `hashed_address`. Both the current-state DupSort
+/// scoped to a single `hashed_address`. Both the current-state `DupSort`
 /// entries and the history-bitmap entries are walked in parallel to discover
 /// keys that may have been deleted after `max_block_number`.
 #[derive(Debug)]
 pub struct V2StorageTrieCursor<C, HC, CC> {
-    /// Current state cursor (DupSort).
+    /// Current state cursor (`DupSort`).
     cursor: C,
     /// History bitmap cursor for resolving individual keys.
     history_cursor: HC,
     /// History bitmap cursor for merge-walking deleted keys.
     history_walk_cursor: HC,
-    /// Changeset cursor (DupSort).
+    /// Changeset cursor (`DupSort`).
     changeset_cursor: CC,
     /// Target hashed address.
     hashed_address: B256,
@@ -901,7 +900,7 @@ where
         );
 
         let addr = self.hashed_address;
-        let nibbles_cmp = nibbles.clone();
+        let nibbles_cmp = nibbles;
         let source = find_source::<V2StoragesTrieHistory, _>(
             &mut self.history_cursor,
             seek_key,
@@ -942,7 +941,7 @@ where
         );
 
         let addr = self.hashed_address;
-        let nibbles_cmp = nibbles.clone();
+        let nibbles_cmp = nibbles;
         let source = find_source::<V2StoragesTrieHistory, _>(
             &mut self.history_cursor,
             seek_key,
@@ -992,7 +991,7 @@ where
         }
     }
 
-    /// Merge-walk both the current-state DupSort cursor and the history-bitmap
+    /// Merge-walk both the current-state `DupSort` cursor and the history-bitmap
     /// cursor, yielding the next path whose node is live at `max_block_number`.
     fn find_next_live(
         &mut self,
@@ -1332,7 +1331,7 @@ mod tests {
             // Child path [0] history: modified at blocks 10, 15
             cursor
                 .upsert(
-                    AccountTrieShardedKey::new(child_path.clone(), u64::MAX),
+                    AccountTrieShardedKey::new(child_path, u64::MAX),
                     &BlockNumberList::new_pre_sorted([10, 15]),
                 )
                 .expect("upsert child");
@@ -1427,7 +1426,7 @@ mod tests {
                 .expect("upsert root");
             cursor
                 .upsert(
-                    AccountTrieShardedKey::new(child_path.clone(), u64::MAX),
+                    AccountTrieShardedKey::new(child_path, u64::MAX),
                     &BlockNumberList::new_pre_sorted([10, 15]),
                 )
                 .expect("upsert child");
@@ -2802,12 +2801,12 @@ mod tests {
             // Block 2: all created
             let cs_key2 = BlockNumberHashedAddress((2u64, addr));
             csc.append_dup(
-                cs_key2.clone(),
+                cs_key2,
                 TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(a1), node: None },
             )
             .expect("append");
             csc.append_dup(
-                cs_key2.clone(),
+                cs_key2,
                 TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(b1), node: None },
             )
             .expect("append");
@@ -2820,7 +2819,7 @@ mod tests {
             let cs_key5 = BlockNumberHashedAddress((5u64, addr));
             csc.append_dup(
                 cs_key5,
-                TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(a1), node: Some(n.clone()) },
+                TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(a1), node: Some(n) },
             )
             .expect("append");
 
@@ -2894,7 +2893,7 @@ mod tests {
                 BlockNumberHashedAddress((5u64, addr_b)),
                 TrieChangeSetsEntry {
                     nibbles: StoredNibblesSubKey(p2),
-                    node: Some(n.clone()),
+                    node: Some(n),
                 },
             )
             .expect("append");
@@ -2944,7 +2943,7 @@ mod tests {
             .expect("upsert");
             c.upsert(
                 addr_b,
-                &StorageTrieEntry { nibbles: StoredNibblesSubKey(p2), node: n.clone() },
+                &StorageTrieEntry { nibbles: StoredNibblesSubKey(p2), node: n },
             )
             .expect("upsert");
             wtx.commit().expect("commit");
@@ -3103,7 +3102,7 @@ mod tests {
         assert!(cur_without.is_storage_empty().expect("ok"));
     }
 
-    /// Storage slot was zeroed (deleted from V2HashedStorages) after the target
+    /// Storage slot was zeroed (deleted from `V2HashedStorages`) after the target
     /// block. The history walk must discover it.
     #[test]
     fn storage_cursor_discovers_slot_deleted_after_target_block() {
@@ -3170,7 +3169,7 @@ mod tests {
         assert!(cur.next().expect("ok").is_none());
     }
 
-    /// is_storage_empty must return false when storage existed at the target
+    /// `is_storage_empty` must return false when storage existed at the target
     /// block but has since been wiped from current state.
     #[test]
     fn storage_cursor_is_storage_empty_false_for_historical_only_slots() {
@@ -3265,7 +3264,7 @@ mod tests {
         assert!(cur.seek(B256::ZERO).expect("ok").is_none());
     }
 
-    /// set_hashed_address resets merge state so the cursor works correctly
+    /// `set_hashed_address` resets merge state so the cursor works correctly
     /// for the new address.
     #[test]
     fn storage_cursor_set_hashed_address_resets_merge_state() {

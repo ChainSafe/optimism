@@ -231,7 +231,7 @@ fn run_test_scenario<N, S>(
     provider_factory: ProviderFactory<N>,
     chain_spec: Arc<ChainSpec>,
     key_pair: Keypair,
-    storage: OpProofsStorage<S>,
+    raw_storage: S,
 ) -> eyre::Result<()>
 where
     N: ProviderNodeTypes<
@@ -239,6 +239,8 @@ where
         > + NodeTypesWithDB,
     S: OpProofsStore + Send + Sync + Clone + std::fmt::Debug + 'static,
 {
+    #[allow(clippy::useless_conversion)]
+    let storage: OpProofsStorage<S> = raw_storage.into();
     let genesis_hash = chain_spec.genesis_hash();
     let mut nonce_counter = 0u64;
     let mut last_block_hash = genesis_hash;
@@ -311,9 +313,9 @@ where
 #[test_case(create_mdbx_proofs_storage(); "Mdbx")]
 #[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
-fn test_execute_and_store_block_updates<S>(storage: Arc<S>) -> Result<(), eyre::Error>
+fn test_execute_and_store_block_updates<S>(storage: S) -> Result<(), eyre::Error>
 where
-    S: OpProofsStore + Send + Sync + std::fmt::Debug + 'static,
+    S: OpProofsStore + Clone + Send + Sync + std::fmt::Debug + 'static,
 {
     // Create a keypair for signing transactions
     let secp = Secp256k1::new();
@@ -346,10 +348,10 @@ where
 #[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
 #[serial]
 fn test_execute_and_store_block_updates_missing_parent_block<S>(
-    storage: Arc<S>,
+    storage: S,
 ) -> Result<(), eyre::Error>
 where
-    S: OpProofsStore + Send + Sync + std::fmt::Debug + 'static,
+    S: OpProofsStore + Clone + Send + Sync + std::fmt::Debug + 'static,
 {
     let secp = Secp256k1::new();
     let key_pair = Keypair::new(&secp, &mut rng());
@@ -386,8 +388,9 @@ where
     );
 
     let blockchain_db = BlockchainProvider::new(provider_factory).unwrap();
+    let storage_wrapped: OpProofsStorage<S> = storage.into();
     let collector =
-        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage);
+        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage_wrapped);
 
     // EXPECT: MissingParentBlock
     let err = collector.execute_and_store_block_updates(&incorrect_block).unwrap_err();
@@ -430,8 +433,9 @@ where
 
     // Generate a second block normally
     let blockchain_db = BlockchainProvider::new(provider_factory.clone()).unwrap();
+    let storage_wrapped: OpProofsStorage<Arc<S>> = storage.into();
     let collector =
-        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage);
+        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage_wrapped);
 
     // Create the next block
     let mut nonce_counter = 0;

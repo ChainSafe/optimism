@@ -767,7 +767,7 @@ fn test_lexicographic_ordering<S: OpProofsStore>(
     let branch = create_test_branch();
 
     // Store paths in sorted order (init provider requires sorted input, like a real trie walk)
-    let mut sorted_paths = paths.clone();
+    let mut sorted_paths = paths;
     sorted_paths.sort();
     let init_provider = storage.initialization_provider().expect("provider ro");
     init_provider.store_account_branches(
@@ -850,7 +850,7 @@ fn test_complex_nibble_combinations<S: OpProofsStore>(
     let branch = create_test_branch();
 
     // Store paths in sorted order (init provider requires sorted input, like a real trie walk)
-    let mut sorted_paths = paths.clone();
+    let mut sorted_paths = paths;
     sorted_paths.sort();
     let init_provider = storage.initialization_provider().expect("provider ro");
     init_provider.store_account_branches(

@@ -189,7 +189,7 @@ pub struct MdbxProofsProviderV2<TX> {
 
 impl<TX> MdbxProofsProviderV2<TX> {
     /// Creates a new [`MdbxProofsProviderV2`].
-    pub fn new(tx: TX) -> Self {
+    pub const fn new(tx: TX) -> Self {
         Self { tx }
     }
 }
@@ -454,7 +454,7 @@ where
     }
 
     // Slow path: rechunk
-    if cursor.seek_exact(last_key.clone())?.is_some() {
+    if cursor.seek_exact(last_key)?.is_some() {
         cursor.delete_current()?;
     }
 
@@ -571,13 +571,13 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 entry = cursor.current()?;
             } else if filtered.len() < original_len {
                 // Partial prune — update shard and advance.
-                let new_list = BlockNumberList::new_pre_sorted(filtered.into_iter());
+                let new_list = BlockNumberList::new_pre_sorted(filtered);
                 cursor.upsert(key, &new_list)?;
                 entry = cursor.next()?;
             } else {
                 // No blocks in this shard were in range.
                 // If the shard's lowest block is past our range, stop.
-                if list.iter().next().map_or(true, |first| first > *range.end()) {
+                if list.iter().next().is_none_or(|first| first > *range.end()) {
                     break;
                 }
                 entry = cursor.next()?;
@@ -723,7 +723,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
             let cs_cursor = &mut cursors.account_trie_cs;
 
             for (nibbles, maybe_node) in sorted_trie_updates.account_nodes_ref() {
-                let stored = StoredNibbles(nibbles.clone());
+                let stored = StoredNibbles(*nibbles);
 
                 // Read old value from current state (cursor positioned for reuse)
                 let old_entry = state_cursor.seek_exact(stored.clone())?;
@@ -732,7 +732,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
                 // Write old value to changeset
                 let cs_entry = TrieChangeSetsEntry {
-                    nibbles: StoredNibblesSubKey(nibbles.clone()),
+                    nibbles: StoredNibblesSubKey(*nibbles),
                     node: old_node,
                 };
                 cs_cursor.append_dup(block_number, cs_entry)?;
@@ -777,7 +777,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                         };
                         cs_cursor.append_dup(cs_key, cs_entry)?;
                         collector.storage_trie
-                            .entry((*hashed_address, StoredNibbles(first_entry.nibbles.0.clone())))
+                            .entry((*hashed_address, StoredNibbles(first_entry.nibbles.0)))
                             .or_default()
                             .push(block_number);
 
@@ -789,7 +789,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                             };
                             cs_cursor.append_dup(cs_key, cs_entry)?;
                             collector.storage_trie
-                                .entry((*hashed_address, StoredNibbles(entry.nibbles.0.clone())))
+                                .entry((*hashed_address, StoredNibbles(entry.nibbles.0)))
                                 .or_default()
                                 .push(block_number);
                         }
@@ -804,7 +804,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 }
 
                 for (nibbles, maybe_node) in nodes.storage_nodes_ref() {
-                    let subkey = StoredNibblesSubKey(nibbles.clone());
+                    let subkey = StoredNibblesSubKey(*nibbles);
 
                     // Read old value from current state (first seek positions
                     // the cursor — we reuse that position for the delete below
@@ -824,7 +824,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
                     // Collect history bitmap entry
                     collector.storage_trie
-                        .entry((*hashed_address, StoredNibbles(nibbles.clone())))
+                        .entry((*hashed_address, StoredNibbles(*nibbles)))
                         .or_default()
                         .push(block_number);
 
@@ -861,7 +861,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
             let state_cursor = &mut cursors.hashed_accounts_state;
             let cs_cursor = &mut cursors.hashed_accounts_cs;
 
-            for (hashed_address, maybe_account) in sorted_post_state.accounts.iter() {
+            for (hashed_address, maybe_account) in &sorted_post_state.accounts {
                 // Read old value from current state (cursor positioned for reuse)
                 let old_entry = state_cursor.seek_exact(*hashed_address)?;
                 let old_account = old_entry.as_ref().map(|(_, acc)| *acc);
@@ -911,7 +911,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                         // Record first entry
                         cs_cursor.append_dup(
                             cs_key,
-                            StorageEntry { key: entry.key, value: entry.value },
+                            entry,
                         )?;
                         collector.hashed_storages
                             .entry((*hashed_address, entry.key))
@@ -923,7 +923,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                         while let Some(entry) = state_cursor.next_dup_val()? {
                             cs_cursor.append_dup(
                                 cs_key,
-                                StorageEntry { key: entry.key, value: entry.value },
+                                entry,
                             )?;
                             collector.hashed_storages
                                 .entry((*hashed_address, entry.key))
@@ -1696,8 +1696,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
     ) -> OpProofsStorageResult<()> {
         blocks_to_add.sort_unstable_by_key(|(bwp, _)| bwp.block.number);
 
-        if let Some((latest_number, _)) = self.get_latest_block_number_hash_inner()? {
-            if latest_common_block.number < latest_number {
+        if let Some((latest_number, _)) = self.get_latest_block_number_hash_inner()?
+            && latest_common_block.number < latest_number {
                 let range = (latest_common_block.number + 1)..=latest_number;
 
                 // Restore old values from changesets
@@ -1712,7 +1712,6 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
                 // Delete changeset entries
                 self.prune_changesets(range)?;
             }
-        }
 
         self.set_latest_block_number_inner(
             latest_common_block.number,
@@ -2346,7 +2345,7 @@ mod tests {
                 ])
                 .expect("init account trie");
             provider
-                .store_storage_branches(addr1, vec![(storage_path1, Some(snode1_old.clone()))])
+                .store_storage_branches(addr1, vec![(storage_path1, Some(snode1_old))])
                 .expect("init storage trie");
             provider
                 .set_initial_state_anchor(BlockNumHash::new(0, B256::ZERO))
@@ -2607,7 +2606,7 @@ mod tests {
             provider
                 .store_storage_branches(
                     addr_wiped,
-                    vec![(p1, Some(n1.clone())), (p2, Some(n2.clone()))],
+                    vec![(p1, Some(n1)), (p2, Some(n2))],
                 )
                 .expect("seed");
             provider
@@ -2793,7 +2792,7 @@ mod tests {
 
         // Build diff and store
         let mut trie_updates = TrieUpdates::default();
-        trie_updates.account_nodes.insert(path1, node1_new.clone());
+        trie_updates.account_nodes.insert(path1, node1_new);
 
         let mut post_state = HashedPostState::default();
         post_state.accounts.insert(addr1, Some(acc1_new));
@@ -2968,10 +2967,10 @@ mod tests {
                 .store_hashed_storages(addr, vec![(slot, U256::from(100u64))])
                 .expect("init");
             provider
-                .store_account_branches(vec![(path, Some(node_old.clone()))])
+                .store_account_branches(vec![(path, Some(node_old))])
                 .expect("init");
             provider
-                .store_storage_branches(addr, vec![(storage_path, Some(snode_old.clone()))])
+                .store_storage_branches(addr, vec![(storage_path, Some(snode_old))])
                 .expect("init");
             provider
                 .set_initial_state_anchor(BlockNumHash::new(0, B256::ZERO))
@@ -3322,10 +3321,10 @@ mod tests {
                 .store_hashed_storages(addr1, vec![(slot1, U256::from(1111u64))])
                 .expect("init");
             provider
-                .store_account_branches(vec![(path1, Some(node1.clone()))])
+                .store_account_branches(vec![(path1, Some(node1))])
                 .expect("init");
             provider
-                .store_storage_branches(addr1, vec![(storage_path1, Some(snode1.clone()))])
+                .store_storage_branches(addr1, vec![(storage_path1, Some(snode1))])
                 .expect("init");
             provider
                 .set_initial_state_anchor(BlockNumHash::new(0, B256::ZERO))
@@ -3506,7 +3505,7 @@ mod tests {
     }
 
     /// Helper: count the total number of duplicate entries for a given primary key
-    /// in the V2HashedStorages DupSort table.
+    /// in the `V2HashedStorages` `DupSort` table.
     fn count_hashed_storage_entries(db: &DatabaseEnv, addr: B256) -> usize {
         let tx = db.tx().expect("ro");
         let mut cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
@@ -3520,7 +3519,7 @@ mod tests {
         count
     }
 
-    /// Helper: collect all (slot, value) pairs for an address from V2HashedStorages.
+    /// Helper: collect all (slot, value) pairs for an address from `V2HashedStorages`.
     fn collect_hashed_storage_slots(db: &DatabaseEnv, addr: B256) -> Vec<(B256, U256)> {
         let tx = db.tx().expect("ro");
         let mut cur = tx.cursor_dup_read::<V2HashedStorages>().expect("cursor");
@@ -3752,7 +3751,7 @@ mod tests {
         assert_eq!(slots[0], (new_slot, U256::from(84u64)));
     }
 
-    /// Regression: batch store (store_trie_updates_batch) updating the same slot
+    /// Regression: batch store (`store_trie_updates_batch`) updating the same slot
     /// across multiple blocks in one batch must not leak duplicates.
     #[test]
     fn hashed_storages_batch_no_duplicates() {

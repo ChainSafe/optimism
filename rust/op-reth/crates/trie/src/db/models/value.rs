@@ -92,7 +92,7 @@ pub struct StorageTrieShardedKey {
 
 impl StorageTrieShardedKey {
     /// Create a new storage trie sharded key.
-    pub fn new(hashed_address: B256, key: StoredNibbles, highest_block_number: u64) -> Self {
+    pub const fn new(hashed_address: B256, key: StoredNibbles, highest_block_number: u64) -> Self {
         Self { hashed_address, key, highest_block_number }
     }
 }

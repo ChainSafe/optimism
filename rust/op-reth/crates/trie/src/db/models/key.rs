@@ -66,7 +66,7 @@ pub struct AccountTrieShardedKey {
 
 impl AccountTrieShardedKey {
     /// Create a new sharded key for an account trie path.
-    pub fn new(key: StoredNibbles, highest_block_number: u64) -> Self {
+    pub const fn new(key: StoredNibbles, highest_block_number: u64) -> Self {
         Self { key, highest_block_number }
     }
 }
