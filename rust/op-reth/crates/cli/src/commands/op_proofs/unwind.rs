@@ -6,7 +6,11 @@ use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, Environ
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
-use reth_optimism_trie::{OpProofsStore, OpProofsProviderRO, OpProofsProviderRw, db::MdbxProofsStorage};
+use reth_optimism_node::args::ProofsStorageVersion;
+use reth_optimism_trie::{
+    OpProofsProviderRO, OpProofsProviderRw, OpProofsStore,
+    db::{MdbxProofsStorage, MdbxProofsStorageV2},
+};
 use reth_provider::{BlockReader, TransactionVariant};
 use std::{path::PathBuf, sync::Arc};
 use tracing::{info, warn};
@@ -32,6 +36,14 @@ pub struct UnwindCommand<C: ChainSpecParser> {
     /// All history *after* this block will be removed.
     #[arg(long, value_name = "TARGET_BLOCK")]
     pub target: u64,
+
+    /// Storage schema version. Must match the version used when starting the node.
+    #[arg(
+        long = "proofs-history.storage-version",
+        value_name = "PROOFS_HISTORY_STORAGE_VERSION",
+        default_value = "v1"
+    )]
+    pub storage_version: ProofsStorageVersion,
 }
 
 impl<C: ChainSpecParser> UnwindCommand<C> {
@@ -70,28 +82,45 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> UnwindCommand<C> {
         // Initialize the environment with read-only access
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
-        // Create the proofs storage
-        let storage: Arc<MdbxProofsStorage> = Arc::new(
-            MdbxProofsStorage::new(&self.storage_path)
-                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
-        );
+        macro_rules! run_unwind {
+            ($storage:expr) => {{
+                let storage = $storage;
 
-        // Validate that the target block is within a valid range for unwinding
-        if !self.validate_unwind_range(storage.clone())? {
-            return Ok(());
+                // Validate that the target block is within a valid range for unwinding
+                if !self.validate_unwind_range(storage.clone())? {
+                    return Ok(());
+                }
+
+                // Get the target block from the main database
+                let block = provider_factory
+                    .recovered_block(self.target.into(), TransactionVariant::NoHash)?
+                    .ok_or_else(|| {
+                        eyre::eyre!("Target block {} not found in the main database", self.target)
+                    })?;
+
+                info!(target: "reth::cli", block_number = block.number, block_hash = %block.hash(), "Unwinding to target block");
+                let provider_rw = storage.provider_rw()?;
+                provider_rw.unwind_history(block.block_with_parent())?;
+                provider_rw.commit()?;
+            }};
         }
 
-        // Get the target block from the main database
-        let block = provider_factory
-            .recovered_block(self.target.into(), TransactionVariant::NoHash)?
-            .ok_or_else(|| {
-                eyre::eyre!("Target block {} not found in the main database", self.target)
-            })?;
-
-        info!(target: "reth::cli", block_number = block.number, block_hash = %block.hash(), "Unwinding to target block");
-        let provider_rw = storage.provider_rw()?;
-        provider_rw.unwind_history(block.block_with_parent())?;
-        provider_rw.commit()?;
+        match self.storage_version {
+            ProofsStorageVersion::V1 => {
+                let storage: Arc<MdbxProofsStorage> = Arc::new(
+                    MdbxProofsStorage::new(&self.storage_path)
+                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+                );
+                run_unwind!(storage);
+            }
+            ProofsStorageVersion::V2 => {
+                let storage: Arc<MdbxProofsStorageV2> = Arc::new(
+                    MdbxProofsStorageV2::new(&self.storage_path)
+                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
+                );
+                run_unwind!(storage);
+            }
+        }
 
         Ok(())
     }

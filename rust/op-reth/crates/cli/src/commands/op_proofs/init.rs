@@ -7,7 +7,11 @@ use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, Environ
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
-use reth_optimism_trie::{InitializationJob, OpProofsStore, OpProofsProviderRO, db::MdbxProofsStorage};
+use reth_optimism_node::args::ProofsStorageVersion;
+use reth_optimism_trie::{
+    InitializationJob, OpProofsProviderRO, OpProofsStore,
+    db::{MdbxProofsStorage, MdbxProofsStorageV2},
+};
 use reth_provider::{BlockNumReader, DBProvider, DatabaseProviderFactory};
 use std::{path::PathBuf, sync::Arc};
 use tracing::info;
@@ -31,6 +35,14 @@ pub struct InitCommand<C: ChainSpecParser> {
         required = true
     )]
     pub storage_path: PathBuf,
+
+    /// Storage schema version. Must match the version used when starting the node.
+    #[arg(
+        long = "proofs-history.storage-version",
+        value_name = "PROOFS_HISTORY_STORAGE_VERSION",
+        default_value = "v1"
+    )]
+    pub storage_version: ProofsStorageVersion,
 }
 
 impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> InitCommand<C> {
@@ -44,51 +56,72 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> InitCommand<C> {
         // Initialize the environment with read-only access
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
+        macro_rules! run_init {
+            ($storage:expr) => {{
+                let storage = $storage;
+
+                // Check if already initialized
+                if let Some((block_number, block_hash)) =
+                    storage.provider_ro()?.get_earliest_block_number()?
+                {
+                    info!(
+                        target: "reth::cli",
+                        block_number = block_number,
+                        block_hash = ?block_hash,
+                        "Proofs storage already initialized"
+                    );
+                    return Ok(());
+                }
+
+                // Get the current chain state
+                let ChainInfo { best_number, best_hash, .. } = provider_factory.chain_info()?;
+
+                info!(
+                    target: "reth::cli",
+                    best_number = best_number,
+                    best_hash = ?best_hash,
+                    "Starting backfill job for current chain state"
+                );
+
+                // Run the backfill job
+                {
+                    let db_provider = provider_factory
+                        .database_provider_ro()?
+                        .disable_long_read_transaction_safety();
+                    let db_tx = db_provider.into_tx();
+
+                    InitializationJob::new(storage, db_tx).run(best_number, best_hash)?;
+                }
+
+                info!(
+                    target: "reth::cli",
+                    best_number = best_number,
+                    best_hash = ?best_hash,
+                    "Proofs storage initialized successfully"
+                );
+            }};
+        }
+
         // Create the proofs storage without the metrics wrapper.
         // During initialization we write billions of entries; the metrics layer's
         // `AtomicBucket::push` (used by `Histogram::record_many`) is append-only and
         // would accumulate ~19 bytes per observation, causing OOM on large chains.
-        let storage: Arc<MdbxProofsStorage> = Arc::new(
-            MdbxProofsStorage::new(&self.storage_path)
-                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
-        );
-
-        // Check if already initialized
-        if let Some((block_number, block_hash)) = storage.provider_ro()?.get_earliest_block_number()? {
-            info!(
-                target: "reth::cli",
-                block_number = block_number,
-                block_hash = ?block_hash,
-                "Proofs storage already initialized"
-            );
-            return Ok(());
+        match self.storage_version {
+            ProofsStorageVersion::V1 => {
+                let storage: Arc<MdbxProofsStorage> = Arc::new(
+                    MdbxProofsStorage::new(&self.storage_path)
+                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+                );
+                run_init!(storage);
+            }
+            ProofsStorageVersion::V2 => {
+                let storage: Arc<MdbxProofsStorageV2> = Arc::new(
+                    MdbxProofsStorageV2::new(&self.storage_path)
+                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
+                );
+                run_init!(storage);
+            }
         }
-
-        // Get the current chain state
-        let ChainInfo { best_number, best_hash, .. } = provider_factory.chain_info()?;
-
-        info!(
-            target: "reth::cli",
-            best_number = best_number,
-            best_hash = ?best_hash,
-            "Starting backfill job for current chain state"
-        );
-
-        // Run the backfill job
-        {
-            let db_provider =
-                provider_factory.database_provider_ro()?.disable_long_read_transaction_safety();
-            let db_tx = db_provider.into_tx();
-
-            InitializationJob::new(storage, db_tx).run(best_number, best_hash)?;
-        }
-
-        info!(
-            target: "reth::cli",
-            best_number = best_number,
-            best_hash = ?best_hash,
-            "Proofs storage initialized successfully"
-        );
 
         Ok(())
     }

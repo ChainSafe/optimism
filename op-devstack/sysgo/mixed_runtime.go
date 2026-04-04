@@ -45,8 +45,9 @@ type MixedL2ELKind string
 const DevstackL2ELKindEnvVar = "DEVSTACK_L2EL_KIND"
 
 const (
-	MixedL2ELOpGeth MixedL2ELKind = "op-geth"
-	MixedL2ELOpReth MixedL2ELKind = "op-reth"
+	MixedL2ELOpGeth   MixedL2ELKind = "op-geth"
+	MixedL2ELOpReth   MixedL2ELKind = "op-reth"
+	MixedL2ELOpRethV2 MixedL2ELKind = "op-reth-with-proof-v2"
 )
 
 // SkipUnlessOpGeth skips the test when the L2 execution layer is op-reth
@@ -144,7 +145,9 @@ func NewMixedSingleChainRuntime(t devtest.T, cfg MixedSingleChainPresetConfig) *
 		case MixedL2ELOpGeth:
 			el = startL2ELNode(t, l2Net, jwtPath, jwtSecret, spec.ELKey, identity)
 		case MixedL2ELOpReth:
-			el = startMixedOpRethNode(t, l2Net, spec.ELKey, jwtPath, jwtSecret, metricsRegistrar)
+			el = startMixedOpRethNode(t, l2Net, spec.ELKey, jwtPath, jwtSecret, metricsRegistrar, "v1")
+		case MixedL2ELOpRethV2:
+			el = startMixedOpRethNode(t, l2Net, spec.ELKey, jwtPath, jwtSecret, metricsRegistrar, "v2")
 		default:
 			require.FailNowf("unsupported EL kind", "unsupported mixed EL kind %q", spec.ELKind)
 		}
@@ -255,6 +258,7 @@ func startMixedOpRethNode(
 	jwtPath string,
 	jwtSecret [32]byte,
 	metricsRegistrar L2MetricsRegistrar,
+	storageVersion string,
 ) *OpReth {
 	tempDir := t.TempDir()
 
@@ -330,6 +334,7 @@ func startMixedOpRethNode(
 		"--datadir=" + dataDirPath,
 		"--chain=" + chainConfigPath,
 		"--proofs-history.storage-path=" + proofHistoryDir,
+		"--proofs-history.storage-version=" + storageVersion,
 	}
 	err = exec.Command(execPath, initProofsArgs...).Run()
 	t.Require().NoError(err, "must init op-reth proof history")
@@ -340,6 +345,7 @@ func startMixedOpRethNode(
 		"--proofs-history.window=10000",
 		"--proofs-history.prune-interval=1m",
 		"--proofs-history.storage-path="+proofHistoryDir,
+		"--proofs-history.storage-version="+storageVersion,
 	)
 
 	l2EL := &OpReth{

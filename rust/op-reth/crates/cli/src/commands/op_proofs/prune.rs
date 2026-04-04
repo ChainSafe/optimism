@@ -6,7 +6,11 @@ use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, Environ
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
-use reth_optimism_trie::{OpProofStoragePruner, OpProofsStore, OpProofsProviderRO, db::MdbxProofsStorage};
+use reth_optimism_node::args::ProofsStorageVersion;
+use reth_optimism_trie::{
+    OpProofStoragePruner, OpProofsProviderRO, OpProofsStore,
+    db::{MdbxProofsStorage, MdbxProofsStorageV2},
+};
 use std::{path::PathBuf, sync::Arc};
 use tracing::info;
 
@@ -41,6 +45,14 @@ pub struct PruneCommand<C: ChainSpecParser> {
         value_name = "PROOFS_HISTORY_PRUNE_BATCH_SIZE"
     )]
     pub proofs_history_prune_batch_size: u64,
+
+    /// Storage schema version. Must match the version used when starting the node.
+    #[arg(
+        long = "proofs-history.storage-version",
+        value_name = "PROOFS_HISTORY_STORAGE_VERSION",
+        default_value = "v1"
+    )]
+    pub storage_version: ProofsStorageVersion,
 }
 
 impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> PruneCommand<C> {
@@ -54,28 +66,48 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> PruneCommand<C> {
         // Initialize the environment with read-only access
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
-        let storage: Arc<MdbxProofsStorage> = Arc::new(
-            MdbxProofsStorage::new(&self.storage_path)
-                .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
-        );
+        macro_rules! run_prune {
+            ($storage:expr) => {{
+                let storage = $storage;
 
-        let provider_ro = storage.provider_ro()?;
-        let earliest_block = provider_ro.get_earliest_block_number()?;
-        let latest_block = provider_ro.get_latest_block_number()?;
-        info!(
-            target: "reth::cli",
-            ?earliest_block,
-            ?latest_block,
-            "Current proofs storage block range"
-        );
+                let provider_ro = storage.provider_ro()?;
+                let earliest_block = provider_ro.get_earliest_block_number()?;
+                let latest_block = provider_ro.get_latest_block_number()?;
+                info!(
+                    target: "reth::cli",
+                    ?earliest_block,
+                    ?latest_block,
+                    "Current proofs storage block range"
+                );
+                drop(provider_ro);
 
-        let pruner = OpProofStoragePruner::new(
-            storage,
-            provider_factory,
-            self.proofs_history_window,
-            self.proofs_history_prune_batch_size,
-        );
-        pruner.run();
+                let pruner = OpProofStoragePruner::new(
+                    storage,
+                    provider_factory,
+                    self.proofs_history_window,
+                    self.proofs_history_prune_batch_size,
+                );
+                pruner.run();
+            }};
+        }
+
+        match self.storage_version {
+            ProofsStorageVersion::V1 => {
+                let storage: Arc<MdbxProofsStorage> = Arc::new(
+                    MdbxProofsStorage::new(&self.storage_path)
+                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
+                );
+                run_prune!(storage);
+            }
+            ProofsStorageVersion::V2 => {
+                let storage: Arc<MdbxProofsStorageV2> = Arc::new(
+                    MdbxProofsStorageV2::new(&self.storage_path)
+                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
+                );
+                run_prune!(storage);
+            }
+        }
+
         Ok(())
     }
 }

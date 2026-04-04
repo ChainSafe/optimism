@@ -58,6 +58,8 @@ func (m *MixedOpProofPreset) RethWithProofL2ELNode() *dsl.L2ELNode {
 
 func resolveELSpec(envVar string, defaultKind sysgo.MixedL2ELKind) sysgo.MixedL2ELKind {
 	switch os.Getenv(envVar) {
+	case "op-reth-with-proof-v2":
+		return sysgo.MixedL2ELOpRethV2
 	case "op-reth-with-proof", "op-reth":
 		return sysgo.MixedL2ELOpReth
 	case "op-geth":
