@@ -85,8 +85,8 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> PruneCommand<C> {
                     storage,
                     provider_factory,
                     self.proofs_history_window,
-                    self.proofs_history_prune_batch_size,
                 );
+                let pruner = pruner.with_batch_size(self.proofs_history_prune_batch_size);
                 pruner.run();
             }};
         }

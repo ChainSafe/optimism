@@ -12,8 +12,8 @@ use reth_evm::{ConfigureEvm, execute::Executor};
 use reth_evm_ethereum::EthEvmConfig;
 use reth_node_api::{NodePrimitives, NodeTypesWithDB};
 use reth_optimism_trie::{
-    MdbxProofsStorage, MdbxProofsStorageV2, OpProofsStorage, OpProofsStorageError,
-    OpProofsStore, initialize::InitializationJob, live::LiveTrieCollector,
+    MdbxProofsStorage, MdbxProofsStorageV2, OpProofStoragePruner, OpProofsStorage,
+    OpProofsStorageError, OpProofsStore, initialize::InitializationJob, live::LiveTrieCollector,
 };
 use reth_primitives_traits::{Block as _, RecoveredBlock};
 use reth_provider::{
@@ -272,8 +272,14 @@ where
         initialization_job.run(last_block_number, last_block_hash)?;
     }
 
-    // Execute blocks after initialization using live collector
+    // Execute blocks after initialization using live collector.
+    // A single collector is shared across all blocks so the in-memory buffer accumulates
+    // state between iterations (the new async-persistence architecture requires this).
     let evm_config = EthEvmConfig::ethereum(chain_spec.clone());
+    let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;
+    let pruner = OpProofStoragePruner::new(storage.clone(), blockchain_db.clone(), 1000);
+    let live_trie_collector =
+        LiveTrieCollector::new(evm_config, blockchain_db, storage.clone(), pruner);
 
     for (idx, block_spec) in scenario.blocks_after_initialization.iter().enumerate() {
         let block_number = last_block_number + idx as u64 + 1;
@@ -289,11 +295,6 @@ where
         // Execute the block to get the correct state root
         let execution_output = execute_block(&mut block, &provider_factory, &chain_spec)?;
 
-        // Create a fresh blockchain provider to ensure it sees all committed blocks
-        let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;
-        let live_trie_collector =
-            LiveTrieCollector::new(evm_config.clone(), blockchain_db, &storage);
-
         // Use the live collector to execute and store trie updates
         live_trie_collector.execute_and_store_block_updates(&block)?;
 
@@ -302,6 +303,9 @@ where
 
         last_block_hash = block.hash();
     }
+
+    // Drain any pending in-memory blocks to disk before returning.
+    live_trie_collector.wait_for_persistence()?;
 
     Ok(())
 }
@@ -388,14 +392,20 @@ where
     );
 
     let blockchain_db = BlockchainProvider::new(provider_factory).unwrap();
+    #[allow(clippy::useless_conversion)]
     let storage_wrapped: OpProofsStorage<S> = storage.into();
-    let collector =
-        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage_wrapped);
+    let pruner = OpProofStoragePruner::new(storage_wrapped.clone(), blockchain_db.clone(), 1000);
+    let collector = LiveTrieCollector::new(
+        EthEvmConfig::ethereum(chain_spec.clone()),
+        blockchain_db,
+        storage_wrapped,
+        pruner,
+    );
 
-    // EXPECT: MissingParentBlock
+    // EXPECT: OutOfOrder (parent hash doesn't match the current tip)
     let err = collector.execute_and_store_block_updates(&incorrect_block).unwrap_err();
 
-    assert!(matches!(err, OpProofsStorageError::MissingParentBlock { .. }));
+    assert!(matches!(err, OpProofsStorageError::OutOfOrder { .. }));
     Ok(())
 }
 
@@ -433,9 +443,15 @@ where
 
     // Generate a second block normally
     let blockchain_db = BlockchainProvider::new(provider_factory.clone()).unwrap();
+    #[allow(clippy::useless_conversion)]
     let storage_wrapped: OpProofsStorage<Arc<S>> = storage.into();
-    let collector =
-        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage_wrapped);
+    let pruner = OpProofStoragePruner::new(storage_wrapped.clone(), blockchain_db.clone(), 1000);
+    let collector = LiveTrieCollector::new(
+        EthEvmConfig::ethereum(chain_spec.clone()),
+        blockchain_db,
+        storage_wrapped,
+        pruner,
+    );
 
     // Create the next block
     let mut nonce_counter = 0;

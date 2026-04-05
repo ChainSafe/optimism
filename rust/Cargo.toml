@@ -637,6 +637,7 @@ url = { version = "2.5.8", default-features = false }
 vergen = "9.1.0"
 vergen-git2 = "9.1.0"
 byteorder = "1"
+crossbeam-channel = "0.5.13"
 
 # allocators
 jemalloc_pprof = { version = "0.8", default-features = false }

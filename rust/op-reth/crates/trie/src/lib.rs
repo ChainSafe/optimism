@@ -47,6 +47,7 @@ pub type OpProofsStorage<S> = S;
 pub mod proof;
 
 pub mod provider;
+pub mod overlay_provider;
 
 pub mod live;
 
@@ -65,3 +66,6 @@ pub use prune::{
     OpProofStoragePruner, OpProofStoragePrunerResult, OpProofStoragePrunerTask, PrunerError,
     PrunerOutput,
 };
+
+pub mod state;
+pub mod persistence;
