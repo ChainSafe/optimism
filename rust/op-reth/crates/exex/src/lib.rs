@@ -739,7 +739,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx).expect("handle chain commit");
 
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 1);
     }
@@ -780,7 +780,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
 
@@ -788,7 +788,7 @@ mod tests {
         let new_chain = Arc::new(mk_chain_with_updates(5, 5, Some(hash_for_num(10))));
         let notif = ExExNotification::ChainCommitted { new: new_chain };
         exex.handle_notification(notif, &collector, &sync_target_tx).expect("handle chain commit");
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok");
         assert_eq!(latest.0, 5);
         assert_eq!(latest.1, hash_for_num(5)); // block was not updated
@@ -830,7 +830,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
@@ -843,7 +843,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx)
             .expect("handle chain re-orged");
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 12);
     }
@@ -885,7 +885,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
@@ -898,7 +898,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx)
             .expect("handle chain re-orged");
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
     }
@@ -940,7 +940,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
@@ -952,7 +952,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx)
             .expect("handle chain reverted");
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 8);
     }
@@ -994,7 +994,7 @@ mod tests {
                 .expect("handle chain commit");
         }
 
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
 
@@ -1006,7 +1006,7 @@ mod tests {
 
         exex.handle_notification(notif, &collector, &sync_target_tx)
             .expect("handle chain reverted");
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
     }
@@ -1150,7 +1150,7 @@ mod tests {
         // Because we didn't spawn the actual worker thread in this test, storage should still be at
         // 0. This proves the 'handle_notification' returned instantly without doing the
         // heavy lifting.
-        collector.wait_for_persistence().expect("wait for persistence");
+        collector.wait_for_persistence();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get").expect("ok").0;
         assert_eq!(latest, 0, "Main thread should not have processed the blocks synchronously");
     }

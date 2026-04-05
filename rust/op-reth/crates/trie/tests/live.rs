@@ -305,7 +305,7 @@ where
     }
 
     // Drain any pending in-memory blocks to disk before returning.
-    live_trie_collector.wait_for_persistence()?;
+    live_trie_collector.wait_for_persistence();
 
     Ok(())
 }

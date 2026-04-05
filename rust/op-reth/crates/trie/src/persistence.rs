@@ -3,15 +3,71 @@
 use crate::{
     api::{OpProofsProviderRw, WriteCounts},
     prune::OpProofStoragePruner,
-    BlockStateDiff, OpProofsStore,
+    BlockStateDiff, OpProofsStore, OpProofsStorageError,
 };
 #[cfg(feature = "metrics")]
 use crate::metrics::PersistenceMetrics;
 use alloy_eips::eip1898::BlockWithParent;
 use reth_provider::BlockHashReader;
 use crossbeam_channel::{Receiver, Sender};
-use std::{thread, time::Instant};
+use parking_lot::{Mutex, Condvar};
+use std::{sync::Arc, thread, time::Instant};
 use tracing::{debug, error, info};
+
+/// Thread-safe tracker for whether a background persistence task is running.
+#[derive(Debug)]
+pub struct PersistenceStatus {
+    is_running: Mutex<bool>,
+    done: Condvar,
+}
+
+impl Default for PersistenceStatus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PersistenceStatus {
+    /// Create a new idle status.
+    pub fn new() -> Self {
+        Self {
+            is_running: Mutex::new(false),
+            done: Condvar::new(),
+        }
+    }
+
+    /// Returns `true` if a persistence task is currently running.
+    pub fn is_running(&self) -> bool {
+        *self.is_running.lock()
+    }
+
+    /// Mark persistence as running.  Returns `true` if it was previously idle
+    /// (i.e. this call "won" the race), `false` if already running.
+    pub fn mark_running(&self) -> bool {
+        let mut running = self.is_running.lock();
+        if *running {
+            false
+        } else {
+            *running = true;
+            true
+        }
+    }
+
+    /// Mark persistence as idle and wake all waiters.
+    pub fn mark_idle(&self) {
+        let mut running = self.is_running.lock();
+        *running = false;
+        self.done.notify_all();
+    }
+
+    /// Block the calling thread until persistence is idle.
+    pub fn wait_until_idle(&self) {
+        let mut running = self.is_running.lock();
+        while *running {
+            self.done.wait(&mut running);
+        }
+    }
+}
 
 /// Messages sent to the persistence service.
 #[derive(Debug)]
@@ -21,10 +77,10 @@ pub enum LiveTriePersistenceAction {
     /// Contains:
     /// 1. The list of blocks and their diffs (ordered Oldest -> Newest).
     /// 2. A response channel to return the highest block number persisted (for pruning).
-    SaveUpdates(Vec<(BlockWithParent, BlockStateDiff)>, Sender<Option<u64>>),
+    SaveUpdates(Vec<Arc<(BlockWithParent, BlockStateDiff)>>, Sender<Option<u64>>),
     /// Unwind history to the specified block (inclusive).
     /// All history strictly after this block is removed.
-    Unwind(BlockWithParent, Sender<Result<(), ()>>),
+    Unwind(BlockWithParent, Sender<Result<(), String>>),
 }
 
 /// A handle to communicate with the Live Trie persistence service.
@@ -45,7 +101,7 @@ impl LiveTriePersistenceHandle {
         S: OpProofsStore + Clone + 'static,
         H: BlockHashReader + Send + Sync + 'static,
     {
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (tx, rx) = crossbeam_channel::bounded(2);
         let service = LiveTriePersistenceService::new(pruner, storage, rx);
 
         thread::Builder::new()
@@ -57,21 +113,27 @@ impl LiveTriePersistenceHandle {
     }
 
     /// Send a save request.
+    ///
+    /// Returns an error if the persistence service has stopped.
     pub fn save_updates(
         &self,
-        updates: Vec<(BlockWithParent, BlockStateDiff)>,
+        updates: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
         response_tx: Sender<Option<u64>>,
-    ) {
-        let _ = self.sender.send(LiveTriePersistenceAction::SaveUpdates(updates, response_tx));
+    ) -> Result<(), OpProofsStorageError> {
+        self.sender.send(LiveTriePersistenceAction::SaveUpdates(updates, response_tx))
+            .map_err(|_| OpProofsStorageError::Other("Persistence service disconnected".into()))
     }
 
     /// Send an unwind request.
+    ///
+    /// Returns an error if the persistence service has stopped.
     pub fn unwind(
         &self,
         to: BlockWithParent,
-        response_tx: Sender<Result<(), ()>>,
-    ) {
-        let _ = self.sender.send(LiveTriePersistenceAction::Unwind(to, response_tx));
+        response_tx: Sender<Result<(), String>>,
+    ) -> Result<(), OpProofsStorageError> {
+        self.sender.send(LiveTriePersistenceAction::Unwind(to, response_tx))
+            .map_err(|_| OpProofsStorageError::Other("Persistence service disconnected".into()))
     }
 }
 
@@ -120,19 +182,26 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
 
     fn on_save_updates(
         &self,
-        updates: Vec<(BlockWithParent, BlockStateDiff)>,
+        arc_updates: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
         reply_tx: Sender<Option<u64>>,
     ) {
-        if updates.is_empty() {
+        if arc_updates.is_empty() {
             let _ = reply_tx.send(None);
             return;
         }
 
         let start = Instant::now();
-        let count = updates.len();
-        let first = updates.first().map(|(b, _)| b.block.number);
-        let last = updates.last().map(|(b, _)| b.block.number);
+        let count = arc_updates.len();
+        let first = arc_updates.first().map(|arc| arc.0.block.number);
+        let last = arc_updates.last().map(|arc| arc.0.block.number);
         debug!(target: "live-trie::persistence", ?count, ?first, ?last, "Writing batch to storage");
+
+        // Convert from Arc to owned on the persistence thread (not the caller thread)
+        // to avoid blocking block execution with deep clones.
+        let updates: Vec<(BlockWithParent, BlockStateDiff)> = arc_updates
+            .into_iter()
+            .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
+            .collect();
 
         // Store updates and prune in a single transaction
         let provider_rw_start = Instant::now();
@@ -219,7 +288,7 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
     fn on_unwind(
         &self,
         to: BlockWithParent,
-        reply_tx: Sender<Result<(), ()>>,
+        reply_tx: Sender<Result<(), String>>,
     ) {
         debug!(target: "live-trie::persistence", to_block = ?to.block.number, "Unwinding storage");
         let result = self.storage.provider_rw().and_then(|provider| {
@@ -233,7 +302,7 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
             }
             Err(e) => {
                 error!(target: "live-trie::persistence", ?e, "Unwind failed");
-                let _ = reply_tx.send(Err(()));
+                let _ = reply_tx.send(Err(e.to_string()));
             }
         }
     }

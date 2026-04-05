@@ -2,7 +2,7 @@
 
 use crate::{
     provider::OpProofsStateProviderRef, state::LiveTrieState, BlockStateDiff,
-    OpProofsStorageError, OpProofsStore, OpProofsProviderRO, persistence::LiveTriePersistenceHandle,
+    OpProofsStorageError, OpProofsStore, OpProofsProviderRO, persistence::{LiveTriePersistenceHandle, PersistenceStatus},
     OpProofStoragePruner,
 };
 #[cfg(feature = "metrics")]
@@ -16,7 +16,7 @@ use reth_provider::{
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_trie_common::{updates::TrieUpdatesSorted, HashedPostStateSorted};
-use std::{sync::{Arc, Mutex, Condvar}, time::{Duration, Instant}};
+use std::{sync::Arc, time::{Duration, Instant}};
 use tracing::{error, info};
 
 /// Default number of blocks to keep in memory before persisting.
@@ -24,6 +24,9 @@ pub const DEFAULT_PERSISTENCE_THRESHOLD: u64 = 5;
 
 /// Default number of blocks where we block execution to allow persistence to catch up.
 pub const DEFAULT_BACKPRESSURE_THRESHOLD: u64 = 10;
+
+/// Default timeout for waiting on a persistence save operation (in seconds).
+pub const DEFAULT_PERSISTENCE_TIMEOUT_SECS: u64 = 60;
 
 /// Live trie collector for external proofs storage.
 #[derive(Debug)]
@@ -42,9 +45,8 @@ where
     /// Number of blocks to keep in memory limit (backpressure).
     backpressure_threshold: u64,
     persistence_handle: LiveTriePersistenceHandle,
-    /// Tracks if a persistence task is currently running.
-    /// (is_persisting, condvar)
-    persistence_status: Arc<(Mutex<bool>, Condvar)>,
+    /// Tracks if a background persistence task is currently running.
+    persistence_status: Arc<PersistenceStatus>,
 
     #[cfg(feature = "metrics")]
     metrics: LiveMetrics,
@@ -73,7 +75,7 @@ where
             persistence_threshold: DEFAULT_PERSISTENCE_THRESHOLD,
             backpressure_threshold: DEFAULT_BACKPRESSURE_THRESHOLD,
             persistence_handle,
-            persistence_status: Arc::new((Mutex::new(false), Condvar::new())),
+            persistence_status: Arc::new(PersistenceStatus::new()),
 
             #[cfg(feature = "metrics")]
             metrics: LiveMetrics::new_with_labels(&[] as &[(&str, &str)]),
@@ -356,16 +358,8 @@ where
     }
 
     /// Blocks the current thread until any in-progress background persistence completes.
-    pub fn wait_for_persistence(&self) -> Result<(), OpProofsStorageError> {
-        let (lock, cvar) = &*self.persistence_status;
-        let mut is_persisting =
-            lock.lock().map_err(|_| OpProofsStorageError::Other("Mutex poisoned".into()))?;
-        while *is_persisting {
-            is_persisting = cvar
-                .wait(is_persisting)
-                .map_err(|_| OpProofsStorageError::Other("Condvar poisoned".into()))?;
-        }
-        Ok(())
+    pub fn wait_for_persistence(&self) {
+        self.persistence_status.wait_until_idle();
     }
 
     /// Checks the persistence threshold and triggers persistence if necessary.
@@ -380,10 +374,7 @@ where
         // 1. Backpressure Check (Blocking)
         // If we are over the limit, we MUST wait for the background task to clear some space.
         if current_size >= self.backpressure_threshold {
-            let (lock, cvar) = &*self.persistence_status;
-            let mut is_persisting = lock.lock().map_err(|_| OpProofsStorageError::Other("Mutex poisoned".into()))?;
-
-            if *is_persisting {
+            if self.persistence_status.is_running() {
                 info!(
                     target: "live-trie",
                     current_size,
@@ -391,10 +382,7 @@ where
                     "Backpressure triggered: Blocking execution until persistence completes"
                 );
 
-                // Wait while persistence is active.
-                while *is_persisting {
-                    is_persisting = cvar.wait(is_persisting).map_err(|_| OpProofsStorageError::Other("Condvar poisoned".into()))?;
-                }
+                self.persistence_status.wait_until_idle();
 
                 info!(target: "live-trie", "Backpressure released: Persistence task completed");
             }
@@ -407,14 +395,12 @@ where
         };
 
         if current_size >= self.persistence_threshold {
-            let (lock, _) = &*self.persistence_status;
-            let mut is_persisting = lock.lock().map_err(|_| OpProofsStorageError::Other("Mutex poisoned".into()))?;
-
-            if !*is_persisting {
+            if self.persistence_status.mark_running() {
                 // Snapshot blocks to persist
                 let blocks_to_persist = self.get_blocks_to_persist();
 
                 if blocks_to_persist.is_empty() {
+                    self.persistence_status.mark_idle();
                     return Ok(());
                 }
 
@@ -422,13 +408,11 @@ where
                     target: "live-trie",
                     current_size,
                     count = blocks_to_persist.len(),
-                    start_block = blocks_to_persist.first().map(|(b, _)| b.block.number),
-                    end_block = blocks_to_persist.last().map(|(b, _)| b.block.number),
+                    start_block = blocks_to_persist.first().map(|arc| arc.0.block.number),
+                    end_block = blocks_to_persist.last().map(|arc| arc.0.block.number),
                     threshold = self.persistence_threshold,
                     "Persistence threshold reached: Spawning background persistence task"
                 );
-
-                *is_persisting = true;
 
                 // Clone data for the background thread
                 let persistence_handle = self.persistence_handle.clone();
@@ -454,10 +438,7 @@ where
                     }
 
                     // Notify completion
-                    let (lock, cvar) = &*persistence_status;
-                    let mut running = lock.lock().unwrap();
-                    *running = false;
-                    cvar.notify_all();
+                    persistence_status.mark_idle();
                 });
             }
         }
@@ -468,12 +449,12 @@ where
     /// Helper to perform persistence interaction in a background thread.
     fn persist_blocks_background(
         handle: LiveTriePersistenceHandle,
-        blocks: Vec<(BlockWithParent, BlockStateDiff)>,
+        blocks: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
     ) -> Result<Option<u64>, OpProofsStorageError> {
         let (tx, rx) = bounded(1);
-        handle.save_updates(blocks, tx);
+        handle.save_updates(blocks, tx)?;
 
-        match rx.recv_timeout(Duration::from_secs(300)) {
+        match rx.recv_timeout(Duration::from_secs(DEFAULT_PERSISTENCE_TIMEOUT_SECS)) {
             Ok(res) => Ok(res),
             Err(RecvTimeoutError::Timeout) => {
                 Err(OpProofsStorageError::Other("Persistence timeout".into()))
@@ -485,7 +466,10 @@ where
     }
 
     /// Returns all buffered blocks to persist, ordered from Oldest to Newest.
-    fn get_blocks_to_persist(&self) -> Vec<(BlockWithParent, BlockStateDiff)> {
+    ///
+    /// Returns `Arc`s to avoid deep-cloning `BlockStateDiff` on the caller thread.
+    /// The persistence thread will unwrap or clone as needed.
+    fn get_blocks_to_persist(&self) -> Vec<Arc<(BlockWithParent, BlockStateDiff)>> {
         let memory_inner = self.memory.inner();
         let numbers = memory_inner.numbers.read();
         let blocks = memory_inner.blocks.read();
@@ -495,7 +479,7 @@ where
         // BTreeMap is sorted by keys (block numbers), ensuring implicit Oldest -> Newest order.
         for hash in numbers.values() {
             if let Some(state) = blocks.get(hash) {
-                blocks_to_persist.push((state.0.clone(), state.1.clone()));
+                blocks_to_persist.push(Arc::clone(state));
             }
         }
         blocks_to_persist
@@ -504,21 +488,19 @@ where
     /// Helper to send unwind command to persistence service and wait for completion.
     fn unwind_persistence(&self, to: BlockWithParent) -> Result<(), OpProofsStorageError> {
         // Wait for any ongoing persistence to finish to avoid race conditions
-        {
-             let (lock, cvar) = &*self.persistence_status;
-             let mut is_persisting = lock.lock().map_err(|_| OpProofsStorageError::Other("Mutex poisoned".into()))?;
-             while *is_persisting {
-                 info!(target: "live-trie", "Unwind waiting for background persistence...");
-                 is_persisting = cvar.wait(is_persisting).map_err(|_| OpProofsStorageError::Other("Condvar poisoned".into()))?;
-             }
+        if self.persistence_status.is_running() {
+            info!(target: "live-trie", "Unwind waiting for background persistence...");
+            self.persistence_status.wait_until_idle();
         }
 
         let (tx, rx) = bounded(1);
-        self.persistence_handle.unwind(to, tx);
+        self.persistence_handle.unwind(to, tx)?;
 
-        match rx.recv_timeout(Duration::from_secs(60)) {
+        match rx.recv_timeout(Duration::from_secs(DEFAULT_PERSISTENCE_TIMEOUT_SECS)) {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(())) => Err(OpProofsStorageError::Other("Unwind failed in persistence service".into())),
+            Ok(Err(reason)) => Err(OpProofsStorageError::Other(
+                format!("Unwind failed in persistence service: {reason}")
+            )),
             Err(RecvTimeoutError::Timeout) => Err(OpProofsStorageError::Other("Unwind timeout".into())),
             Err(RecvTimeoutError::Disconnected) => Err(OpProofsStorageError::Other("Persistence service disconnected".into())),
         }
