@@ -1,37 +1,37 @@
 use super::{BlockNumberHash, ProofWindow, ProofWindowKey, Tables};
 use crate::{
+    BlockStateDiff, OpProofsStorageError,
+    OpProofsStorageError::NoBlocksFound,
+    OpProofsStorageResult,
     api::{
         InitialStateAnchor, InitialStateStatus, OpProofsInitProvider, OpProofsProviderRO,
         OpProofsProviderRw, OpProofsStore, WriteCounts,
     },
     db::{
-        models::{
-            kv::IntoKV, AccountTrieHistory, BlockChangeSet, ChangeSet, HashedAccountHistory,
-            HashedStorageHistory, HashedStorageKey, MaybeDeleted, StorageTrieHistory,
-            StorageTrieKey, StorageValue, VersionedValue,
-        },
         MdbxAccountCursor, MdbxStorageCursor, MdbxTrieCursor,
+        models::{
+            AccountTrieHistory, BlockChangeSet, ChangeSet, HashedAccountHistory,
+            HashedStorageHistory, HashedStorageKey, MaybeDeleted, StorageTrieHistory,
+            StorageTrieKey, StorageValue, VersionedValue, kv::IntoKV,
+        },
     },
-    BlockStateDiff, OpProofsStorageError,
-    OpProofsStorageError::NoBlocksFound,
-    OpProofsStorageResult,
 };
-use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
-use alloy_primitives::{map::HashMap, B256, U256};
+use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
+use alloy_primitives::{B256, U256, map::HashMap};
 #[cfg(feature = "metrics")]
-use metrics::{gauge, Label};
+use metrics::{Label, gauge};
 use reth_db::{
+    Database, DatabaseEnv, DatabaseError,
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
-    mdbx::{init_db_for, DatabaseArguments},
+    mdbx::{DatabaseArguments, init_db_for},
     table::{DupSort, Table},
     transaction::{DbTx, DbTxMut},
-    Database, DatabaseEnv, DatabaseError,
 };
 use reth_primitives_traits::Account;
 use reth_trie::{hashed_cursor::HashedCursor, trie_cursor::TrieCursor};
 use reth_trie_common::{
-    updates::{StorageTrieUpdates, TrieUpdates},
     BranchNodeCompact, HashedPostState, Nibbles, StoredNibbles,
+    updates::{StorageTrieUpdates, TrieUpdates},
 };
 use std::{fmt::Debug, ops::RangeBounds, path::Path, sync::Arc};
 
@@ -101,8 +101,7 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
         if let Some(block) = self.get_block_number_hash_inner(ProofWindowKey::LatestBlock)? {
             return Ok(block);
         }
-        self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?
-            .ok_or(NoBlocksFound)
+        self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?.ok_or(NoBlocksFound)
     }
 
     /// Phase 1 of pruning: Calculate survivors.
@@ -130,7 +129,11 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
             Self::track_latest(&mut acc_candidates, cs.account_trie_keys, block_number);
             Self::track_latest(&mut storage_candidates, cs.storage_trie_keys, block_number);
             Self::track_latest(&mut hashed_acc_candidates, cs.hashed_account_keys, block_number);
-            Self::track_latest(&mut hashed_storage_candidates, cs.hashed_storage_keys, block_number);
+            Self::track_latest(
+                &mut hashed_storage_candidates,
+                cs.hashed_storage_keys,
+                block_number,
+            );
         }
 
         Ok(Some(PrunePlan {
@@ -168,14 +171,14 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
 
 impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
     fn set_earliest_block_number_inner(
-         &self,
-         block_number: u64,
-         hash: B256,
-     ) -> OpProofsStorageResult<()> {
-         let mut cursor = self.tx.cursor_write::<ProofWindow>()?;
-         cursor.upsert(ProofWindowKey::EarliestBlock, &BlockNumberHash::new(block_number, hash))?;
-         Ok(())
-     }
+        &self,
+        block_number: u64,
+        hash: B256,
+    ) -> OpProofsStorageResult<()> {
+        let mut cursor = self.tx.cursor_write::<ProofWindow>()?;
+        cursor.upsert(ProofWindowKey::EarliestBlock, &BlockNumberHash::new(block_number, hash))?;
+        Ok(())
+    }
 
     fn set_latest_block_number_inner(
         &self,
@@ -240,8 +243,8 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
             let mut del_cur = self.tx.cursor_dup_write::<T>()?;
             for (k, _) in &pairs {
                 // Seek to (Key, Block 0)
-                if let Some(vv) = del_cur.seek_by_key_subkey(k.clone(), 0)?
-                    && vv.block_number == 0
+                if let Some(vv) = del_cur.seek_by_key_subkey(k.clone(), 0)? &&
+                    vv.block_number == 0
                 {
                     del_cur.delete_current()?;
                 }
@@ -264,10 +267,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
 
     /// Delete entries for `items` at exactly `block_number` in a dup-sorted table.
     /// Seeks (key, block) and deletes current if the subkey matches.
-    fn delete_dup_sorted<T, I, V>(
-        &self,
-        items: I,
-    ) -> OpProofsStorageResult<()>
+    fn delete_dup_sorted<T, I, V>(&self, items: I) -> OpProofsStorageResult<()>
     where
         T: Table<Value = VersionedValue<V>> + DupSort<SubKey = u64>,
         T::Key: Clone,
@@ -330,11 +330,11 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
                     match cur.current() {
                         Ok(Some((k, v))) => {
                             if k != key {
-                                break;  // Moved past the key
+                                break; // Moved past the key
                             }
                             entry = v;
                         }
-                        _ => break,  // End of table or error
+                        _ => break, // End of table or error
                     }
                 }
             }
@@ -403,7 +403,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
         })
     }
 
-     /// Write trie/state history for `block_number` from `block_state_diff`.
+    /// Write trie/state history for `block_number` from `block_state_diff`.
     fn store_trie_updates_for_block(
         &self,
         block_number: u64,
@@ -428,7 +428,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
 
         let mut storage_trie_keys = Vec::<StorageTrieKey>::with_capacity(storage_trie_len);
         for (hashed_address, nodes) in sorted_trie_updates.storage_tries_ref() {
-             // Handle wiped - mark all storage trie as deleted at the current block number
+            // Handle wiped - mark all storage trie as deleted at the current block number
             if nodes.is_deleted && append_mode {
                 let cursor = self.tx.cursor_dup_read::<StorageTrieHistory>()?;
                 let mut ro = MdbxTrieCursor::new(cursor, block_number - 1, Some(*hashed_address));
@@ -524,37 +524,37 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
     }
 
     fn store_trie_updates_append_only_inner(
-         &self,
-         block_ref: BlockWithParent,
-         block_state_diff: BlockStateDiff,
-     ) -> OpProofsStorageResult<WriteCounts> {
-         let block_number = block_ref.block.number;
+        &self,
+        block_ref: BlockWithParent,
+        block_state_diff: BlockStateDiff,
+    ) -> OpProofsStorageResult<WriteCounts> {
+        let block_number = block_ref.block.number;
 
-         let (_num, latest_block_hash) = self.get_latest_block_number_hash_inner()?;
+        let (_num, latest_block_hash) = self.get_latest_block_number_hash_inner()?;
 
-         if latest_block_hash != block_ref.parent {
-             return Err(OpProofsStorageError::OutOfOrder {
-                 block_number,
-                 parent_block_hash: block_ref.parent,
-                 latest_block_hash,
-             });
-         }
+        if latest_block_hash != block_ref.parent {
+            return Err(OpProofsStorageError::OutOfOrder {
+                block_number,
+                parent_block_hash: block_ref.parent,
+                latest_block_hash,
+            });
+        }
 
-         let change_set =
-             &self.store_trie_updates_for_block(block_number, block_state_diff, true)?;
+        let change_set =
+            &self.store_trie_updates_for_block(block_number, block_state_diff, true)?;
 
-         let mut change_set_cursor = self.tx.cursor_write::<BlockChangeSet>()?;
-         change_set_cursor.append(block_number, change_set)?;
+        let mut change_set_cursor = self.tx.cursor_write::<BlockChangeSet>()?;
+        change_set_cursor.append(block_number, change_set)?;
 
-         self.set_latest_block_number_inner(block_number, block_ref.block.hash)?;
+        self.set_latest_block_number_inner(block_number, block_ref.block.hash)?;
 
-         Ok(WriteCounts {
-             account_trie_updates_written_total: change_set.account_trie_keys.len() as u64,
-             storage_trie_updates_written_total: change_set.storage_trie_keys.len() as u64,
-             hashed_accounts_written_total: change_set.hashed_account_keys.len() as u64,
-             hashed_storages_written_total: change_set.hashed_storage_keys.len() as u64,
-         })
-     }
+        Ok(WriteCounts {
+            account_trie_updates_written_total: change_set.account_trie_keys.len() as u64,
+            storage_trie_updates_written_total: change_set.storage_trie_keys.len() as u64,
+            hashed_accounts_written_total: change_set.hashed_account_keys.len() as u64,
+            hashed_storages_written_total: change_set.hashed_storage_keys.len() as u64,
+        })
+    }
 
     fn get_proof_window_inner(&self) -> OpProofsStorageResult<ProofWindowValue> {
         let mut cursor = self.tx.cursor_read::<ProofWindow>()?;
@@ -675,16 +675,15 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
 
         let mut trie_updates = TrieUpdates::default();
         for key in change_set.account_trie_keys {
-            let entry =
-                match account_trie_cursor.seek_by_key_subkey(key.clone(), block_number)? {
-                    Some(v) if v.block_number == block_number => v.value.0,
-                    _ => {
-                        return Err(OpProofsStorageError::MissingAccountTrieHistory(
-                            key.0,
-                            block_number,
-                        ))
-                    }
-                };
+            let entry = match account_trie_cursor.seek_by_key_subkey(key.clone(), block_number)? {
+                Some(v) if v.block_number == block_number => v.value.0,
+                _ => {
+                    return Err(OpProofsStorageError::MissingAccountTrieHistory(
+                        key.0,
+                        block_number,
+                    ));
+                }
+            };
 
             if let Some(value) = entry {
                 trie_updates.account_nodes.insert(key.0, value);
@@ -694,17 +693,16 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         }
 
         for key in change_set.storage_trie_keys {
-            let entry =
-                match storage_trie_cursor.seek_by_key_subkey(key.clone(), block_number)? {
-                    Some(v) if v.block_number == block_number => v.value.0,
-                    _ => {
-                        return Err(OpProofsStorageError::MissingStorageTrieHistory(
-                            key.hashed_address,
-                            key.path.0,
-                            block_number,
-                        ))
-                    }
-                };
+            let entry = match storage_trie_cursor.seek_by_key_subkey(key.clone(), block_number)? {
+                Some(v) if v.block_number == block_number => v.value.0,
+                _ => {
+                    return Err(OpProofsStorageError::MissingStorageTrieHistory(
+                        key.hashed_address,
+                        key.path.0,
+                        block_number,
+                    ));
+                }
+            };
 
             let stu = trie_updates
                 .storage_tries
@@ -718,8 +716,7 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
             }
         }
 
-        let mut post_state =
-            HashedPostState::with_capacity(change_set.hashed_account_keys.len());
+        let mut post_state = HashedPostState::with_capacity(change_set.hashed_account_keys.len());
         for key in change_set.hashed_account_keys {
             let entry = match hashed_account_cursor.seek_by_key_subkey(key, block_number)? {
                 Some(v) if v.block_number == block_number => v.value.0,
@@ -727,7 +724,7 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
                     return Err(OpProofsStorageError::MissingHashedAccountHistory(
                         key,
                         block_number,
-                    ))
+                    ));
                 }
             };
 
@@ -735,17 +732,16 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
         }
 
         for key in change_set.hashed_storage_keys {
-            let entry =
-                match hashed_storage_cursor.seek_by_key_subkey(key.clone(), block_number)? {
-                    Some(v) if v.block_number == block_number => v.value.0,
-                    _ => {
-                        return Err(OpProofsStorageError::MissingHashedStorageHistory {
-                            hashed_address: key.hashed_address,
-                            hashed_storage_key: key.hashed_storage_key,
-                            block_number,
-                        })
-                    }
-                };
+            let entry = match hashed_storage_cursor.seek_by_key_subkey(key.clone(), block_number)? {
+                Some(v) if v.block_number == block_number => v.value.0,
+                _ => {
+                    return Err(OpProofsStorageError::MissingHashedStorageHistory {
+                        hashed_address: key.hashed_address,
+                        hashed_storage_key: key.hashed_storage_key,
+                        block_number,
+                    });
+                }
+            };
 
             let hs = post_state.storages.entry(key.hashed_address).or_default();
 
@@ -763,7 +759,9 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
     }
 }
 
-impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw for MdbxProofsProvider<TX> {
+impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
+    for MdbxProofsProvider<TX>
+{
     fn store_trie_updates(
         &self,
         block_ref: BlockWithParent,
@@ -778,8 +776,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw for 
     ) -> OpProofsStorageResult<WriteCounts> {
         let mut total_counts = WriteCounts::default();
         for (block_ref, block_state_diff) in updates {
-            let counts =
-                self.store_trie_updates_append_only_inner(block_ref, block_state_diff)?;
+            let counts = self.store_trie_updates_append_only_inner(block_ref, block_state_diff)?;
 
             total_counts.account_trie_updates_written_total +=
                 counts.account_trie_updates_written_total;
@@ -809,13 +806,11 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw for 
         let st_deleted =
             self.prune_history_preceding::<StorageTrieHistory, _>(plan.storage_survivors)?;
 
-        let ha_deleted = self.prune_history_preceding::<HashedAccountHistory, _>(
-            plan.hashed_acc_survivors,
-        )?;
+        let ha_deleted =
+            self.prune_history_preceding::<HashedAccountHistory, _>(plan.hashed_acc_survivors)?;
 
-        let hs_deleted = self.prune_history_preceding::<HashedStorageHistory, _>(
-            plan.hashed_storage_survivors,
-        )?;
+        let hs_deleted =
+            self.prune_history_preceding::<HashedStorageHistory, _>(plan.hashed_storage_survivors)?;
 
         let counts = WriteCounts {
             account_trie_updates_written_total: acc_deleted,
@@ -831,10 +826,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw for 
             walker.delete_current()?;
         }
 
-        self.set_earliest_block_number_inner(
-            target_block,
-            new_earliest_block_ref.block.hash,
-        )?;
+        self.set_earliest_block_number_inner(target_block, new_earliest_block_ref.block.hash)?;
 
         Ok(counts)
     }
@@ -857,13 +849,9 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw for 
 
         self.delete_history_ranged(to.block.number.., history_to_delete)?;
 
-        let new_latest_block =
-            BlockNumberHash::new(to.block.number.saturating_sub(1), to.parent);
+        let new_latest_block = BlockNumberHash::new(to.block.number.saturating_sub(1), to.parent);
 
-        self.set_latest_block_number_inner(
-            new_latest_block.number(),
-            *new_latest_block.hash(),
-        )?;
+        self.set_latest_block_number_inner(new_latest_block.number(), *new_latest_block.hash())?;
 
         Ok(())
     }
@@ -878,10 +866,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw for 
         let history_to_delete = self.collect_history_ranged(latest_common_block.number + 1..)?;
         self.delete_history_ranged(latest_common_block.number + 1.., history_to_delete)?;
 
-        self.set_latest_block_number_inner(
-            latest_common_block.number,
-            latest_common_block.hash,
-        )?;
+        self.set_latest_block_number_inner(latest_common_block.number, latest_common_block.hash)?;
 
         for (block_with_parent, diff) in blocks_to_add {
             self.store_trie_updates_append_only_inner(block_with_parent, diff)?;
@@ -903,7 +888,9 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw for 
     }
 }
 
-impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider for MdbxProofsProvider<TX> {
+impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
+    for MdbxProofsProvider<TX>
+{
     fn initial_state_anchor(&self) -> OpProofsStorageResult<InitialStateAnchor> {
         let Some(block) = self.get_initial_state_anchor_inner()? else {
             return Ok(InitialStateAnchor::default());
@@ -948,27 +935,25 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider fo
         storage_nodes: Vec<(Nibbles, Option<BranchNodeCompact>)>,
     ) -> OpProofsStorageResult<()> {
         if storage_nodes.is_empty() {
-             return Ok(());
+            return Ok(());
         }
         self.persist_history_batch(
-             0,
-             storage_nodes
-                .into_iter()
-                .map(|(key, val)| (hashed_address, key, val)),
-             true,
+            0,
+            storage_nodes.into_iter().map(|(key, val)| (hashed_address, key, val)),
+            true,
         )?;
         Ok(())
-   }
+    }
 
     fn store_hashed_accounts(
         &self,
         accounts: Vec<(B256, Option<Account>)>,
     ) -> OpProofsStorageResult<()> {
-         if accounts.is_empty() {
-             return Ok(());
-         }
-         self.persist_history_batch(0, accounts.into_iter(), true)?;
-         Ok(())
+        if accounts.is_empty() {
+            return Ok(());
+        }
+        self.persist_history_batch(0, accounts.into_iter(), true)?;
+        Ok(())
     }
 
     fn store_hashed_storages(
@@ -977,27 +962,25 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider fo
         storages: Vec<(B256, U256)>,
     ) -> OpProofsStorageResult<()> {
         if storages.is_empty() {
-             return Ok(());
+            return Ok(());
         }
         self.persist_history_batch(
-             0,
-             storages
-                .into_iter()
-                .map(|(key, val)| (hashed_address, key, Some(StorageValue(val)))),
-             true,
+            0,
+            storages.into_iter().map(|(key, val)| (hashed_address, key, Some(StorageValue(val)))),
+            true,
         )?;
         Ok(())
     }
 
     fn commit_initial_state(&self) -> OpProofsStorageResult<BlockNumHash> {
-         let anchor = self.get_initial_state_anchor_inner()?.ok_or(NoBlocksFound)?;
-         self.set_earliest_block_number_inner(anchor.number, anchor.hash)?;
-         Ok(anchor)
+        let anchor = self.get_initial_state_anchor_inner()?.ok_or(NoBlocksFound)?;
+        self.set_earliest_block_number_inner(anchor.number, anchor.hash)?;
+        Ok(anchor)
     }
 
     fn commit(self) -> OpProofsStorageResult<()> {
-         self.tx.commit()?;
-         Ok(())
+        self.tx.commit()?;
+        Ok(())
     }
 }
 
@@ -1040,7 +1023,8 @@ impl reth_db::database_metrics::DatabaseMetrics for MdbxProofsStorage {
             .env
             .view(|tx| {
                 for table in Tables::ALL.iter().map(Tables::name) {
-                    let table_db = tx.inner().open_db(Some(table)).wrap_err("Could not open db.")?;
+                    let table_db =
+                        tx.inner().open_db(Some(table)).wrap_err("Could not open db.")?;
 
                     let stats = tx
                         .inner()
@@ -1107,27 +1091,26 @@ impl reth_db::database_metrics::DatabaseMetrics for MdbxProofsStorage {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
         OpProofsInitProvider, OpProofsProviderRO, OpProofsProviderRw,
         db::{
-            models::{AccountTrieHistory, StorageTrieHistory},
             StorageTrieKey,
-        }
+            models::{AccountTrieHistory, StorageTrieHistory},
+        },
     };
     use alloy_eips::NumHash;
     use alloy_primitives::B256;
     use reth_db::{
+        DatabaseError,
         cursor::DbDupCursorRO,
         transaction::{DbTx, DbTxMut},
-        DatabaseError,
     };
     use reth_trie::{
-        updates::{StorageTrieUpdates, TrieUpdatesSorted},
         BranchNodeCompact, HashedPostStateSorted, HashedStorage, Nibbles, StoredNibbles,
+        updates::{StorageTrieUpdates, TrieUpdatesSorted},
     };
     use tempfile::TempDir;
 
@@ -1212,24 +1195,17 @@ mod tests {
             Ok(counts)
         }
 
-        fn fetch_trie_updates(
-            &self,
-            block_number: u64,
-        ) -> OpProofsStorageResult<BlockStateDiff> {
+        fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
             let provider = self.provider_ro()?;
             provider.fetch_trie_updates(block_number)
         }
 
-        fn get_earliest_block_number(
-            &self,
-        ) -> OpProofsStorageResult<Option<(u64, B256)>> {
+        fn get_earliest_block_number(&self) -> OpProofsStorageResult<Option<(u64, B256)>> {
             let provider = self.provider_ro()?;
             provider.get_earliest_block_number()
         }
 
-        fn get_latest_block_number(
-            &self,
-        ) -> OpProofsStorageResult<Option<(u64, B256)>> {
+        fn get_latest_block_number(&self) -> OpProofsStorageResult<Option<(u64, B256)>> {
             let provider = self.provider_ro()?;
             provider.get_latest_block_number()
         }
@@ -1244,10 +1220,7 @@ mod tests {
             OpProofsProviderRw::commit(provider)
         }
 
-        fn unwind_history(
-            &self,
-            to: BlockWithParent,
-        ) -> OpProofsStorageResult<()> {
+        fn unwind_history(&self, to: BlockWithParent) -> OpProofsStorageResult<()> {
             let provider = self.provider_rw()?;
             provider.unwind_history(to)?;
             OpProofsProviderRw::commit(provider)
@@ -3612,21 +3585,30 @@ mod tests {
 
         // Verify storage history
         let mut storage_cur = tx.new_cursor::<HashedStorageHistory>().expect("cursor");
-        assert!(storage_cur
-            .seek_by_key_subkey(HashedStorageKey::new(addr1, slot1), 1)
-            .unwrap()
-            .is_some());
-        assert!(storage_cur
-            .seek_by_key_subkey(HashedStorageKey::new(addr2, slot2), 2)
-            .unwrap()
-            .is_none());
+        assert!(
+            storage_cur
+                .seek_by_key_subkey(HashedStorageKey::new(addr1, slot1), 1)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            storage_cur
+                .seek_by_key_subkey(HashedStorageKey::new(addr2, slot2), 2)
+                .unwrap()
+                .is_none()
+        );
 
         // Verify storage trie history
         let mut storage_trie_cur = tx.cursor_dup_read::<StorageTrieHistory>().expect("cursor");
-        assert!(storage_trie_cur
-            .seek_by_key_subkey(StorageTrieKey::new(addr1, StoredNibbles::from(storage_path1)), 1)
-            .unwrap()
-            .is_some());
+        assert!(
+            storage_trie_cur
+                .seek_by_key_subkey(
+                    StorageTrieKey::new(addr1, StoredNibbles::from(storage_path1)),
+                    1
+                )
+                .unwrap()
+                .is_some()
+        );
 
         // Verify ProofWindow LatestBlock is updated
         let mut proof_window_cur = tx.cursor_read::<ProofWindow>().expect("cursor");
@@ -3764,10 +3746,7 @@ mod tests {
         store
             .store_hashed_storages(
                 addr,
-                vec![
-                    (old_slot, U256::from(100u64)),
-                    (shared_slot, U256::from(200u64)),
-                ],
+                vec![(old_slot, U256::from(100u64)), (shared_slot, U256::from(200u64))],
             )
             .expect("seed");
 
@@ -3791,29 +3770,23 @@ mod tests {
         let mut cur = tx.new_cursor::<HashedStorageHistory>().expect("cursor");
 
         let key_old = HashedStorageKey::new(addr, old_slot);
-        let vv = cur
-            .seek_by_key_subkey(key_old, BLOCK.block.number)
-            .expect("seek")
-            .expect("exists");
+        let vv =
+            cur.seek_by_key_subkey(key_old, BLOCK.block.number).expect("seek").expect("exists");
         assert_eq!(vv.block_number, BLOCK.block.number);
         assert!(vv.value.0.is_none(), "old_slot should be tombstoned");
 
         // Verify: shared_slot has the NEW value (not tombstone)
         let key_shared = HashedStorageKey::new(addr, shared_slot);
-        let vv = cur
-            .seek_by_key_subkey(key_shared, BLOCK.block.number)
-            .expect("seek")
-            .expect("exists");
+        let vv =
+            cur.seek_by_key_subkey(key_shared, BLOCK.block.number).expect("seek").expect("exists");
         assert_eq!(vv.block_number, BLOCK.block.number);
         let inner = vv.value.0.as_ref().expect("should have value, not tombstone");
         assert_eq!(inner.0, U256::from(999u64), "shared_slot should have new value");
 
         // Verify: new_slot has the new value
         let key_new = HashedStorageKey::new(addr, new_slot);
-        let vv = cur
-            .seek_by_key_subkey(key_new, BLOCK.block.number)
-            .expect("seek")
-            .expect("exists");
+        let vv =
+            cur.seek_by_key_subkey(key_new, BLOCK.block.number).expect("seek").expect("exists");
         assert_eq!(vv.block_number, BLOCK.block.number);
         let inner = vv.value.0.as_ref().expect("should have value");
         assert_eq!(inner.0, U256::from(888u64), "new_slot should have new value");
@@ -3833,8 +3806,7 @@ mod tests {
         let shared_path = Nibbles::from_nibbles_unchecked([0x0A, 0x0B]);
         let new_path = Nibbles::from_nibbles_unchecked([0x0F, 0x0F]);
         let n_old = BranchNodeCompact::new(0b1, 0, 0, vec![], Some(B256::repeat_byte(0x01)));
-        let n_shared_old =
-            BranchNodeCompact::new(0b1, 0, 0, vec![], Some(B256::repeat_byte(0x02)));
+        let n_shared_old = BranchNodeCompact::new(0b1, 0, 0, vec![], Some(B256::repeat_byte(0x02)));
         let n_shared_new = BranchNodeCompact::default();
         let n_new = BranchNodeCompact::default();
 
@@ -3842,10 +3814,7 @@ mod tests {
         store
             .store_storage_branches(
                 addr,
-                vec![
-                    (old_path, Some(n_old)),
-                    (shared_path, Some(n_shared_old)),
-                ],
+                vec![(old_path, Some(n_old)), (shared_path, Some(n_shared_old))],
             )
             .expect("seed");
 
@@ -3870,32 +3839,23 @@ mod tests {
 
         // old_path should be tombstoned
         let key_old = StorageTrieKey::new(addr, StoredNibbles::from(old_path));
-        let vv = cur
-            .seek_by_key_subkey(key_old, BLOCK.block.number)
-            .expect("seek")
-            .expect("exists");
+        let vv =
+            cur.seek_by_key_subkey(key_old, BLOCK.block.number).expect("seek").expect("exists");
         assert_eq!(vv.block_number, BLOCK.block.number);
         assert!(vv.value.0.is_none(), "old_path should be tombstoned");
 
         // shared_path should have the NEW node (not tombstone)
         let key_shared = StorageTrieKey::new(addr, StoredNibbles::from(shared_path));
-        let vv = cur
-            .seek_by_key_subkey(key_shared, BLOCK.block.number)
-            .expect("seek")
-            .expect("exists");
+        let vv =
+            cur.seek_by_key_subkey(key_shared, BLOCK.block.number).expect("seek").expect("exists");
         assert_eq!(vv.block_number, BLOCK.block.number);
-        assert!(
-            vv.value.0.is_some(),
-            "shared_path should have new node, not tombstone"
-        );
+        assert!(vv.value.0.is_some(), "shared_path should have new node, not tombstone");
         assert_eq!(vv.value.0.unwrap(), n_shared_new);
 
         // new_path should have the new node
         let key_new = StorageTrieKey::new(addr, StoredNibbles::from(new_path));
-        let vv = cur
-            .seek_by_key_subkey(key_new, BLOCK.block.number)
-            .expect("seek")
-            .expect("exists");
+        let vv =
+            cur.seek_by_key_subkey(key_new, BLOCK.block.number).expect("seek").expect("exists");
         assert_eq!(vv.block_number, BLOCK.block.number);
         assert!(vv.value.0.is_some(), "new_path should have new node");
         assert_eq!(vv.value.0.unwrap(), n_new);

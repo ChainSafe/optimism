@@ -6,7 +6,9 @@ use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, Environ
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
-use reth_optimism_trie::{OpProofsStore, OpProofsProviderRO, OpProofsProviderRw, db::MdbxProofsStorage};
+use reth_optimism_trie::{
+    OpProofsProviderRO, OpProofsProviderRw, OpProofsStore, db::MdbxProofsStorage,
+};
 use reth_provider::{BlockReader, TransactionVariant};
 use std::{path::PathBuf, sync::Arc};
 use tracing::{info, warn};

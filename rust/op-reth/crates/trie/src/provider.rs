@@ -1,11 +1,11 @@
 //! Provider for external proofs storage
 
 use crate::{
+    OpProofsProviderRO, OpProofsStorageError,
     proof::{
         DatabaseProof, DatabaseStateRoot, DatabaseStorageProof, DatabaseStorageRoot,
         DatabaseTrieWitness,
     },
-    OpProofsProviderRO, OpProofsStorageError,
 };
 use alloy_primitives::keccak256;
 use derive_more::Constructor;
@@ -16,17 +16,17 @@ use reth_provider::{
 };
 use reth_revm::{
     db::BundleState,
-    primitives::{alloy_primitives::BlockNumber, Address, Bytes, StorageValue, B256},
+    primitives::{Address, B256, Bytes, StorageValue, alloy_primitives::BlockNumber},
 };
 use reth_trie::{
+    StateRoot, StorageRoot,
     hashed_cursor::HashedCursor,
     proof::{self, Proof},
     witness::TrieWitness,
-    StateRoot, StorageRoot,
 };
 use reth_trie_common::{
-    updates::TrieUpdates, AccountProof, HashedPostState, HashedStorage, KeccakKeyHasher,
-    MultiProof, MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
+    AccountProof, HashedPostState, HashedStorage, KeccakKeyHasher, MultiProof, MultiProofTargets,
+    StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
 use std::fmt::Debug;
 
@@ -80,30 +80,18 @@ where
     P: OpProofsProviderRO + Clone,
 {
     fn state_root(&self, state: HashedPostState) -> ProviderResult<B256> {
-        Ok(StateRoot::overlay_root(
-            self.provider.clone(),
-            self.block_number,
-            state,
-        )?)
+        Ok(StateRoot::overlay_root(self.provider.clone(), self.block_number, state)?)
     }
 
     fn state_root_from_nodes(&self, input: TrieInput) -> ProviderResult<B256> {
-        Ok(StateRoot::overlay_root_from_nodes(
-            self.provider.clone(),
-            self.block_number,
-            input,
-        )?)
+        Ok(StateRoot::overlay_root_from_nodes(self.provider.clone(), self.block_number, input)?)
     }
 
     fn state_root_with_updates(
         &self,
         state: HashedPostState,
     ) -> ProviderResult<(B256, TrieUpdates)> {
-        Ok(StateRoot::overlay_root_with_updates(
-            self.provider.clone(),
-            self.block_number,
-            state,
-        )?)
+        Ok(StateRoot::overlay_root_with_updates(self.provider.clone(), self.block_number, state)?)
     }
 
     fn state_root_from_nodes_with_updates(
@@ -243,8 +231,7 @@ impl<'a, P> BytecodeReader for OpProofsStateProviderRef<'a, P> {
 #[cfg(all(test, not(feature = "metrics")))]
 mod tests {
     use super::*;
-    use crate::api::OpProofsStore;
-    use crate::InMemoryProofsStorage;
+    use crate::{InMemoryProofsStorage, api::OpProofsStore};
     use reth_provider::noop::NoopProvider;
 
     #[test]

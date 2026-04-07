@@ -1,4 +1,4 @@
-//! Implements [`TrieCursorFactory`] and [`HashedCursorFactory`] for [`OpProofsStore`] types.
+//! Implements [`TrieCursorFactory`] and [`HashedCursorFactory`] for [`crate::OpProofsStore`] types.
 
 use crate::{
     api::OpProofsProviderRO,
@@ -84,7 +84,9 @@ where
 
     fn hashed_account_cursor(&self) -> Result<Self::AccountCursor<'_>, DatabaseError> {
         Ok(OpProofsHashedAccountCursor::new(
-            self.provider.account_hashed_cursor(self.block_number).map_err(Into::<DatabaseError>::into)?,
+            self.provider
+                .account_hashed_cursor(self.block_number)
+                .map_err(Into::<DatabaseError>::into)?,
         ))
     }
 

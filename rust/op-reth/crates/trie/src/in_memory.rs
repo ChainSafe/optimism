@@ -1,14 +1,14 @@
 //! In-memory implementation of [`OpProofsStore`] for testing purposes
 
 use crate::{
+    BlockStateDiff, OpProofsStorageError, OpProofsStorageResult, OpProofsStore,
     api::{
         InitialStateAnchor, InitialStateStatus, OpProofsInitProvider, OpProofsProviderRO,
         OpProofsProviderRw, WriteCounts,
     },
     db::{HashedStorageKey, StorageTrieKey},
-    BlockStateDiff, OpProofsStorageError, OpProofsStorageResult, OpProofsStore,
 };
-use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
+use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
 use alloy_primitives::{B256, U256};
 use parking_lot::RwLock;
 use reth_db::DatabaseError;
@@ -18,7 +18,7 @@ use reth_trie::{
     trie_cursor::{TrieCursor, TrieStorageCursor},
 };
 use reth_trie_common::{
-    updates::TrieUpdatesSorted, BranchNodeCompact, HashedPostStateSorted, Nibbles, StoredNibbles,
+    BranchNodeCompact, HashedPostStateSorted, Nibbles, StoredNibbles, updates::TrieUpdatesSorted,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -370,11 +370,7 @@ impl InMemoryStorageCursor {
             .into_iter()
             .filter_map(
                 |(slot, (_, value))| {
-                    if value.is_zero() {
-                        None
-                    } else {
-                        Some((slot, value))
-                    }
+                    if value.is_zero() { None } else { Some((slot, value)) }
                 },
             )
             .collect();
@@ -899,7 +895,9 @@ mod tests {
         let account = Account { nonce: 1, balance: U256::from(100), bytecode_hash: None };
         let hashed_address = B256::random();
 
-        storage.initialization_provider()?.store_hashed_accounts(vec![(hashed_address, Some(account))])?;
+        storage
+            .initialization_provider()?
+            .store_hashed_accounts(vec![(hashed_address, Some(account))])?;
 
         let _cursor = storage.provider_ro()?.account_hashed_cursor(10)?;
         // Note: cursor testing would require more complex setup with proper seek/next operations

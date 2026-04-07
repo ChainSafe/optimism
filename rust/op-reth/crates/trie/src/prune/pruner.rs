@@ -182,7 +182,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlockStateDiff, OpProofsStore, api::{OpProofsProviderRO, OpProofsProviderRw}, db::MdbxProofsStorage};
+    use crate::{
+        BlockStateDiff, OpProofsStore,
+        api::{OpProofsProviderRO, OpProofsProviderRw},
+        db::MdbxProofsStorage,
+    };
     use alloy_eips::{BlockHashOrNumber, NumHash};
     use alloy_primitives::{B256, BlockNumber, U256};
     use mockall::mock;
@@ -474,7 +478,8 @@ mod tests {
         let mut acc_cur = provider_ro.account_hashed_cursor(4).expect("acc cur");
         let mut stor_cur = provider_ro.storage_hashed_cursor(stor_addr, 4).expect("stor cur");
         let mut acc_trie_cur = provider_ro.account_trie_cursor(4).expect("acc trie cur");
-        let mut stor_trie_cur = provider_ro.storage_trie_cursor(stor_addr, 4).expect("stor trie cur");
+        let mut stor_trie_cur =
+            provider_ro.storage_trie_cursor(stor_addr, 4).expect("stor trie cur");
 
         // Check these histories have been removed
         let pruned_hashed_account = a1;

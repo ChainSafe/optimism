@@ -15,7 +15,7 @@ use reth_execution_types::Chain;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
-    OpProofStoragePrunerTask, OpProofsStorage, OpProofsProviderRO, OpProofsStore,
+    OpProofStoragePrunerTask, OpProofsProviderRO, OpProofsStorage, OpProofsStore,
     live::LiveTrieCollector,
 };
 use reth_provider::{BlockNumReader, BlockReader, TransactionVariant};
@@ -647,7 +647,7 @@ mod tests {
     use reth_ethereum_primitives::{Block, Receipt};
     use reth_execution_types::{Chain, ExecutionOutcome};
     use reth_optimism_trie::{
-        BlockStateDiff, OpProofsStorage, OpProofsProviderRO, OpProofsProviderRw, OpProofsStore,
+        BlockStateDiff, OpProofsProviderRO, OpProofsProviderRw, OpProofsStorage, OpProofsStore,
         db::MdbxProofsStorage,
     };
 
@@ -1027,10 +1027,7 @@ mod tests {
         for i in 1..1100 {
             let p = proofs.provider_rw().expect("provider_rw");
             p.store_trie_updates(
-                BlockWithParent::new(
-                    hash_for_num(i - 1),
-                    BlockNumHash::new(i, hash_for_num(i)),
-                ),
+                BlockWithParent::new(hash_for_num(i - 1), BlockNumHash::new(i, hash_for_num(i))),
                 BlockStateDiff::default(),
             )
             .expect("store trie update");

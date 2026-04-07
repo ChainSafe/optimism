@@ -316,11 +316,8 @@ where
     }
 
     async fn proofs_sync_status(&self) -> RpcResult<ProofsSyncStatus> {
-        let provider_ro = self
-            .inner
-            .storage
-            .provider_ro()
-            .map_err(|err| internal_rpc_err(err.to_string()))?;
+        let provider_ro =
+            self.inner.storage.provider_ro().map_err(|err| internal_rpc_err(err.to_string()))?;
         let earliest = provider_ro
             .get_earliest_block_number()
             .map_err(|err| internal_rpc_err(err.to_string()))?;
