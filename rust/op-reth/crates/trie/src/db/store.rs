@@ -97,12 +97,12 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
         Ok(value.map(|(_, val)| (val.number(), *val.hash())))
     }
 
-    fn get_latest_block_number_hash_inner(&self) -> OpProofsStorageResult<Option<(u64, B256)>> {
-        let block = self.get_block_number_hash_inner(ProofWindowKey::LatestBlock)?;
-        if block.is_some() {
+    fn get_latest_block_number_hash_inner(&self) -> OpProofsStorageResult<(u64, B256)> {
+        if let Some(block) = self.get_block_number_hash_inner(ProofWindowKey::LatestBlock)? {
             return Ok(block);
         }
-        self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)
+        self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?
+            .ok_or(NoBlocksFound)
     }
 
     /// Phase 1 of pruning: Calculate survivors.
@@ -111,7 +111,7 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
         let Some((earliest, _)) =
             self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?
         else {
-            return Ok(None);
+            return Err(NoBlocksFound);
         };
         if earliest >= target_block {
             return Ok(None);
@@ -127,30 +127,10 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
         let mut walker = cs_cursor.walk_range(range)?;
 
         while let Some(Ok((block_number, cs))) = walker.next() {
-            for k in cs.account_trie_keys {
-                acc_candidates
-                    .entry(k)
-                    .and_modify(|curr| *curr = (*curr).max(block_number))
-                    .or_insert(block_number);
-            }
-            for k in cs.storage_trie_keys {
-                storage_candidates
-                    .entry(k)
-                    .and_modify(|curr| *curr = (*curr).max(block_number))
-                    .or_insert(block_number);
-            }
-            for k in cs.hashed_account_keys {
-                hashed_acc_candidates
-                    .entry(k)
-                    .and_modify(|curr| *curr = (*curr).max(block_number))
-                    .or_insert(block_number);
-            }
-            for k in cs.hashed_storage_keys {
-                hashed_storage_candidates
-                    .entry(k)
-                    .and_modify(|curr| *curr = (*curr).max(block_number))
-                    .or_insert(block_number);
-            }
+            Self::track_latest(&mut acc_candidates, cs.account_trie_keys, block_number);
+            Self::track_latest(&mut storage_candidates, cs.storage_trie_keys, block_number);
+            Self::track_latest(&mut hashed_acc_candidates, cs.hashed_account_keys, block_number);
+            Self::track_latest(&mut hashed_storage_candidates, cs.hashed_storage_keys, block_number);
         }
 
         Ok(Some(PrunePlan {
@@ -160,6 +140,21 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
             hashed_acc_survivors: Self::flatten_and_sort(hashed_acc_candidates),
             hashed_storage_survivors: Self::flatten_and_sort(hashed_storage_candidates),
         }))
+    }
+
+    /// Records the latest block number for each key in a candidate map.
+    /// Used during prune planning to identify survivor versions.
+    fn track_latest<K: Eq + std::hash::Hash>(
+        candidates: &mut HashMap<K, u64>,
+        keys: impl IntoIterator<Item = K>,
+        block_number: u64,
+    ) {
+        for k in keys {
+            candidates
+                .entry(k)
+                .and_modify(|curr| *curr = (*curr).max(block_number))
+                .or_insert(block_number);
+        }
     }
 
     /// Helper to flatten `HashMap` into a sorted Vector of survivors.
@@ -535,10 +530,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
      ) -> OpProofsStorageResult<WriteCounts> {
          let block_number = block_ref.block.number;
 
-         let latest_block_hash = match self.get_latest_block_number_hash_inner()? {
-             Some((_num, hash)) => hash,
-             None => B256::ZERO,
-         };
+         let (_num, latest_block_hash) = self.get_latest_block_number_hash_inner()?;
 
          if latest_block_hash != block_ref.parent {
              return Err(OpProofsStorageError::OutOfOrder {
@@ -564,12 +556,12 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
          })
      }
 
-    fn get_proof_window_inner(&self) -> OpProofsStorageResult<Option<ProofWindowValue>> {
+    fn get_proof_window_inner(&self) -> OpProofsStorageResult<ProofWindowValue> {
         let mut cursor = self.tx.cursor_read::<ProofWindow>()?;
 
         let earliest = match cursor.seek_exact(ProofWindowKey::EarliestBlock)? {
             Some((_, val)) => NumHash::new(val.number(), *val.hash()),
-            None => return Ok(None),
+            None => return Err(NoBlocksFound),
         };
 
         let latest = match cursor.seek_exact(ProofWindowKey::LatestBlock)? {
@@ -577,7 +569,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProvider<TX> {
             None => earliest,
         };
 
-        Ok(Some(ProofWindowValue { earliest, latest }))
+        Ok(ProofWindowValue { earliest, latest })
     }
 
     fn get_initial_state_anchor_inner(&self) -> OpProofsStorageResult<Option<BlockNumHash>> {
@@ -850,10 +842,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw for 
     fn unwind_history(&self, to: BlockWithParent) -> OpProofsStorageResult<()> {
         let history_to_delete = self.collect_history_ranged(to.block.number..)?;
 
-        let proof_window = match self.get_proof_window_inner()? {
-            Some(pw) => pw,
-            None => return Ok(()),
-        };
+        let proof_window = self.get_proof_window_inner()?;
 
         if to.block.number > proof_window.latest.number {
             return Ok(());
