@@ -73,12 +73,16 @@ fn create_test_account_with_values(nonce: u64, balance: u64, code_hash_byte: u8)
 
 fn create_mdbx_proofs_storage() -> MdbxProofsStorage {
     let path = TempDir::new().unwrap();
-    MdbxProofsStorage::new(path.path()).unwrap()
+    let storage = MdbxProofsStorage::new(path.path()).unwrap();
+    let provider = storage.provider_rw().unwrap();
+    provider.set_earliest_block_number(0, B256::ZERO).unwrap();
+    OpProofsProviderRw::commit(provider).unwrap();
+    storage
 }
 
 /// Test basic storage and retrieval of earliest block number
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
-#[test_case(create_mdbx_proofs_storage(); "Mdbx")]
+#[test_case(MdbxProofsStorage::new(TempDir::new().unwrap().path()).unwrap(); "Mdbx")]
 #[serial]
 fn test_earliest_block_operations<S: OpProofsStore>(
     storage: S,

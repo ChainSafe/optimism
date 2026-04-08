@@ -1634,6 +1634,7 @@ mod tests {
     fn test_store_trie_updates_comprehensive() {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         // Sample block number
         const BLOCK: BlockWithParent =
@@ -1842,6 +1843,7 @@ mod tests {
     fn store_trie_updates_multiple_blocks_append_versions() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         let addr = B256::from([0x21; 32]);
         // block A (parent = ZERO)
@@ -1881,6 +1883,7 @@ mod tests {
     fn test_store_trie_updates_empty_collections() {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         const BLOCK: BlockWithParent =
             BlockWithParent::new(B256::ZERO, NumHash::new(42, B256::ZERO));
@@ -1927,7 +1930,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
 
-        let block = BlockWithParent::new(B256::ZERO, NumHash::new(1, B256::random()));
+        let parent_hash = B256::random();
+        store.set_earliest_block_number(0, parent_hash).expect("set earliest");
+
+        let block = BlockWithParent::new(parent_hash, NumHash::new(1, B256::random()));
         let diff = BlockStateDiff::default();
 
         store.store_trie_updates(block, diff).expect("store");
@@ -2195,6 +2201,7 @@ mod tests {
     fn fetch_trie_updates_basic() {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         // Build a block with mixed changes (accounts, trie nodes, hashed storages)
         let block = BlockWithParent::new(B256::ZERO, NumHash::new(1, B256::random()));
@@ -2849,14 +2856,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
 
-        // Earliest not set
+        // Pruning an uninitialized store (no earliest block set) returns NoBlocksFound.
         let target = BlockWithParent::new(B256::random(), NumHash::new(5, B256::random()));
 
-        let counts = store.prune_earliest_state(target).unwrap();
-        assert_eq!(counts, WriteCounts::default());
-
-        // Check earliest is still None
-        assert_eq!(store.get_earliest_block_number().unwrap(), None);
+        let result = store.prune_earliest_state(target);
+        assert!(
+            matches!(result, Err(OpProofsStorageError::NoBlocksFound)),
+            "expected NoBlocksFound, got {result:?}"
+        );
     }
 
     #[test]
@@ -2916,6 +2923,7 @@ mod tests {
     fn store_trie_updates_deleted_account_trie() {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         const BLOCK: BlockWithParent =
             BlockWithParent::new(B256::ZERO, NumHash::new(7, B256::ZERO));
@@ -2945,6 +2953,7 @@ mod tests {
     fn store_trie_updates_deleted_storage_trie() {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         const BLOCK: BlockWithParent =
             BlockWithParent::new(B256::ZERO, NumHash::new(8, B256::ZERO));
@@ -2979,6 +2988,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         let addr_wiped = B256::from([0x10; 32]);
         let addr_live = B256::from([0xF0; 32]);
@@ -3054,6 +3064,7 @@ mod tests {
     fn store_trie_updates_wiped_storage() {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         // We'll pre-seed storage at block 0, then issue a wipe at BLOCK.
         const BLOCK: BlockWithParent =
@@ -3105,6 +3116,7 @@ mod tests {
     fn store_trie_updates_wiped_and_non_wiped_mixed_order() {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         // Choose addresses so that wiped < non_wiped in sort order (your impl sorts by address)
         let addr_wiped = B256::from([0x01; 32]); // will sort first
@@ -3218,6 +3230,7 @@ mod tests {
     fn replace_updates_prunes_and_adds_new_chain() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         // Test address and helper to make diffs with distinct nonces.
         let addr = B256::from([0xAB; 32]);
@@ -3631,12 +3644,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
 
-        // Try to unwind when there's nothing stored yet
+        // Unwinding an empty chain (no proof window) returns NoBlocksFound.
         let unwind_to = BlockWithParent::new(B256::ZERO, NumHash::new(0, B256::ZERO));
         let result = store.unwind_history(unwind_to);
 
-        // Should succeed (no-op)
-        assert!(result.is_ok(), "Unwinding empty chain should succeed");
+        assert!(
+            matches!(result, Err(OpProofsStorageError::NoBlocksFound)),
+            "expected NoBlocksFound, got {result:?}"
+        );
     }
 
     #[test]
@@ -3736,6 +3751,7 @@ mod tests {
     fn store_trie_updates_wiped_storage_with_readd() {
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         let addr = B256::from([0x55; 32]);
         let old_slot = B256::from([0x01; 32]);
@@ -3800,6 +3816,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
+        store.set_earliest_block_number(0, B256::ZERO).expect("set earliest");
 
         let addr = B256::from([0x10; 32]);
         let old_path = Nibbles::from_nibbles_unchecked([0x01, 0x02]);
