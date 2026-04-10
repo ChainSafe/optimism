@@ -1,6 +1,7 @@
 use alloy_primitives::B256;
 use bytes::BufMut;
 use reth_codecs::Compact;
+use reth_codecs::DecompressError;
 use reth_db::{
     models::sharded_key::ShardedKey,
     table::{Compress, Decode, Decompress, Encode},
@@ -156,9 +157,9 @@ impl Compress for HashedAccountBeforeTx {
 }
 
 impl Decompress for HashedAccountBeforeTx {
-    fn decompress(value: &[u8]) -> Result<Self, DatabaseError> {
+    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.len() < 32 {
-            return Err(DatabaseError::Decode);
+            return Err(DecompressError::new(DatabaseError::Decode));
         }
 
         let hashed_address = B256::from_slice(&value[..32]);
@@ -205,7 +206,7 @@ impl Compress for TrieChangeSetsEntry {
 }
 
 impl Decompress for TrieChangeSetsEntry {
-    fn decompress(value: &[u8]) -> Result<Self, DatabaseError> {
+    fn decompress(value: &[u8]) -> Result<Self, DecompressError> {
         if value.is_empty() {
             return Ok(Self {
                 nibbles: StoredNibblesSubKey::from(reth_trie_common::Nibbles::default()),
