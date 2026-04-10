@@ -3,13 +3,8 @@
 use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
 use alloy_primitives::{B256, U256};
 use reth_optimism_trie::{
-<<<<<<< HEAD
     db::{MdbxProofsStorage, MdbxProofsStorageV2}, BlockStateDiff, InMemoryProofsStorage, OpProofsInitProvider,
     OpProofsStorageError, OpProofsStore, OpProofsProviderRO, OpProofsProviderRw
-=======
-    BlockStateDiff, InMemoryProofsStorage, OpProofsInitProvider, OpProofsProviderRO,
-    OpProofsProviderRw, OpProofsStorageError, OpProofsStore, db::MdbxProofsStorage,
->>>>>>> chore/proof-store-improvement
 };
 use reth_primitives_traits::Account;
 use reth_trie::{
@@ -87,17 +82,17 @@ fn create_mdbx_proofs_storage() -> MdbxProofsStorage {
 
 fn create_mdbx_proofs_storage_v2() -> MdbxProofsStorageV2 {
     let path = TempDir::new().unwrap();
-    MdbxProofsStorageV2::new(path.path()).unwrap()
+    let storage = MdbxProofsStorageV2::new(path.path()).unwrap();
+    let provider = storage.provider_rw().unwrap();
+    provider.set_earliest_block_number(0, B256::ZERO).unwrap();
+    OpProofsProviderRw::commit(provider).unwrap();
+    storage
 }
 
 /// Test basic storage and retrieval of earliest block number
 #[test_case(InMemoryProofsStorage::new(); "InMemory")]
-<<<<<<< HEAD
-#[test_case(create_mdbx_proofs_storage(); "Mdbx")]
-#[test_case(create_mdbx_proofs_storage_v2(); "MdbxV2")]
-=======
 #[test_case(MdbxProofsStorage::new(TempDir::new().unwrap().path()).unwrap(); "Mdbx")]
->>>>>>> chore/proof-store-improvement
+#[test_case(MdbxProofsStorageV2::new(TempDir::new().unwrap().path()).unwrap(); "MdbxV2")]
 #[serial]
 fn test_earliest_block_operations<S: OpProofsStore>(
     storage: S,

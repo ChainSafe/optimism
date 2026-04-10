@@ -25,6 +25,7 @@ use crate::{
             V2HashedStorages, V2HashedStoragesHistory, StorageTrieShardedKey, V2StoragesTrie,
             V2StorageTrieChangeSets, V2StoragesTrieHistory, TrieChangeSetsEntry,
         },
+        common::ProofWindowValue,
         HashedStorageKey, StorageTrieKey,
     },
     BlockStateDiff, OpProofsStorageError, OpProofsStorageResult,
@@ -228,12 +229,12 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
 
     fn get_proof_window_inner(
         &self,
-    ) -> OpProofsStorageResult<Option<(NumHash, NumHash)>> {
+    ) -> OpProofsStorageResult<ProofWindowValue> {
         let mut cursor = self.tx.cursor_read::<V2ProofWindow>()?;
 
         let earliest = match cursor.seek_exact(ProofWindowKey::EarliestBlock)? {
             Some((_, val)) => NumHash::new(val.number(), *val.hash()),
-            None => return Ok(None),
+            None => return Err(OpProofsStorageError::NoBlocksFound),
         };
 
         let latest = match cursor.seek_exact(ProofWindowKey::LatestBlock)? {
@@ -241,7 +242,7 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
             None => earliest,
         };
 
-        Ok(Some((earliest, latest)))
+        Ok(ProofWindowValue{ earliest, latest })
     }
 
     fn get_initial_state_anchor_inner(&self) -> OpProofsStorageResult<Option<BlockNumHash>> {
@@ -1078,85 +1079,45 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
     fn validate_block_order(
         &self,
         block_ref: &BlockWithParent,
-    ) -> OpProofsStorageResult<BlockNumber> {
+    ) -> OpProofsStorageResult<()> {
         let block_number = block_ref.block.number;
 
-        let latest_block_hash = match self.get_latest_block_number_hash_inner()? {
-            Some((_num, hash)) => hash,
-            None => B256::ZERO,
-        };
+        let proof_window = self.get_proof_window_inner()?;
 
-        if latest_block_hash != block_ref.parent {
+        if proof_window.latest.hash != block_ref.parent {
             return Err(OpProofsStorageError::OutOfOrder {
                 block_number,
                 parent_block_hash: block_ref.parent,
-                latest_block_hash,
+                latest_block_hash: proof_window.latest.hash,
             });
         }
 
-        Ok(block_number)
-    }
-
-    /// Store updates for a single block with out-of-order validation.
-    fn store_trie_updates_inner(
-        &self,
-        block_ref: BlockWithParent,
-        block_state_diff: BlockStateDiff,
-    ) -> OpProofsStorageResult<WriteCounts> {
-        let block_number = self.validate_block_order(&block_ref)?;
-
-        let mut collector = HistoryCollector::default();
-        let mut cursors = WriteCursors::new(&self.tx)?;
-        let counts = self.store_block_updates(block_number, block_state_diff, &mut collector, &mut cursors)?;
-        drop(cursors);
-        self.flush_collected_history(collector)?;
-
-        self.set_latest_block_number_inner(block_number, block_ref.block.hash)?;
-
-        Ok(counts)
+        Ok(())
     }
 
     /// Delete changeset entries for a block range.
     fn prune_changesets(&self, range: std::ops::RangeInclusive<u64>) -> OpProofsStorageResult<()> {
-        // Account trie changesets
-        {
-            let mut cursor = self.tx.cursor_write::<V2AccountTrieChangeSets>()?;
-            let mut walker = cursor.walk_range(range.clone())?;
-            while walker.next().is_some() {
-                walker.delete_current()?;
-            }
+        macro_rules! delete_range {
+            ($cursor:expr, $range:expr) => {{
+                let mut cursor = $cursor;
+                let mut walker = cursor.walk_range($range)?;
+                while walker.next().is_some() {
+                    walker.delete_current()?;
+                }
+            }};
         }
 
-        // Storage trie changesets
-        {
-            let mut cursor = self.tx.cursor_write::<V2StorageTrieChangeSets>()?;
-            let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
-            let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
-            let mut walker = cursor.walk_range(start..=end)?;
-            while walker.next().is_some() {
-                walker.delete_current()?;
-            }
-        }
+        // Tables keyed by (block_number, hashed_address)
+        let addr_range = BlockNumberHashedAddress((*range.start(), B256::ZERO))
+            ..=BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
 
-        // Account changesets
-        {
-            let mut cursor = self.tx.cursor_write::<V2HashedAccountChangeSets>()?;
-            let mut walker = cursor.walk_range(range.clone())?;
-            while walker.next().is_some() {
-                walker.delete_current()?;
-            }
-        }
+        // prune account trie and hashed accounts changesets by block range
+        delete_range!(self.tx.cursor_write::<V2AccountTrieChangeSets>()?, range.clone());
+        delete_range!(self.tx.cursor_write::<V2HashedAccountChangeSets>()?, range);
 
-        // Storage changesets
-        {
-            let mut cursor = self.tx.cursor_write::<V2HashedStorageChangeSets>()?;
-            let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
-            let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
-            let mut walker = cursor.walk_range(start..=end)?;
-            while walker.next().is_some() {
-                walker.delete_current()?;
-            }
-        }
+        // prune storage trie and hashed storages changesets by (block_number, hashed_address) range
+        delete_range!(self.tx.cursor_write::<V2StorageTrieChangeSets>()?, addr_range.clone());
+        delete_range!(self.tx.cursor_write::<V2HashedStorageChangeSets>()?, addr_range);
 
         Ok(())
     }
@@ -1304,6 +1265,196 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
 
         Ok(())
     }
+
+    /// Phase A: delete all account-trie changeset entries in `range`, returning the
+    /// set of nibble paths that were affected (used in Phase B for history pruning).
+    fn prune_account_trie_changesets(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        counts: &mut WriteCounts,
+    ) -> OpProofsStorageResult<BTreeSet<StoredNibbles>> {
+        let mut keys: BTreeSet<StoredNibbles> = BTreeSet::new();
+        let mut cursor = self.tx.cursor_dup_write::<V2AccountTrieChangeSets>()?;
+        let mut entry = cursor.seek(*range.start())?;
+        while let Some((block_num, first_val)) = entry {
+            if block_num > *range.end() {
+                break;
+            }
+            counts.account_trie_updates_written_total += 1;
+            keys.insert(StoredNibbles(first_val.nibbles.0));
+            while let Some((_, val)) = cursor.next_dup()? {
+                counts.account_trie_updates_written_total += 1;
+                keys.insert(StoredNibbles(val.nibbles.0));
+            }
+            cursor.delete_current_duplicates()?;
+            entry = cursor.current()?;
+        }
+        Ok(keys)
+    }
+
+    /// Phase A: delete all storage-trie changeset entries in `range`, returning the
+    /// set of `(hashed_address, nibbles)` pairs that were affected.
+    fn prune_storage_trie_changesets(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        counts: &mut WriteCounts,
+    ) -> OpProofsStorageResult<BTreeSet<(B256, StoredNibbles)>> {
+        let mut keys: BTreeSet<(B256, StoredNibbles)> = BTreeSet::new();
+        let mut cursor = self.tx.cursor_dup_write::<V2StorageTrieChangeSets>()?;
+        let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
+        let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
+        let mut entry = cursor.seek(start)?;
+        while let Some((key, first_val)) = entry {
+            if key > end {
+                break;
+            }
+            counts.storage_trie_updates_written_total += 1;
+            keys.insert((key.0 .1, StoredNibbles(first_val.nibbles.0)));
+            while let Some((k, val)) = cursor.next_dup()? {
+                counts.storage_trie_updates_written_total += 1;
+                keys.insert((k.0 .1, StoredNibbles(val.nibbles.0)));
+            }
+            cursor.delete_current_duplicates()?;
+            entry = cursor.current()?;
+        }
+        Ok(keys)
+    }
+
+    /// Phase A: delete all hashed-account changeset entries in `range`, returning the
+    /// set of hashed addresses that were affected.
+    fn prune_hashed_account_changesets(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        counts: &mut WriteCounts,
+    ) -> OpProofsStorageResult<BTreeSet<B256>> {
+        let mut keys: BTreeSet<B256> = BTreeSet::new();
+        let mut cursor = self.tx.cursor_dup_write::<V2HashedAccountChangeSets>()?;
+        let mut entry = cursor.seek(*range.start())?;
+        while let Some((block_num, first_val)) = entry {
+            if block_num > *range.end() {
+                break;
+            }
+            counts.hashed_accounts_written_total += 1;
+            keys.insert(first_val.hashed_address);
+            while let Some((_, val)) = cursor.next_dup()? {
+                counts.hashed_accounts_written_total += 1;
+                keys.insert(val.hashed_address);
+            }
+            cursor.delete_current_duplicates()?;
+            entry = cursor.current()?;
+        }
+        Ok(keys)
+    }
+
+    /// Phase A: delete all hashed-storage changeset entries in `range`, returning the
+    /// set of `(hashed_address, storage_key)` pairs that were affected.
+    fn prune_hashed_storage_changesets(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        counts: &mut WriteCounts,
+    ) -> OpProofsStorageResult<BTreeSet<(B256, B256)>> {
+        let mut keys: BTreeSet<(B256, B256)> = BTreeSet::new();
+        let mut cursor = self.tx.cursor_dup_write::<V2HashedStorageChangeSets>()?;
+        let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
+        let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
+        let mut entry = cursor.seek(start)?;
+        while let Some((key, first_val)) = entry {
+            if key > end {
+                break;
+            }
+            counts.hashed_storages_written_total += 1;
+            keys.insert((key.0 .1, first_val.key));
+            while let Some((k, val)) = cursor.next_dup()? {
+                counts.hashed_storages_written_total += 1;
+                keys.insert((k.0 .1, val.key));
+            }
+            cursor.delete_current_duplicates()?;
+            entry = cursor.current()?;
+        }
+        Ok(keys)
+    }
+
+    /// Phase B: remove `range` block numbers from account-trie history bitmaps for the
+    /// given nibble paths.
+    fn prune_account_trie_history(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        keys: &BTreeSet<StoredNibbles>,
+    ) -> OpProofsStorageResult<()> {
+        let mut cursor = self.tx.cursor_write::<V2AccountsTrieHistory>()?;
+        for nibbles in keys {
+            Self::prune_history_range_for_key(
+                &mut cursor,
+                range,
+                AccountTrieShardedKey::new(nibbles.clone(), 0),
+                |k| k.key == *nibbles,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Phase B: remove `range` block numbers from storage-trie history bitmaps for the
+    /// given `(hashed_address, nibbles)` pairs.
+    fn prune_storage_trie_history(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        keys: &BTreeSet<(B256, StoredNibbles)>,
+    ) -> OpProofsStorageResult<()> {
+        let mut cursor = self.tx.cursor_write::<V2StoragesTrieHistory>()?;
+        for (hashed_address, nibbles) in keys {
+            Self::prune_history_range_for_key(
+                &mut cursor,
+                range,
+                StorageTrieShardedKey::new(*hashed_address, nibbles.clone(), 0),
+                |k| k.hashed_address == *hashed_address && k.key == *nibbles,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Phase B: remove `range` block numbers from hashed-account history bitmaps for the
+    /// given hashed addresses.
+    fn prune_hashed_account_history(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        keys: &BTreeSet<B256>,
+    ) -> OpProofsStorageResult<()> {
+        let mut cursor = self.tx.cursor_write::<V2HashedAccountsHistory>()?;
+        for addr in keys {
+            Self::prune_history_range_for_key(
+                &mut cursor,
+                range,
+                HashedAccountShardedKey::new(*addr, 0),
+                |k| k.0.key == *addr,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Phase B: remove `range` block numbers from hashed-storage history bitmaps for the
+    /// given `(hashed_address, storage_key)` pairs.
+    fn prune_hashed_storage_history(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        keys: &BTreeSet<(B256, B256)>,
+    ) -> OpProofsStorageResult<()> {
+        let mut cursor = self.tx.cursor_write::<V2HashedStoragesHistory>()?;
+        for (hashed_address, storage_key) in keys {
+            Self::prune_history_range_for_key(
+                &mut cursor,
+                range,
+                HashedStorageShardedKey {
+                    hashed_address: *hashed_address,
+                    sharded_key: ShardedKey::new(*storage_key, 0),
+                },
+                |k| {
+                    k.hashed_address == *hashed_address
+                        && k.sharded_key.key == *storage_key
+                },
+            )?;
+        }
+        Ok(())
+    }
 }
 
 impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofsProviderV2<TX> {
@@ -1437,7 +1588,16 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         block_ref: BlockWithParent,
         block_state_diff: BlockStateDiff,
     ) -> OpProofsStorageResult<WriteCounts> {
-        self.store_trie_updates_inner(block_ref, block_state_diff)
+        self.validate_block_order(&block_ref)?;
+
+        let mut collector = HistoryCollector::default();
+        let mut cursors = WriteCursors::new(&self.tx)?;
+        let counts = self.store_block_updates(block_ref.block.number, block_state_diff, &mut collector, &mut cursors)?;
+        drop(cursors);
+        self.flush_collected_history(collector)?;
+
+        self.set_latest_block_number_inner(block_ref.block.number, block_ref.block.hash)?;
+        Ok(counts)
     }
 
     fn store_trie_updates_batch(
@@ -1496,154 +1656,26 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         new_earliest_block_ref: BlockWithParent,
     ) -> OpProofsStorageResult<WriteCounts> {
         let target_block = new_earliest_block_ref.block.number;
+        let proof_window = self.get_proof_window_inner()?;
 
-        let Some((earliest, _)) =
-            self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?
-        else {
-            return Ok(WriteCounts::default());
-        };
-
-        if earliest >= target_block {
+        if proof_window.earliest.number >= target_block {
             return Ok(WriteCounts::default());
         }
 
-        let range = (earliest + 1)..=target_block;
-
+        let range = (proof_window.earliest.number + 1)..=target_block;
         let mut counts = WriteCounts::default();
 
-        // Account trie  (Key = BlockNumber, SubKey = StoredNibblesSubKey)
-        let acct_trie_keys = {
-            let mut keys: BTreeSet<StoredNibbles> = BTreeSet::new();
-            let mut cursor = self.tx.cursor_dup_write::<V2AccountTrieChangeSets>()?;
-            let mut entry = cursor.seek(*range.start())?;
-            while let Some((block_num, first_val)) = entry {
-                if block_num > *range.end() { break; }
-                counts.account_trie_updates_written_total += 1;
-                keys.insert(StoredNibbles(first_val.nibbles.0));
-                while let Some((_, val)) = cursor.next_dup()? {
-                    counts.account_trie_updates_written_total += 1;
-                    keys.insert(StoredNibbles(val.nibbles.0));
-                }
-                cursor.delete_current_duplicates()?;
-                entry = cursor.current()?;
-            }
-            keys
-        };
+        // Phase A: scan and delete changesets, collecting affected keys for Phase B.
+        let acct_trie_keys = self.prune_account_trie_changesets(&range, &mut counts)?;
+        let stor_trie_keys = self.prune_storage_trie_changesets(&range, &mut counts)?;
+        let acct_keys = self.prune_hashed_account_changesets(&range, &mut counts)?;
+        let stor_keys = self.prune_hashed_storage_changesets(&range, &mut counts)?;
 
-        // Storage trie  (Key = BlockNumberHashedAddress, SubKey = StoredNibblesSubKey)
-        let stor_trie_keys = {
-            let mut keys: BTreeSet<(B256, StoredNibbles)> = BTreeSet::new();
-            let mut cursor = self.tx.cursor_dup_write::<V2StorageTrieChangeSets>()?;
-            let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
-            let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
-            let mut entry = cursor.seek(start)?;
-            while let Some((key, first_val)) = entry {
-                if key > end { break; }
-                counts.storage_trie_updates_written_total += 1;
-                keys.insert((key.0 .1, StoredNibbles(first_val.nibbles.0)));
-                while let Some((k, val)) = cursor.next_dup()? {
-                    counts.storage_trie_updates_written_total += 1;
-                    keys.insert((k.0 .1, StoredNibbles(val.nibbles.0)));
-                }
-                cursor.delete_current_duplicates()?;
-                entry = cursor.current()?;
-            }
-            keys
-        };
-
-        // Hashed accounts  (Key = BlockNumber, SubKey = B256)
-        let acct_keys = {
-            let mut keys: BTreeSet<B256> = BTreeSet::new();
-            let mut cursor = self.tx.cursor_dup_write::<V2HashedAccountChangeSets>()?;
-            let mut entry = cursor.seek(*range.start())?;
-            while let Some((block_num, first_val)) = entry {
-                if block_num > *range.end() { break; }
-                counts.hashed_accounts_written_total += 1;
-                keys.insert(first_val.hashed_address);
-                while let Some((_, val)) = cursor.next_dup()? {
-                    counts.hashed_accounts_written_total += 1;
-                    keys.insert(val.hashed_address);
-                }
-                cursor.delete_current_duplicates()?;
-                entry = cursor.current()?;
-            }
-            keys
-        };
-
-        // Hashed storages  (Key = BlockNumberHashedAddress, SubKey = B256)
-        let stor_keys = {
-            let mut keys: BTreeSet<(B256, B256)> = BTreeSet::new();
-            let mut cursor = self.tx.cursor_dup_write::<V2HashedStorageChangeSets>()?;
-            let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
-            let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
-            let mut entry = cursor.seek(start)?;
-            while let Some((key, first_val)) = entry {
-                if key > end { break; }
-                counts.hashed_storages_written_total += 1;
-                keys.insert((key.0 .1, first_val.key));
-                while let Some((k, val)) = cursor.next_dup()? {
-                    counts.hashed_storages_written_total += 1;
-                    keys.insert((k.0 .1, val.key));
-                }
-                cursor.delete_current_duplicates()?;
-                entry = cursor.current()?;
-            }
-            keys
-        };
-
-        // ---- Phase B: history bitmap removal — 1 seek per unique key, range filter ----
-        {
-            let mut cursor = self.tx.cursor_write::<V2AccountsTrieHistory>()?;
-            for nibbles in &acct_trie_keys {
-                Self::prune_history_range_for_key(
-                    &mut cursor,
-                    &range,
-                    AccountTrieShardedKey::new(nibbles.clone(), 0),
-                    |k| k.key == *nibbles,
-                )?;
-            }
-        }
-        {
-            let mut cursor = self.tx.cursor_write::<V2StoragesTrieHistory>()?;
-            for (hashed_address, nibbles) in &stor_trie_keys {
-                Self::prune_history_range_for_key(
-                    &mut cursor,
-                    &range,
-                    StorageTrieShardedKey::new(*hashed_address, nibbles.clone(), 0),
-                    |k| k.hashed_address == *hashed_address && k.key == *nibbles,
-                )?;
-            }
-        }
-        {
-            let mut cursor = self.tx.cursor_write::<V2HashedAccountsHistory>()?;
-            for addr in &acct_keys {
-                Self::prune_history_range_for_key(
-                    &mut cursor,
-                    &range,
-                    HashedAccountShardedKey::new(*addr, 0),
-                    |k| k.0.key == *addr,
-                )?;
-            }
-        }
-        {
-            let mut cursor = self.tx.cursor_write::<V2HashedStoragesHistory>()?;
-            for (hashed_address, storage_key) in &stor_keys {
-                Self::prune_history_range_for_key(
-                    &mut cursor,
-                    &range,
-                    HashedStorageShardedKey {
-                        hashed_address: *hashed_address,
-                        sharded_key: ShardedKey::new(*storage_key, 0),
-                    },
-                    |k| {
-                        k.hashed_address == *hashed_address
-                            && k.sharded_key.key == *storage_key
-                    },
-                )?;
-            }
-        }
-
-        // Changesets already deleted during the single-pass walk above.
+        // Phase B: remove pruned block numbers from history bitmaps.
+        self.prune_account_trie_history(&range, &acct_trie_keys)?;
+        self.prune_storage_trie_history(&range, &stor_trie_keys)?;
+        self.prune_hashed_account_history(&range, &acct_keys)?;
+        self.prune_hashed_storage_history(&range, &stor_keys)?;
 
         self.set_earliest_block_number_inner(target_block, new_earliest_block_ref.block.hash)?;
 
@@ -1651,22 +1683,20 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
     }
 
     fn unwind_history(&self, to: BlockWithParent) -> OpProofsStorageResult<()> {
-        let Some((earliest, latest)) = self.get_proof_window_inner()? else {
-            return Ok(());
-        };
+        let proof_window = self.get_proof_window_inner()?;
 
-        if to.block.number > latest.number {
+        if to.block.number > proof_window.latest.number {
             return Ok(());
         }
 
-        if to.block.number <= earliest.number {
+        if to.block.number <= proof_window.earliest.number {
             return Err(OpProofsStorageError::UnwindBeyondEarliest {
                 unwind_block_number: to.block.number,
-                earliest_block_number: earliest.number,
+                earliest_block_number: proof_window.earliest.number,
             });
         }
 
-        let range = to.block.number..=latest.number;
+        let range = to.block.number..=proof_window.latest.number;
 
         // Restore old values from changesets
         self.unwind_account_trie(range.clone())?;
@@ -1694,35 +1724,42 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         latest_common_block: BlockNumHash,
         mut blocks_to_add: Vec<(BlockWithParent, BlockStateDiff)>,
     ) -> OpProofsStorageResult<()> {
+        let proof_window = self.get_proof_window_inner()?;
+
+        if latest_common_block.number < proof_window.earliest.number ||
+            latest_common_block.number > proof_window.latest.number {
+            return Err(OpProofsStorageError::ReorgBaseOutOfWindow {
+                block_number: latest_common_block.number,
+                earliest_block_number: proof_window.earliest.number,
+                latest_block_number: proof_window.latest.number,
+            });
+        }
+
         blocks_to_add.sort_unstable_by_key(|(bwp, _)| bwp.block.number);
 
-        if let Some((latest_number, _)) = self.get_latest_block_number_hash_inner()?
-            && latest_common_block.number < latest_number {
-                let range = (latest_common_block.number + 1)..=latest_number;
+        // Phase 1: unwind to the latest common block, which is the new base of the proof window.
+        {
+            let range = (latest_common_block.number + 1)..=proof_window.latest.number;
 
-                // Restore old values from changesets
-                self.unwind_account_trie(range.clone())?;
-                self.unwind_storage_trie(range.clone())?;
-                self.unwind_hashed_accounts(range.clone())?;
-                self.unwind_hashed_storages(range.clone())?;
+            // Restore old values from changesets
+            self.unwind_account_trie(range.clone())?;
+            self.unwind_storage_trie(range.clone())?;
+            self.unwind_hashed_accounts(range.clone())?;
+            self.unwind_hashed_storages(range.clone())?;
 
-                // Remove old block numbers from history bitmaps
-                self.remove_all_history_entries(range.clone())?;
+            // Remove old block numbers from history bitmaps
+            self.remove_all_history_entries(range.clone())?;
 
-                // Delete changeset entries
-                self.prune_changesets(range)?;
-            }
+            // Delete changeset entries
+            self.prune_changesets(range)?;
+        }
 
-        self.set_latest_block_number_inner(
-            latest_common_block.number,
-            latest_common_block.hash,
-        )?;
-
+        // Phase 2: add new blocks on top of the latest common block.
         // Re-add blocks using a shared collector + cursors, same as the batch
         // path, so history bitmap appends are batched and cursors are reused.
         // Track block ordering in memory to avoid per-block V2ProofWindow I/O.
         let mut last_hash = latest_common_block.hash;
-        let mut last_written: Option<(BlockNumber, B256)> = None;
+        let mut last_written = latest_common_block;
         let mut collector = HistoryCollector::default();
         let mut cursors = WriteCursors::new(&self.tx)?;
 
@@ -1740,15 +1777,13 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
             self.store_block_updates(block_number, diff, &mut collector, &mut cursors)?;
 
             last_hash = block_ref.block.hash;
-            last_written = Some((block_number, block_ref.block.hash));
+            last_written = NumHash::new(block_number, block_ref.block.hash);
         }
 
         drop(cursors);
         self.flush_collected_history(collector)?;
 
-        if let Some((number, hash)) = last_written {
-            self.set_latest_block_number_inner(number, hash)?;
-        }
+        self.set_latest_block_number_inner(last_written.number, last_written.hash)?;
 
         Ok(())
     }
@@ -2900,12 +2935,15 @@ mod tests {
     #[test]
     fn test_prune_earliest_state_uninitialized_guard() {
         let db = setup_db();
-        // Don't initialize — earliest is None
+        // Don't initialize — pruning uninitialized store returns NoBlocksFound.
 
         let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw"));
         let target = make_block_ref(5, B256::repeat_byte(0x05), B256::ZERO);
-        let counts = provider.prune_earliest_state(target).expect("prune");
-        assert_eq!(counts, WriteCounts::default());
+        let result = provider.prune_earliest_state(target);
+        assert!(
+            matches!(result, Err(OpProofsStorageError::NoBlocksFound)),
+            "expected NoBlocksFound, got {result:?}"
+        );
     }
 
     #[test]
@@ -3110,6 +3148,67 @@ mod tests {
             assert!(cs.seek_exact(3u64).expect("seek").is_some(), "block 3' changeset");
             assert!(cs.seek_exact(4u64).expect("seek").is_some(), "block 4' changeset");
         }
+    }
+
+    #[test]
+    fn test_replace_updates_beyond_earliest_returns_error() {
+        let db = setup_db();
+        let addr = B256::from([0xCC; 32]);
+        init_state(&db, vec![(addr, Some(Account::default()))]);
+
+        // Build chain: 1 -> 2 -> 3, then prune to earliest = 2.
+        let b1 = make_block_ref(1, B256::repeat_byte(0x01), B256::ZERO);
+        let b2 = make_block_ref(2, B256::repeat_byte(0x02), B256::repeat_byte(0x01));
+        let b3 = make_block_ref(3, B256::repeat_byte(0x03), B256::repeat_byte(0x02));
+
+        store_block(&db, b1, make_nonce_diff(addr, 10));
+        store_block(&db, b2, make_nonce_diff(addr, 20));
+        store_block(&db, b3, make_nonce_diff(addr, 30));
+
+        // Move earliest forward to block 2.
+        {
+            let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw"));
+            provider
+                .prune_earliest_state(make_block_ref(2, B256::repeat_byte(0x02), B256::repeat_byte(0x01)))
+                .expect("prune");
+            OpProofsProviderRw::commit(provider).expect("commit");
+        }
+
+        // Attempt to replace_updates with a common block before earliest (block 1).
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw"));
+        let res = provider.replace_updates(
+            BlockNumHash::new(1, B256::repeat_byte(0x01)),
+            vec![],
+        );
+        assert!(
+            matches!(res, Err(OpProofsStorageError::ReorgBaseOutOfWindow { .. })),
+            "expected ReorgBaseOutOfWindow, got {res:?}"
+        );
+    }
+
+    #[test]
+    fn test_replace_updates_ahead_of_latest_returns_error() {
+        let db = setup_db();
+        let addr = B256::from([0xDD; 32]);
+        init_state(&db, vec![(addr, Some(Account::default()))]);
+
+        // Build chain: 1 -> 2. Latest = 2.
+        let b1 = make_block_ref(1, B256::repeat_byte(0x01), B256::ZERO);
+        let b2 = make_block_ref(2, B256::repeat_byte(0x02), B256::repeat_byte(0x01));
+
+        store_block(&db, b1, make_nonce_diff(addr, 10));
+        store_block(&db, b2, make_nonce_diff(addr, 20));
+
+        // Attempt to replace_updates with a common block beyond latest (block 5).
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw"));
+        let res = provider.replace_updates(
+            BlockNumHash::new(5, B256::repeat_byte(0x05)),
+            vec![],
+        );
+        assert!(
+            matches!(res, Err(OpProofsStorageError::ReorgBaseOutOfWindow { .. })),
+            "expected ReorgBaseOutOfWindow, got {res:?}"
+        );
     }
 
     // ========================== Unwind tests ==========================
@@ -3428,11 +3527,14 @@ mod tests {
     fn test_unwind_history_empty_chain() {
         let db = setup_db();
 
-        // No blocks stored
+        // No blocks stored — uninitialized proof window returns NoBlocksFound.
         let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw"));
         let unwind_to = BlockWithParent::new(B256::ZERO, NumHash::new(0, B256::ZERO));
         let result = provider.unwind_history(unwind_to);
-        assert!(result.is_ok(), "unwinding empty chain should succeed");
+        assert!(
+            matches!(result, Err(OpProofsStorageError::NoBlocksFound)),
+            "expected NoBlocksFound, got {result:?}"
+        );
     }
 
     #[test]

@@ -87,6 +87,18 @@ pub enum OpProofsStorageError {
         /// The earliest stored block number
         earliest_block_number: u64,
     },
+    /// Reorg base block is outside the stored proof window [earliest, latest]
+    #[error(
+        "Reorg base block {block_number} is outside the stored proof window [{earliest_block_number}, {latest_block_number}]"
+    )]
+    ReorgBaseOutOfWindow {
+        /// The reorg base block number
+        block_number: u64,
+        /// The earliest stored block number
+        earliest_block_number: u64,
+        /// The latest stored block number
+        latest_block_number: u64,
+    },
     /// Error occurred while interacting with the database.
     #[error(transparent)]
     DatabaseError(DatabaseError),

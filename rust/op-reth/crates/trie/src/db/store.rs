@@ -14,6 +14,7 @@ use crate::{
             HashedStorageHistory, HashedStorageKey, MaybeDeleted, StorageTrieHistory,
             StorageTrieKey, StorageValue, VersionedValue, kv::IntoKV,
         },
+        common::ProofWindowValue,
     },
 };
 use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
@@ -34,11 +35,6 @@ use reth_trie_common::{
     updates::{StorageTrieUpdates, TrieUpdates},
 };
 use std::{fmt::Debug, ops::RangeBounds, path::Path, sync::Arc};
-
-struct ProofWindowValue {
-    earliest: NumHash,
-    latest: NumHash,
-}
 
 /// Preprocessed prune plan for a target block number
 #[derive(Debug, Clone)]
@@ -861,6 +857,17 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         latest_common_block: BlockNumHash,
         mut blocks_to_add: Vec<(BlockWithParent, BlockStateDiff)>,
     ) -> OpProofsStorageResult<()> {
+        let proof_window = self.get_proof_window_inner()?;
+
+        if latest_common_block.number < proof_window.earliest.number ||
+            latest_common_block.number > proof_window.latest.number {
+            return Err(OpProofsStorageError::ReorgBaseOutOfWindow {
+                block_number: latest_common_block.number,
+                earliest_block_number: proof_window.earliest.number,
+                latest_block_number: proof_window.latest.number,
+            });
+        }
+
         blocks_to_add.sort_unstable_by_key(|(bwp, _)| bwp.block.number);
 
         let history_to_delete = self.collect_history_ranged(latest_common_block.number + 1..)?;
