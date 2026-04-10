@@ -2,7 +2,7 @@
 
 use crate::{
     BlockStateDiff, OpProofsStorage, OpProofsStorageError, OpProofsStore,
-    api::{OperationDurations, OpProofsProviderRO, OpProofsProviderRw},
+    api::{OpProofsProviderRO, OpProofsProviderRw, OperationDurations},
     provider::OpProofsStateProviderRef,
 };
 use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
@@ -141,8 +141,8 @@ where
         let mut operation_durations = OperationDurations::default();
 
         let provider_rw = self.storage.provider_rw()?;
-        let storage_result =
-            provider_rw.store_trie_updates(block, BlockStateDiff { sorted_trie_updates, sorted_post_state })?;
+        let storage_result = provider_rw
+            .store_trie_updates(block, BlockStateDiff { sorted_trie_updates, sorted_post_state })?;
         provider_rw.commit()?;
 
         let write_duration = start.elapsed();

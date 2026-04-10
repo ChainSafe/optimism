@@ -182,7 +182,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlockStateDiff, OpProofsStore, api::{OpProofsProviderRO, OpProofsProviderRw}, db::MdbxProofsStorage};
+    use crate::{
+        BlockStateDiff, OpProofsStore,
+        api::{OpProofsProviderRO, OpProofsProviderRw},
+        db::MdbxProofsStorage,
+    };
     use alloy_eips::{BlockHashOrNumber, NumHash};
     use alloy_primitives::{B256, BlockNumber, U256};
     use mockall::mock;
@@ -474,7 +478,8 @@ mod tests {
         let mut acc_cur = provider_ro.account_hashed_cursor(4).expect("acc cur");
         let mut stor_cur = provider_ro.storage_hashed_cursor(stor_addr, 4).expect("stor cur");
         let mut acc_trie_cur = provider_ro.account_trie_cursor(4).expect("acc trie cur");
-        let mut stor_trie_cur = provider_ro.storage_trie_cursor(stor_addr, 4).expect("stor trie cur");
+        let mut stor_trie_cur =
+            provider_ro.storage_trie_cursor(stor_addr, 4).expect("stor trie cur");
 
         // Check these histories have been removed
         let pruned_hashed_account = a1;
@@ -559,22 +564,16 @@ mod tests {
         assert_eq!(out, PrunerOutput::default(), "should early-return default output");
     }
 
-    // The earliest block is None, but the latest block exists -> early return default.
+    // No blocks stored at all -> early return default (latest is None path).
     #[tokio::test]
     async fn run_inner_earliest_none_real_db() {
-        use crate::BlockStateDiff;
-
         let dir = TempDir::new().unwrap();
         let store: Arc<MdbxProofsStorage> =
             Arc::new(MdbxProofsStorage::new(dir.path()).expect("env"));
 
-        // Write a single block to set *latest* only.
-        store_block(&store, block(3, B256::ZERO), BlockStateDiff::default());
-
-        let earliest = get_earliest(&store);
-        let latest = get_latest(&store);
-        assert!(earliest.is_none(), "earliest must remain None");
-        assert_eq!(latest.unwrap().0, 3);
+        // Nothing stored — both earliest and latest are None.
+        assert!(get_earliest(&store).is_none());
+        assert!(get_latest(&store).is_none());
 
         let block_hash_reader = MockBlockHashReader::new();
         let pruner = OpProofStoragePruner::new(store, block_hash_reader, 1, 1000);

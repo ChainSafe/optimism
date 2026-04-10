@@ -3,8 +3,8 @@
 use crate::{
     BlockStateDiff, OpProofsStorageResult, OpProofsStore,
     api::{
-        InitialStateAnchor, OperationDurations, OpProofsInitProvider, OpProofsProviderRO,
-        OpProofsProviderRw, WriteCounts,
+        InitialStateAnchor, OpProofsInitProvider, OpProofsProviderRO, OpProofsProviderRw,
+        OperationDurations, WriteCounts,
     },
     cursor,
 };
@@ -362,15 +362,18 @@ impl<S> OpProofsStore for OpProofsStorageWithMetrics<S>
 where
     S: OpProofsStore,
 {
-    type ProviderRO<'a> = OpProofsProviderROWithMetrics<S::ProviderRO<'a>>
+    type ProviderRO<'a>
+        = OpProofsProviderROWithMetrics<S::ProviderRO<'a>>
     where
         Self: 'a;
 
-    type ProviderRw<'a> = OpProofsProviderRwWithMetrics<S::ProviderRw<'a>>
+    type ProviderRw<'a>
+        = OpProofsProviderRwWithMetrics<S::ProviderRw<'a>>
     where
         Self: 'a;
 
-    type Initializer<'a> = OpProofsInitProviderWithMetrics<S::Initializer<'a>>
+    type Initializer<'a>
+        = OpProofsInitProviderWithMetrics<S::Initializer<'a>>
     where
         Self: 'a;
 
@@ -398,16 +401,20 @@ pub struct OpProofsProviderROWithMetrics<P> {
 }
 
 impl<P: OpProofsProviderRO> OpProofsProviderRO for OpProofsProviderROWithMetrics<P> {
-    type StorageTrieCursor<'tx> = OpProofsTrieCursorWithMetrics<P::StorageTrieCursor<'tx>>
+    type StorageTrieCursor<'tx>
+        = OpProofsTrieCursorWithMetrics<P::StorageTrieCursor<'tx>>
     where
         Self: 'tx;
-    type AccountTrieCursor<'tx> = OpProofsTrieCursorWithMetrics<P::AccountTrieCursor<'tx>>
+    type AccountTrieCursor<'tx>
+        = OpProofsTrieCursorWithMetrics<P::AccountTrieCursor<'tx>>
     where
         Self: 'tx;
-    type StorageCursor<'tx> = OpProofsHashedCursorWithMetrics<P::StorageCursor<'tx>>
+    type StorageCursor<'tx>
+        = OpProofsHashedCursorWithMetrics<P::StorageCursor<'tx>>
     where
         Self: 'tx;
-    type AccountHashedCursor<'tx> = OpProofsHashedCursorWithMetrics<P::AccountHashedCursor<'tx>>
+    type AccountHashedCursor<'tx>
+        = OpProofsHashedCursorWithMetrics<P::AccountHashedCursor<'tx>>
     where
         Self: 'tx;
 
@@ -481,16 +488,20 @@ pub struct OpProofsProviderRwWithMetrics<P> {
 }
 
 impl<P: OpProofsProviderRw> OpProofsProviderRO for OpProofsProviderRwWithMetrics<P> {
-    type StorageTrieCursor<'tx> = OpProofsTrieCursorWithMetrics<P::StorageTrieCursor<'tx>>
+    type StorageTrieCursor<'tx>
+        = OpProofsTrieCursorWithMetrics<P::StorageTrieCursor<'tx>>
     where
         Self: 'tx;
-    type AccountTrieCursor<'tx> = OpProofsTrieCursorWithMetrics<P::AccountTrieCursor<'tx>>
+    type AccountTrieCursor<'tx>
+        = OpProofsTrieCursorWithMetrics<P::AccountTrieCursor<'tx>>
     where
         Self: 'tx;
-    type StorageCursor<'tx> = OpProofsHashedCursorWithMetrics<P::StorageCursor<'tx>>
+    type StorageCursor<'tx>
+        = OpProofsHashedCursorWithMetrics<P::StorageCursor<'tx>>
     where
         Self: 'tx;
-    type AccountHashedCursor<'tx> = OpProofsHashedCursorWithMetrics<P::AccountHashedCursor<'tx>>
+    type AccountHashedCursor<'tx>
+        = OpProofsHashedCursorWithMetrics<P::AccountHashedCursor<'tx>>
     where
         Self: 'tx;
 

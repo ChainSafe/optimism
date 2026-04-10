@@ -1,28 +1,27 @@
-//! Provides proof operation implementations for [`OpProofsStorage`].
+//! Provides proof operation implementations for [`crate::OpProofsStorage`].
 
 use crate::{
-    api::OpProofsProviderRO, OpProofsHashedAccountCursorFactory, OpProofsTrieCursorFactory,
+    OpProofsHashedAccountCursorFactory, OpProofsTrieCursorFactory, api::OpProofsProviderRO,
 };
 use alloy_primitives::{
-    keccak256,
+    Address, B256, Bytes, keccak256,
     map::{B256Map, HashMap},
-    Address, Bytes, B256,
 };
 use reth_execution_errors::{StateProofError, StateRootError, StorageRootError, TrieWitnessError};
 use reth_trie::{
+    StateRoot, StorageRoot, TrieType,
     hashed_cursor::HashedPostStateCursorFactory,
     metrics::TrieRootMetrics,
     proof::{self, Proof},
     trie_cursor::InMemoryTrieCursorFactory,
     witness::TrieWitness,
-    StateRoot, StorageRoot, TrieType,
 };
 use reth_trie_common::{
-    updates::TrieUpdates, AccountProof, HashedPostState, HashedPostStateSorted, HashedStorage,
-    MultiProof, MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
+    AccountProof, HashedPostState, HashedPostStateSorted, HashedStorage, MultiProof,
+    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
 
-/// Extends [`Proof`] with operations specific for working with [`OpProofsStorage`].
+/// Extends [`Proof`] with operations specific for working with [`crate::OpProofsStorage`].
 pub trait DatabaseProof<P> {
     /// Creates a new `DatabaseProof` instance from external storage.
     fn from_provider(provider: P, block_number: u64) -> Self;
@@ -50,7 +49,7 @@ impl<P> DatabaseProof<P>
 where
     P: OpProofsProviderRO + Clone,
 {
-    /// Create a new [`Proof`] instance from [`OpProofsStorage`].
+    /// Create a new [`Proof`] instance from [`crate::OpProofsStorage`].
     fn from_provider(provider: P, block_number: u64) -> Self {
         Self::new(
             OpProofsTrieCursorFactory::new(provider.clone(), block_number),
@@ -104,9 +103,9 @@ where
     }
 }
 
-/// Extends [`StorageProof`] with operations specific for working with [`OpProofsStorage`].
+/// Extends [`StorageProof`] with operations specific for working with [`crate::OpProofsStorage`].
 pub trait DatabaseStorageProof<P> {
-    /// Create a new [`StorageProof`] from [`OpProofsStorage`] and account address.
+    /// Create a new [`StorageProof`] from [`crate::OpProofsStorage`] and account address.
     fn from_provider(provider: P, block_number: u64, address: Address) -> Self;
 
     /// Generates the storage proof for target slot based on [`TrieInput`].
@@ -137,7 +136,7 @@ impl<P> DatabaseStorageProof<P>
 where
     P: OpProofsProviderRO + Clone,
 {
-    /// Create a new [`StorageProof`] from [`OpProofsStorage`] and account address.
+    /// Create a new [`StorageProof`] from [`crate::OpProofsStorage`] and account address.
     fn from_provider(provider: P, block_number: u64, address: Address) -> Self {
         Self::new(
             OpProofsTrieCursorFactory::new(provider.clone(), block_number),
@@ -192,7 +191,7 @@ where
     }
 }
 
-/// Extends [`StateRoot`] with operations specific for working with [`OpProofsStorage`].
+/// Extends [`StateRoot`] with operations specific for working with [`crate::OpProofsStorage`].
 pub trait DatabaseStateRoot<P>: Sized {
     /// Calculate the state root for this [`HashedPostState`].
     /// Internally, this method retrieves prefixsets and uses them
@@ -315,7 +314,7 @@ where
     }
 }
 
-/// Extends [`StorageRoot`] with operations specific for working with [`OpProofsStorage`].
+/// Extends [`StorageRoot`] with operations specific for working with [`crate::OpProofsStorage`].
 pub trait DatabaseStorageRoot<P> {
     /// Calculates the storage root for provided [`HashedStorage`].
     fn overlay_root(
@@ -354,9 +353,9 @@ where
     }
 }
 
-/// Extends [`TrieWitness`] with operations specific for working with [`OpProofsStorage`].
+/// Extends [`TrieWitness`] with operations specific for working with [`crate::OpProofsStorage`].
 pub trait DatabaseTrieWitness<P> {
-    /// Creates a new [`TrieWitness`] instance from [`OpProofsStorage`].
+    /// Creates a new [`TrieWitness`] instance from [`crate::OpProofsStorage`].
     fn from_provider(provider: P, block_number: u64) -> Self;
 
     /// Generates the trie witness for the target state based on [`TrieInput`].
