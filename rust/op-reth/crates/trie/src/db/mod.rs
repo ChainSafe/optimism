@@ -17,10 +17,7 @@ pub use cursor::{
 };
 
 mod cursor_v2;
-pub use cursor_v2::{
-    V2AccountCursor, V2AccountTrieCursor,
-    V2StorageCursor, V2StorageTrieCursor,
-};
+pub use cursor_v2::{V2AccountCursor, V2AccountTrieCursor, V2StorageCursor, V2StorageTrieCursor};
 
 mod store_v2;
 pub use store_v2::{MdbxProofsProviderV2, MdbxProofsStorageV2};

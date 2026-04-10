@@ -9,12 +9,12 @@ use crate::{
     },
     db::{
         MdbxAccountCursor, MdbxStorageCursor, MdbxTrieCursor,
+        common::ProofWindowValue,
         models::{
             AccountTrieHistory, BlockChangeSet, ChangeSet, HashedAccountHistory,
             HashedStorageHistory, HashedStorageKey, MaybeDeleted, StorageTrieHistory,
             StorageTrieKey, StorageValue, VersionedValue, kv::IntoKV,
         },
-        common::ProofWindowValue,
     },
 };
 use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
@@ -860,7 +860,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         let proof_window = self.get_proof_window_inner()?;
 
         if latest_common_block.number < proof_window.earliest.number ||
-            latest_common_block.number > proof_window.latest.number {
+            latest_common_block.number > proof_window.latest.number
+        {
             return Err(OpProofsStorageError::ReorgBaseOutOfWindow {
                 block_number: latest_common_block.number,
                 earliest_block_number: proof_window.earliest.number,

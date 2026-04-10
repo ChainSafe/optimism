@@ -12,8 +12,8 @@ use reth_evm::{ConfigureEvm, execute::Executor};
 use reth_evm_ethereum::EthEvmConfig;
 use reth_node_api::{NodePrimitives, NodeTypesWithDB};
 use reth_optimism_trie::{
-    MdbxProofsStorage, MdbxProofsStorageV2, OpProofsStorage, OpProofsStorageError,
-    OpProofsStore, initialize::InitializationJob, live::LiveTrieCollector,
+    MdbxProofsStorage, MdbxProofsStorageV2, OpProofsStorage, OpProofsStorageError, OpProofsStore,
+    initialize::InitializationJob, live::LiveTrieCollector,
 };
 use reth_primitives_traits::{Block as _, RecoveredBlock};
 use reth_provider::{
@@ -389,8 +389,11 @@ where
 
     let blockchain_db = BlockchainProvider::new(provider_factory).unwrap();
     let storage_wrapped: OpProofsStorage<S> = storage.into();
-    let collector =
-        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage_wrapped);
+    let collector = LiveTrieCollector::new(
+        EthEvmConfig::ethereum(chain_spec.clone()),
+        blockchain_db,
+        &storage_wrapped,
+    );
 
     // EXPECT: MissingParentBlock
     let err = collector.execute_and_store_block_updates(&incorrect_block).unwrap_err();
@@ -434,8 +437,11 @@ where
     // Generate a second block normally
     let blockchain_db = BlockchainProvider::new(provider_factory.clone()).unwrap();
     let storage_wrapped: OpProofsStorage<Arc<S>> = storage.into();
-    let collector =
-        LiveTrieCollector::new(EthEvmConfig::ethereum(chain_spec.clone()), blockchain_db, &storage_wrapped);
+    let collector = LiveTrieCollector::new(
+        EthEvmConfig::ethereum(chain_spec.clone()),
+        blockchain_db,
+        &storage_wrapped,
+    );
 
     // Create the next block
     let mut nonce_counter = 0;

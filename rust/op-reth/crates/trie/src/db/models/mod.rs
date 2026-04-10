@@ -22,12 +22,12 @@ pub use value::*;
 
 use alloy_primitives::{B256, BlockNumber};
 use reth_db::{
-    TableSet, TableType, TableViewer,
+    BlockNumberList, TableSet, TableType, TableViewer,
     table::{DupSort, TableInfo},
-    tables, BlockNumberList
+    tables,
 };
 use reth_primitives_traits::{Account, StorageEntry};
-use reth_trie_common::{BranchNodeCompact, StoredNibbles, StoredNibblesSubKey, StorageTrieEntry};
+use reth_trie_common::{BranchNodeCompact, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey};
 use std::fmt;
 
 tables! {

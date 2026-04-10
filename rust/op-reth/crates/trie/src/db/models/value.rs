@@ -1,8 +1,8 @@
-use alloy_primitives::{BlockNumber, B256};
+use alloy_primitives::{B256, BlockNumber};
 use reth_db::{
+    DatabaseError,
     models::sharded_key::ShardedKey,
     table::{Decode, Encode},
-    DatabaseError,
 };
 use reth_trie_common::StoredNibbles;
 use serde::{Deserialize, Serialize};
@@ -39,10 +39,7 @@ impl Decode for HashedStorageShardedKey {
         let key = B256::from_slice(&rest[..32]);
         let highest_block_number =
             u64::from_be_bytes(rest[32..40].try_into().map_err(|_| DatabaseError::Decode)?);
-        Ok(Self {
-            hashed_address,
-            sharded_key: ShardedKey::new(key, highest_block_number),
-        })
+        Ok(Self { hashed_address, sharded_key: ShardedKey::new(key, highest_block_number) })
     }
 }
 
@@ -55,8 +52,8 @@ impl Encode for BlockNumberHashedAddress {
     type Encoded = [u8; 40]; // 8 + 32
     fn encode(self) -> Self::Encoded {
         let mut buf = [0u8; 40];
-        buf[..8].copy_from_slice(&self.0 .0.to_be_bytes());
-        buf[8..].copy_from_slice(self.0 .1.as_slice());
+        buf[..8].copy_from_slice(&self.0.0.to_be_bytes());
+        buf[8..].copy_from_slice(self.0.1.as_slice());
         buf
     }
 }
@@ -75,7 +72,8 @@ impl Decode for BlockNumberHashedAddress {
 /// Keys Storage Trie History by: Hashed Address + Nibbles + Sharded Block.
 ///
 /// Uses **length-prefixed encoding** for the nibble portion to avoid sort
-/// ambiguity in MDBX (same rationale as [`AccountTrieShardedKey`](super::key::AccountTrieShardedKey)):
+/// ambiguity in MDBX (same rationale as
+/// [`AccountTrieShardedKey`](super::key::AccountTrieShardedKey)):
 ///
 /// ```text
 /// [hashed_address: 32 bytes] ++ [nibble_count: 1 byte] ++ [nibble_bytes] ++ [block_number: 8 BE bytes]
@@ -124,9 +122,8 @@ impl Decode for StorageTrieShardedKey {
             return Err(DatabaseError::Decode);
         }
         let nibble_bytes = &value[33..33 + nibble_count];
-        let key = StoredNibbles::from(
-            reth_trie_common::Nibbles::from_nibbles_unchecked(nibble_bytes),
-        );
+        let key =
+            StoredNibbles::from(reth_trie_common::Nibbles::from_nibbles_unchecked(nibble_bytes));
         let block_bytes = &value[33 + nibble_count..];
         let highest_block_number =
             u64::from_be_bytes(block_bytes.try_into().map_err(|_| DatabaseError::Decode)?);

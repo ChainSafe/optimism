@@ -1,11 +1,10 @@
 use alloy_primitives::B256;
 use bytes::BufMut;
-use reth_codecs::Compact;
-use reth_codecs::DecompressError;
+use reth_codecs::{Compact, DecompressError};
 use reth_db::{
+    DatabaseError,
     models::sharded_key::ShardedKey,
     table::{Compress, Decode, Decompress, Encode},
-    DatabaseError,
 };
 use reth_primitives_traits::{Account, ValueWithSubKey};
 use reth_trie_common::{BranchNodeCompact, StoredNibbles, StoredNibblesSubKey};
@@ -98,9 +97,8 @@ impl Decode for AccountTrieShardedKey {
             return Err(DatabaseError::Decode);
         }
         let nibble_bytes = &value[1..1 + nibble_count];
-        let key = StoredNibbles::from(
-            reth_trie_common::Nibbles::from_nibbles_unchecked(nibble_bytes),
-        );
+        let key =
+            StoredNibbles::from(reth_trie_common::Nibbles::from_nibbles_unchecked(nibble_bytes));
         let block_bytes = &value[1 + nibble_count..];
         let highest_block_number =
             u64::from_be_bytes(block_bytes.try_into().map_err(|_| DatabaseError::Decode)?);
@@ -110,8 +108,9 @@ impl Decode for AccountTrieShardedKey {
 
 /// Account state before a block, keyed by hashed address.
 ///
-/// This is the hashed-address equivalent of reth's [`AccountBeforeTx`](reth_db_models::AccountBeforeTx),
-/// designed for our v2 `AccountChangeSets` table where keys are `keccak256(address)`.
+/// This is the hashed-address equivalent of reth's
+/// [`AccountBeforeTx`](reth_db_models::AccountBeforeTx), designed for our v2 `AccountChangeSets`
+/// table where keys are `keccak256(address)`.
 ///
 /// Layout: `[hashed_address: 32 bytes][account: Compact-encoded or empty]`
 ///
@@ -163,11 +162,7 @@ impl Decompress for HashedAccountBeforeTx {
         }
 
         let hashed_address = B256::from_slice(&value[..32]);
-        let info = if value.len() > 32 {
-            Some(Account::decompress(&value[32..])?)
-        } else {
-            None
-        };
+        let info = if value.len() > 32 { Some(Account::decompress(&value[32..])?) } else { None };
 
         Ok(Self { hashed_address, info })
     }
@@ -215,7 +210,11 @@ impl Decompress for TrieChangeSetsEntry {
         }
 
         let (nibbles, rest) = StoredNibblesSubKey::from_compact(value, 65);
-        let node = if rest.is_empty() { None } else { Some(BranchNodeCompact::from_compact(rest, rest.len()).0) };
+        let node = if rest.is_empty() {
+            None
+        } else {
+            Some(BranchNodeCompact::from_compact(rest, rest.len()).0)
+        };
         Ok(Self { nibbles, node })
     }
 }
@@ -245,10 +244,8 @@ mod tests {
 
     #[test]
     fn test_hashed_account_before_tx_roundtrip_none() {
-        let original = HashedAccountBeforeTx {
-            hashed_address: B256::repeat_byte(0xbb),
-            info: None,
-        };
+        let original =
+            HashedAccountBeforeTx { hashed_address: B256::repeat_byte(0xbb), info: None };
 
         let compressed = original.clone().compress();
         assert_eq!(compressed.len(), 32, "None account should be just the 32-byte address");

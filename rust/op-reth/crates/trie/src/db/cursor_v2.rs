@@ -12,41 +12,38 @@
 //!
 //! Each cursor accepts a `max_block_number` parameter. For each key encountered:
 //!
-//! 1. **History bitmap lookup**: Seek `ShardedKey(key, max_block_number)` in the history table.
-//!    The bitmap tells us which blocks modified this key.
-//! 2. **Find the first modification *after* `max_block_number`**: Using `rank` + `select` on
-//!    the bitmap. `rank(max_block_number)` counts entries ≤ the target block;
-//!    `select(rank)` returns the first entry strictly greater.
+//! 1. **History bitmap lookup**: Seek `ShardedKey(key, max_block_number)` in the history table. The
+//!    bitmap tells us which blocks modified this key.
+//! 2. **Find the first modification *after* `max_block_number`**: Using `rank` + `select` on the
+//!    bitmap. `rank(max_block_number)` counts entries ≤ the target block; `select(rank)` returns
+//!    the first entry strictly greater.
 //! 3. **Determine where the value lives**:
-//!    - If a block `> max_block_number` modified this key → read the **changeset** at that
-//!      block. The changeset stores the value *before* that block's execution, which is
-//!      the value at the end of `max_block_number`.
+//!    - If a block `> max_block_number` modified this key → read the **changeset** at that block.
+//!      The changeset stores the value *before* that block's execution, which is the value at the
+//!      end of `max_block_number`.
 //!    - If no block after `max_block_number` modified this key → the **current state** table
 //!      already has the correct value.
-//!
 
 use alloy_primitives::{B256, U256};
 use reth_db::{
+    BlockNumberList, DatabaseError,
     cursor::{DbCursorRO, DbDupCursorRO},
     models::sharded_key::ShardedKey,
     table::Table,
-    BlockNumberList, DatabaseError,
 };
 use reth_primitives_traits::Account;
 use reth_trie::{
+    BranchNodeCompact, Nibbles, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey,
     hashed_cursor::{HashedCursor, HashedStorageCursor},
     trie_cursor::{TrieCursor, TrieStorageCursor},
-    BranchNodeCompact, Nibbles, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey,
 };
 
-use crate::db::{
-    models::{
-        AccountTrieShardedKey, V2AccountsTrie, V2AccountTrieChangeSets, V2AccountsTrieHistory,
-        BlockNumberHashedAddress, V2HashedAccountChangeSets, HashedAccountShardedKey,
-        V2HashedAccounts, V2HashedAccountsHistory, V2HashedStorageChangeSets,
-        HashedStorageShardedKey, V2HashedStorages, V2HashedStoragesHistory, StorageTrieShardedKey,
-        V2StoragesTrie, V2StorageTrieChangeSets, V2StoragesTrieHistory,
-    },
+use crate::db::models::{
+    AccountTrieShardedKey, BlockNumberHashedAddress, HashedAccountShardedKey,
+    HashedStorageShardedKey, StorageTrieShardedKey, V2AccountTrieChangeSets, V2AccountsTrie,
+    V2AccountsTrieHistory, V2HashedAccountChangeSets, V2HashedAccounts, V2HashedAccountsHistory,
+    V2HashedStorageChangeSets, V2HashedStorages, V2HashedStoragesHistory, V2StorageTrieChangeSets,
+    V2StoragesTrie, V2StoragesTrieHistory,
 };
 
 /// Enum to define where to read the value for a given key at a specific block.
@@ -67,8 +64,8 @@ enum ResolvedSource {
 /// 1. Seek the first history shard with `highest_block_number >= max_block_number`.
 /// 2. Within that shard, find the first block strictly `> max_block_number`.
 /// 3. If found → `FromChangeset(block)`.
-/// 4. If the shard boundary was hit (all entries ≤ `max_block_number`), advance
-///    to the next shard for the same key. If found → use its first entry.
+/// 4. If the shard boundary was hit (all entries ≤ `max_block_number`), advance to the next shard
+///    for the same key. If found → use its first entry.
 /// 5. Otherwise → `FromCurrentState`.
 fn find_source<T, C>(
     cursor: &mut C,
@@ -95,12 +92,13 @@ where
         return Ok(ResolvedSource::FromChangeset(block));
     }
 
-    // 3. All entries in this shard are ≤ max_block_number (shard boundary hit).
-    //    The next shard (if it exists for the same key) starts after this one.
-    if let Some((_, next_chunk)) = cursor.next()?.filter(|(k, _)| key_filter(k))
-        && let Some(block) = next_chunk.select(0) {
-            return Ok(ResolvedSource::FromChangeset(block));
-        }
+    // 3. All entries in this shard are ≤ max_block_number (shard boundary hit). The next shard (if
+    //    it exists for the same key) starts after this one.
+    if let Some((_, next_chunk)) = cursor.next()?.filter(|(k, _)| key_filter(k)) &&
+        let Some(block) = next_chunk.select(0)
+    {
+        return Ok(ResolvedSource::FromChangeset(block));
+    }
 
     Ok(ResolvedSource::FromCurrentState)
 }
@@ -198,12 +196,8 @@ where
 
     /// Advance the history walk cursor past all shards of `key` and return
     /// the next distinct key, if any.
-    fn advance_history_past(
-        &mut self,
-        key: &B256,
-    ) -> Result<Option<B256>, DatabaseError> {
-        let entry =
-            self.history_walk_cursor.seek(HashedAccountShardedKey::new(*key, u64::MAX))?;
+    fn advance_history_past(&mut self, key: &B256) -> Result<Option<B256>, DatabaseError> {
+        let entry = self.history_walk_cursor.seek(HashedAccountShardedKey::new(*key, u64::MAX))?;
         match entry {
             Some((k, _)) if k.0.key == *key => {
                 // On the last shard of this key — one more step.
@@ -217,9 +211,7 @@ where
     /// Merge-walk both the current-state cursor and the history-bitmap cursor,
     /// yielding the next key (in ascending order) whose account is live at
     /// `max_block_number`.
-    fn find_next_live(
-        &mut self,
-    ) -> Result<Option<(B256, Account)>, DatabaseError> {
+    fn find_next_live(&mut self) -> Result<Option<(B256, Account)>, DatabaseError> {
         loop {
             let (min_key, cs_value) = match (&self.cs_next, &self.hist_next_key) {
                 (Some((cs_k, cs_v)), Some(h_k)) => {
@@ -392,18 +384,13 @@ where
                     None => Ok(None),
                 }
             }
-            ResolvedSource::FromCurrentState => {
-                Ok(cs_value.copied().filter(|v| !v.is_zero()))
-            }
+            ResolvedSource::FromCurrentState => Ok(cs_value.copied().filter(|v| !v.is_zero())),
         }
     }
 
     /// Advance the history walk cursor past all shards of `key` (for this
     /// address) and return the next distinct storage key, if any.
-    fn advance_history_past(
-        &mut self,
-        key: &B256,
-    ) -> Result<Option<B256>, DatabaseError> {
+    fn advance_history_past(&mut self, key: &B256) -> Result<Option<B256>, DatabaseError> {
         let seek = HashedStorageShardedKey {
             hashed_address: self.hashed_address,
             sharded_key: ShardedKey::new(*key, u64::MAX),
@@ -429,9 +416,7 @@ where
     /// Merge-walk both the current-state `DupSort` cursor and the history-bitmap
     /// cursor, yielding the next storage slot whose value is live at
     /// `max_block_number`.
-    fn find_next_live(
-        &mut self,
-    ) -> Result<Option<(B256, U256)>, DatabaseError> {
+    fn find_next_live(&mut self) -> Result<Option<(B256, U256)>, DatabaseError> {
         loop {
             let (min_key, cs_value) = match (&self.cs_next, &self.hist_next_key) {
                 (Some(cs_entry), Some(h_k)) => {
@@ -467,9 +452,7 @@ impl<C, HC, CC> HashedCursor for V2StorageCursor<C, HC, CC>
 where
     C: DbCursorRO<V2HashedStorages> + DbDupCursorRO<V2HashedStorages> + Send,
     HC: DbCursorRO<V2HashedStoragesHistory> + Send,
-    CC: DbCursorRO<V2HashedStorageChangeSets>
-        + DbDupCursorRO<V2HashedStorageChangeSets>
-        + Send,
+    CC: DbCursorRO<V2HashedStorageChangeSets> + DbDupCursorRO<V2HashedStorageChangeSets> + Send,
 {
     type Value = U256;
 
@@ -479,8 +462,7 @@ where
         if self.is_latest {
             // Fast path: current state is authoritative.
             // Loop to skip zero-valued entries (tombstones).
-            let mut entry =
-                self.cursor.seek_by_key_subkey(self.hashed_address, subkey)?;
+            let mut entry = self.cursor.seek_by_key_subkey(self.hashed_address, subkey)?;
             while let Some(ref e) = entry {
                 if !e.value.is_zero() {
                     return Ok(Some((e.key, e.value)));
@@ -533,9 +515,7 @@ impl<C, HC, CC> HashedStorageCursor for V2StorageCursor<C, HC, CC>
 where
     C: DbCursorRO<V2HashedStorages> + DbDupCursorRO<V2HashedStorages> + Send,
     HC: DbCursorRO<V2HashedStoragesHistory> + Send,
-    CC: DbCursorRO<V2HashedStorageChangeSets>
-        + DbDupCursorRO<V2HashedStorageChangeSets>
-        + Send,
+    CC: DbCursorRO<V2HashedStorageChangeSets> + DbDupCursorRO<V2HashedStorageChangeSets> + Send,
 {
     fn is_storage_empty(&mut self) -> Result<bool, DatabaseError> {
         Ok(self.seek(B256::ZERO)?.is_none())
@@ -697,9 +677,7 @@ where
     /// Merge-walk both the current-state cursor and the history-bitmap cursor,
     /// yielding the next key (in ascending order) whose value is live at
     /// `max_block_number`.
-    fn find_next_live(
-        &mut self,
-    ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+    fn find_next_live(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         loop {
             // Pick the minimum key from the two sources.
             let (min_key, cs_value) = match (&self.cs_next, &self.hist_next_key) {
@@ -737,9 +715,7 @@ impl<C, HC, CC> TrieCursor for V2AccountTrieCursor<C, HC, CC>
 where
     C: DbCursorRO<V2AccountsTrie> + Send,
     HC: DbCursorRO<V2AccountsTrieHistory> + Send,
-    CC: DbCursorRO<V2AccountTrieChangeSets>
-        + DbDupCursorRO<V2AccountTrieChangeSets>
-        + Send,
+    CC: DbCursorRO<V2AccountTrieChangeSets> + DbDupCursorRO<V2AccountTrieChangeSets> + Send,
 {
     fn seek_exact(
         &mut self,
@@ -893,11 +869,8 @@ where
         path: Nibbles,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
         let nibbles = StoredNibbles(path);
-        let seek_key = StorageTrieShardedKey::new(
-            self.hashed_address,
-            nibbles.clone(),
-            self.max_block_number,
-        );
+        let seek_key =
+            StorageTrieShardedKey::new(self.hashed_address, nibbles.clone(), self.max_block_number);
 
         let addr = self.hashed_address;
         let nibbles_cmp = nibbles;
@@ -934,11 +907,8 @@ where
         cs_value: Option<&BranchNodeCompact>,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
         let nibbles = StoredNibbles(path);
-        let seek_key = StorageTrieShardedKey::new(
-            self.hashed_address,
-            nibbles.clone(),
-            self.max_block_number,
-        );
+        let seek_key =
+            StorageTrieShardedKey::new(self.hashed_address, nibbles.clone(), self.max_block_number);
 
         let addr = self.hashed_address;
         let nibbles_cmp = nibbles;
@@ -968,11 +938,7 @@ where
         &mut self,
         key: &StoredNibbles,
     ) -> Result<Option<StoredNibbles>, DatabaseError> {
-        let seek = StorageTrieShardedKey::new(
-            self.hashed_address,
-            key.clone(),
-            u64::MAX,
-        );
+        let seek = StorageTrieShardedKey::new(self.hashed_address, key.clone(), u64::MAX);
         let entry = self
             .history_walk_cursor
             .seek(seek)?
@@ -993,9 +959,7 @@ where
 
     /// Merge-walk both the current-state `DupSort` cursor and the history-bitmap
     /// cursor, yielding the next path whose node is live at `max_block_number`.
-    fn find_next_live(
-        &mut self,
-    ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+    fn find_next_live(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         loop {
             let (min_nibbles, cs_node) = match (&self.cs_next, &self.hist_next_key) {
                 (Some(cs_entry), Some(h_k)) => {
@@ -1014,11 +978,7 @@ where
             };
 
             // Advance whichever cursor(s) produced this key.
-            if self
-                .cs_next
-                .as_ref()
-                .is_some_and(|e| StoredNibbles(e.nibbles.0) == min_nibbles)
-            {
+            if self.cs_next.as_ref().is_some_and(|e| StoredNibbles(e.nibbles.0) == min_nibbles) {
                 self.cs_next = self.cursor.next_dup()?.map(|(_, v)| v);
             }
             if self.hist_next_key.as_ref().is_some_and(|k| *k == min_nibbles) {
@@ -1026,9 +986,7 @@ where
             }
 
             // Resolve the value at max_block_number.
-            if let Some(node) =
-                self.resolve_node_merge(min_nibbles.0, cs_node.as_ref())?
-            {
+            if let Some(node) = self.resolve_node_merge(min_nibbles.0, cs_node.as_ref())? {
                 self.last_key = Some(StoredNibbles(min_nibbles.0));
                 return Ok(Some((min_nibbles.0, node)));
             }
@@ -1040,9 +998,7 @@ impl<C, HC, CC> TrieCursor for V2StorageTrieCursor<C, HC, CC>
 where
     C: DbCursorRO<V2StoragesTrie> + DbDupCursorRO<V2StoragesTrie> + Send,
     HC: DbCursorRO<V2StoragesTrieHistory> + Send,
-    CC: DbCursorRO<V2StorageTrieChangeSets>
-        + DbDupCursorRO<V2StorageTrieChangeSets>
-        + Send,
+    CC: DbCursorRO<V2StorageTrieChangeSets> + DbDupCursorRO<V2StorageTrieChangeSets> + Send,
 {
     fn seek_exact(
         &mut self,
@@ -1101,11 +1057,7 @@ where
         // Initialize both merge cursors at the target key.
         self.cs_next =
             self.cursor.seek_by_key_subkey(self.hashed_address, StoredNibblesSubKey(key))?;
-        let hist_seek = StorageTrieShardedKey::new(
-            self.hashed_address,
-            StoredNibbles(key),
-            0,
-        );
+        let hist_seek = StorageTrieShardedKey::new(self.hashed_address, StoredNibbles(key), 0);
         self.hist_next_key = self
             .history_walk_cursor
             .seek(hist_seek)?
@@ -1141,9 +1093,7 @@ impl<C, HC, CC> TrieStorageCursor for V2StorageTrieCursor<C, HC, CC>
 where
     C: DbCursorRO<V2StoragesTrie> + DbDupCursorRO<V2StoragesTrie> + Send,
     HC: DbCursorRO<V2StoragesTrieHistory> + Send,
-    CC: DbCursorRO<V2StorageTrieChangeSets>
-        + DbDupCursorRO<V2StorageTrieChangeSets>
-        + Send,
+    CC: DbCursorRO<V2StorageTrieChangeSets> + DbDupCursorRO<V2StorageTrieChangeSets> + Send,
 {
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = hashed_address;
@@ -1157,18 +1107,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models;
-    use crate::db::models::{HashedAccountBeforeTx, TrieChangeSetsEntry};
+    use crate::db::{
+        models,
+        models::{HashedAccountBeforeTx, TrieChangeSetsEntry},
+    };
     use reth_db::{
-        cursor::{DbCursorRW, DbDupCursorRW},
-        mdbx::{init_db_for, DatabaseArguments},
         Database, DatabaseEnv,
+        cursor::{DbCursorRW, DbDupCursorRW},
+        mdbx::{DatabaseArguments, init_db_for},
     };
     use reth_db_api::transaction::{DbTx, DbTxMut};
     use reth_primitives_traits::StorageEntry;
-    use reth_trie::{
-        BranchNodeCompact, Nibbles, StoredNibbles, StoredNibblesSubKey,
-    };
+    use reth_trie::{BranchNodeCompact, Nibbles, StoredNibbles, StoredNibblesSubKey};
     use tempfile::TempDir;
 
     fn setup_db() -> DatabaseEnv {
@@ -1462,10 +1412,7 @@ mod tests {
 
         {
             let wtx = db.tx_mut().expect("rw tx");
-            wtx.cursor_write::<V2HashedAccounts>()
-                .expect("c")
-                .upsert(addr, &acc)
-                .expect("upsert");
+            wtx.cursor_write::<V2HashedAccounts>().expect("c").upsert(addr, &acc).expect("upsert");
             wtx.commit().expect("commit");
         }
 
@@ -1971,10 +1918,7 @@ mod tests {
                 )
                 .expect("upsert");
 
-            let cs_entry = TrieChangeSetsEntry {
-                nibbles: StoredNibblesSubKey(p2),
-                node: None,
-            };
+            let cs_entry = TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(p2), node: None };
             wtx.cursor_dup_write::<V2AccountTrieChangeSets>()
                 .expect("c")
                 .append_dup(5u64, cs_entry)
@@ -2162,9 +2106,8 @@ mod tests {
         );
 
         // seek(default) → a1 (discovered via history walk, resolved from changeset)
-        let out = TrieCursor::seek(&mut cur, Nibbles::default())
-            .expect("ok")
-            .expect("should find a1");
+        let out =
+            TrieCursor::seek(&mut cur, Nibbles::default()).expect("ok").expect("should find a1");
         assert_eq!(out.0, a1, "a1 must be visible at block 2");
         assert_eq!(out.1, n);
 
@@ -2663,10 +2606,7 @@ mod tests {
                 .expect("c")
                 .append_dup(
                     10u64,
-                    TrieChangeSetsEntry {
-                        nibbles: StoredNibblesSubKey(p),
-                        node: Some(n.clone()),
-                    },
+                    TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(p), node: Some(n.clone()) },
                 )
                 .expect("append");
 
@@ -2839,9 +2779,8 @@ mod tests {
             false,
         );
 
-        let out = TrieCursor::seek(&mut cur, Nibbles::default())
-            .expect("ok")
-            .expect("should find a1");
+        let out =
+            TrieCursor::seek(&mut cur, Nibbles::default()).expect("ok").expect("should find a1");
         assert_eq!(out.0, a1, "a1 must be visible at block 3");
 
         let out = TrieCursor::next(&mut cur).expect("ok").expect("b1");
@@ -2891,10 +2830,7 @@ mod tests {
             .expect("append");
             csc.append_dup(
                 BlockNumberHashedAddress((5u64, addr_b)),
-                TrieChangeSetsEntry {
-                    nibbles: StoredNibblesSubKey(p2),
-                    node: Some(n),
-                },
+                TrieChangeSetsEntry { nibbles: StoredNibblesSubKey(p2), node: Some(n) },
             )
             .expect("append");
 
@@ -2941,11 +2877,8 @@ mod tests {
                 &StorageTrieEntry { nibbles: StoredNibblesSubKey(p1), node: n.clone() },
             )
             .expect("upsert");
-            c.upsert(
-                addr_b,
-                &StorageTrieEntry { nibbles: StoredNibblesSubKey(p2), node: n },
-            )
-            .expect("upsert");
+            c.upsert(addr_b, &StorageTrieEntry { nibbles: StoredNibblesSubKey(p2), node: n })
+                .expect("upsert");
             wtx.commit().expect("commit");
         }
 
@@ -3116,10 +3049,8 @@ mod tests {
             let wtx = db.tx_mut().expect("rw tx");
             let mut c = wtx.cursor_dup_write::<V2HashedStorages>().expect("c");
             // s1 and s3 exist; s2 was zeroed at block 10
-            c.upsert(addr, &StorageEntry { key: s1, value: U256::from(100u64) })
-                .expect("upsert");
-            c.upsert(addr, &StorageEntry { key: s3, value: U256::from(300u64) })
-                .expect("upsert");
+            c.upsert(addr, &StorageEntry { key: s1, value: U256::from(100u64) }).expect("upsert");
+            c.upsert(addr, &StorageEntry { key: s3, value: U256::from(300u64) }).expect("upsert");
 
             // s2 history: modified at [5, 10]
             wtx.cursor_write::<V2HashedStoragesHistory>()
@@ -3276,10 +3207,8 @@ mod tests {
         {
             let wtx = db.tx_mut().expect("rw tx");
             let mut c = wtx.cursor_dup_write::<V2HashedStorages>().expect("c");
-            c.upsert(addr1, &StorageEntry { key: slot, value: U256::from(11u64) })
-                .expect("upsert");
-            c.upsert(addr2, &StorageEntry { key: slot, value: U256::from(22u64) })
-                .expect("upsert");
+            c.upsert(addr1, &StorageEntry { key: slot, value: U256::from(11u64) }).expect("upsert");
+            c.upsert(addr2, &StorageEntry { key: slot, value: U256::from(22u64) }).expect("upsert");
             wtx.commit().expect("commit");
         }
 
@@ -3311,27 +3240,12 @@ mod tests {
         let root_path = Nibbles::default();
         let child_path = Nibbles::from_nibbles([0]);
 
-        let root_node_at_block5 = BranchNodeCompact::new(
-            0b11,
-            0,
-            0,
-            vec![],
-            Some(B256::repeat_byte(0x55)),
-        );
-        let root_node_at_block10 = BranchNodeCompact::new(
-            0b111,
-            0,
-            0,
-            vec![],
-            Some(B256::repeat_byte(0xAA)),
-        );
-        let child_node_at_block10 = BranchNodeCompact::new(
-            0b101,
-            0,
-            0,
-            vec![],
-            Some(B256::repeat_byte(0xBB)),
-        );
+        let root_node_at_block5 =
+            BranchNodeCompact::new(0b11, 0, 0, vec![], Some(B256::repeat_byte(0x55)));
+        let root_node_at_block10 =
+            BranchNodeCompact::new(0b111, 0, 0, vec![], Some(B256::repeat_byte(0xAA)));
+        let child_node_at_block10 =
+            BranchNodeCompact::new(0b101, 0, 0, vec![], Some(B256::repeat_byte(0xBB)));
 
         {
             let wtx = db.tx_mut().expect("rw tx");
@@ -3506,16 +3420,10 @@ mod tests {
         {
             let wtx = db.tx_mut().expect("rw tx");
             let mut c = wtx.cursor_dup_write::<V2StoragesTrie>().expect("c");
-            c.upsert(
-                addr_a,
-                &StorageTrieEntry { nibbles: StoredNibblesSubKey(p1), node: node() },
-            )
-            .expect("upsert");
-            c.upsert(
-                addr_b,
-                &StorageTrieEntry { nibbles: StoredNibblesSubKey(p2), node: node() },
-            )
-            .expect("upsert");
+            c.upsert(addr_a, &StorageTrieEntry { nibbles: StoredNibblesSubKey(p1), node: node() })
+                .expect("upsert");
+            c.upsert(addr_b, &StorageTrieEntry { nibbles: StoredNibblesSubKey(p2), node: node() })
+                .expect("upsert");
             wtx.commit().expect("commit");
         }
 

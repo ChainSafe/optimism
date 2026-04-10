@@ -3,8 +3,9 @@
 use alloy_eips::{BlockNumHash, NumHash, eip1898::BlockWithParent};
 use alloy_primitives::{B256, U256};
 use reth_optimism_trie::{
-    db::{MdbxProofsStorage, MdbxProofsStorageV2}, BlockStateDiff, InMemoryProofsStorage, OpProofsInitProvider,
-    OpProofsStorageError, OpProofsStore, OpProofsProviderRO, OpProofsProviderRw
+    BlockStateDiff, InMemoryProofsStorage, OpProofsInitProvider, OpProofsProviderRO,
+    OpProofsProviderRw, OpProofsStorageError, OpProofsStore,
+    db::{MdbxProofsStorage, MdbxProofsStorageV2},
 };
 use reth_primitives_traits::Account;
 use reth_trie::{
