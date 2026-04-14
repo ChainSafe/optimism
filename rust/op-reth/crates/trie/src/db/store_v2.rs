@@ -1,4 +1,4 @@
-//! V2 MDBX implementation of [`OpProofsStore`](crate::OpProofsStore).
+//! V2 MDBX implementation of [`OpProofsStore`].
 //!
 //! This module implements the v2 table schema using **3-table-per-data-type** pattern:
 //!
@@ -407,8 +407,8 @@ impl<TX: DbTxMut + DbTx> WriteCursors<TX> {
 /// Append multiple block numbers to a sharded history bitmap in a single
 /// seek+decode+push-all+upsert round-trip.
 ///
-/// This is the batched equivalent of
-/// [`MdbxProofsProviderV2::append_history_index_with_cursor`].
+/// This is the batched equivalent of a single-block
+/// `append_history_index_with_cursor` call.
 fn append_history_indices_batched<T>(
     cursor: &mut (impl DbCursorRO<T> + DbCursorRW<T>),
     block_numbers: &[BlockNumber],

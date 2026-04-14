@@ -5,8 +5,8 @@ use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, EnvironmentArgs};
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
-use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_node::args::ProofsStorageVersion;
+use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_trie::{
     OpProofStoragePruner, OpProofsProviderRO, OpProofsStore,
     db::{MdbxProofsStorage, MdbxProofsStorageV2},

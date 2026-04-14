@@ -109,7 +109,7 @@ impl Decode for AccountTrieShardedKey {
 /// Account state before a block, keyed by hashed address.
 ///
 /// This is the hashed-address equivalent of reth's
-/// [`AccountBeforeTx`](reth_db_models::AccountBeforeTx), designed for our v2 `AccountChangeSets`
+/// `AccountBeforeTx`, designed for our v2 `AccountChangeSets`
 /// table where keys are `keccak256(address)`.
 ///
 /// Layout: `[hashed_address: 32 bytes][account: Compact-encoded or empty]`

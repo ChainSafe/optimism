@@ -1,6 +1,9 @@
 //! Node luncher with proof history support.
 
-use crate::{OpNode, args::{ProofsStorageVersion, RollupArgs}};
+use crate::{
+    OpNode,
+    args::{ProofsStorageVersion, RollupArgs},
+};
 use eyre::ErrReport;
 use futures_util::FutureExt;
 use reth_db::DatabaseEnv;
@@ -12,7 +15,10 @@ use reth_optimism_rpc::{
     debug::{DebugApiExt, DebugApiOverrideServer},
     eth::proofs::{EthApiExt, EthApiOverrideServer},
 };
-use reth_optimism_trie::{OpProofsStorage, db::{MdbxProofsStorage, MdbxProofsStorageV2}};
+use reth_optimism_trie::{
+    OpProofsStorage,
+    db::{MdbxProofsStorage, MdbxProofsStorageV2},
+};
 use reth_tasks::TaskExecutor;
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
