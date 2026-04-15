@@ -1,5 +1,6 @@
 //! Command that unwinds the OP proofs storage to a specific block number.
 
+use alloy_consensus::BlockHeader;
 use clap::Parser;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, EnvironmentArgs};
@@ -83,45 +84,48 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> UnwindCommand<C> {
         // Initialize the environment with read-only access
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO, runtime)?;
 
-        macro_rules! run_unwind {
-            ($storage:expr) => {{
-                let storage = $storage;
-
-                // Validate that the target block is within a valid range for unwinding
-                if !self.validate_unwind_range(storage.clone())? {
-                    return Ok(());
-                }
-
-                // Get the target block from the main database
-                let block = provider_factory
-                    .recovered_block(self.target.into(), TransactionVariant::NoHash)?
-                    .ok_or_else(|| {
-                        eyre::eyre!("Target block {} not found in the main database", self.target)
-                    })?;
-
-                info!(target: "reth::cli", block_number = block.number, block_hash = %block.hash(), "Unwinding to target block");
-                let provider_rw = storage.provider_rw()?;
-                provider_rw.unwind_history(block.block_with_parent())?;
-                provider_rw.commit()?;
-            }};
-        }
-
         match self.storage_version {
             ProofsStorageVersion::V1 => {
                 let storage: Arc<MdbxProofsStorage> = Arc::new(
                     MdbxProofsStorage::new(&self.storage_path)
                         .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
                 );
-                run_unwind!(storage);
+                self.run_unwind(storage, &provider_factory)?;
             }
             ProofsStorageVersion::V2 => {
                 let storage: Arc<MdbxProofsStorageV2> = Arc::new(
                     MdbxProofsStorageV2::new(&self.storage_path)
                         .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
                 );
-                run_unwind!(storage);
+                self.run_unwind(storage, &provider_factory)?;
             }
         }
+
+        Ok(())
+    }
+
+    /// Validate the unwind range and unwind the proofs storage to the target block.
+    fn run_unwind<S, F>(&self, storage: S, provider_factory: &F) -> eyre::Result<()>
+    where
+        S: OpProofsStore + Clone,
+        F: BlockReader,
+    {
+        // Validate that the target block is within a valid range for unwinding
+        if !self.validate_unwind_range(storage.clone())? {
+            return Ok(());
+        }
+
+        // Get the target block from the main database
+        let block = provider_factory
+            .recovered_block(self.target.into(), TransactionVariant::NoHash)?
+            .ok_or_else(|| {
+                eyre::eyre!("Target block {} not found in the main database", self.target)
+            })?;
+
+        info!(target: "reth::cli", block_number = block.number(), block_hash = %block.hash(), "Unwinding to target block");
+        let provider_rw = storage.provider_rw()?;
+        provider_rw.unwind_history(block.block_with_parent())?;
+        provider_rw.commit()?;
 
         Ok(())
     }

@@ -45,8 +45,8 @@ type MixedL2ELKind string
 
 const (
 	MixedL2ELOpGeth   MixedL2ELKind = "op-geth"
-	MixedL2ELOpReth   MixedL2ELKind = "op-reth"
-	MixedL2ELOpRethV2 MixedL2ELKind = "op-reth-with-proof-v2"
+	MixedL2ELOpReth   MixedL2ELKind = "op-reth-proof-v1"
+	MixedL2ELOpRethV2 MixedL2ELKind = "op-reth-proof-v2"
 )
 
 type MixedL2CLKind string
