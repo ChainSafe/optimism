@@ -239,7 +239,6 @@ where
         > + NodeTypesWithDB,
     S: OpProofsStore + Send + Sync + Clone + std::fmt::Debug + 'static,
 {
-    #[allow(clippy::useless_conversion)]
     let storage: OpProofsStorage<S> = raw_storage.into();
     let genesis_hash = chain_spec.genesis_hash();
     let mut nonce_counter = 0u64;
