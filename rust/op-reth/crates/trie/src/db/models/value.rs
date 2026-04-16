@@ -163,4 +163,47 @@ mod tests {
         let entry = HashedAccountBeforeTx::new(addr, None);
         assert_eq!(entry.get_subkey(), addr);
     }
+
+    #[test]
+    fn test_trie_changesets_entry_roundtrip_with_node() {
+        let nibbles =
+            StoredNibblesSubKey(reth_trie_common::Nibbles::from_nibbles_unchecked([0x0A, 0x0B]));
+        let node = BranchNodeCompact::new(0b11, 0, 0, vec![], Some(B256::repeat_byte(0xDD)));
+        let original = TrieChangeSetsEntry { nibbles, node: Some(node) };
+
+        let compressed = original.clone().compress();
+        let decompressed = TrieChangeSetsEntry::decompress(&compressed).unwrap();
+        assert_eq!(original, decompressed);
+    }
+
+    #[test]
+    fn test_trie_changesets_entry_roundtrip_none_node() {
+        let nibbles =
+            StoredNibblesSubKey(reth_trie_common::Nibbles::from_nibbles_unchecked([0x01, 0x02, 0x03]));
+        let original = TrieChangeSetsEntry { nibbles, node: None };
+
+        let compressed = original.clone().compress();
+        let decompressed = TrieChangeSetsEntry::decompress(&compressed).unwrap();
+        assert_eq!(original, decompressed);
+    }
+
+    #[test]
+    fn test_trie_changesets_entry_roundtrip_empty() {
+        let original = TrieChangeSetsEntry {
+            nibbles: StoredNibblesSubKey(reth_trie_common::Nibbles::default()),
+            node: None,
+        };
+
+        let compressed = original.clone().compress();
+        let decompressed = TrieChangeSetsEntry::decompress(&compressed).unwrap();
+        assert_eq!(original, decompressed);
+    }
+
+    #[test]
+    fn test_trie_changesets_entry_subkey() {
+        let nibbles =
+            StoredNibblesSubKey(reth_trie_common::Nibbles::from_nibbles_unchecked([0x05, 0x06]));
+        let entry = TrieChangeSetsEntry { nibbles: nibbles.clone(), node: None };
+        assert_eq!(entry.get_subkey(), nibbles);
+    }
 }
