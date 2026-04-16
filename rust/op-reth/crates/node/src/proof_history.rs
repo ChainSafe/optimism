@@ -73,9 +73,12 @@ where
     let storage: OpProofsStorage<Arc<S>> = mdbx.clone().into();
     let storage_exec = storage.clone();
 
-    let proofs_history_window = args.proofs_history_window;
-    let proofs_history_prune_interval = args.proofs_history_prune_interval;
-    let proofs_history_verification_interval = args.proofs_history_verification_interval;
+    let RollupArgs {
+        proofs_history_window,
+        proofs_history_prune_interval,
+        proofs_history_verification_interval,
+        ..
+    } = args.clone();
 
     let handle = builder
         .node(OpNode::new(args))
