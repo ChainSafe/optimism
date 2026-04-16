@@ -24,9 +24,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing::info;
 
-/// - no proofs history (plain node),
-/// - in-mem proofs storage,
-/// - MDBX proofs storage.
+/// Launch the node in one of three proof-history modes:
 pub async fn launch_node(
     builder: WithLaunchContext<NodeBuilder<DatabaseEnv, OpChainSpec>>,
     args: RollupArgs,
