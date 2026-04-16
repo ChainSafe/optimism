@@ -277,5 +277,10 @@ where
         Ok(self.last_key.as_ref().map(|k| k.0))
     }
 
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        self.cs_next = None;
+        self.hist_next_key = None;
+        self.last_key = None;
+        self.seeked = false;
+    }
 }
