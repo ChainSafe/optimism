@@ -4,16 +4,17 @@
 //!
 //! | Purpose | Accounts | Storages | Account Trie | Storage Trie |
 //! |---------|----------|----------|-------------|-------------|
-//! | Current state | [`V2HashedAccounts`] | [`V2HashedStorages`] | [`V2AccountsTrie`] | [`V2StoragesTrie`] |
-//! | `ChangeSets` | [`V2HashedAccountChangeSets`] | [`V2HashedStorageChangeSets`] | [`V2AccountTrieChangeSets`] | [`V2StorageTrieChangeSets`] |
-//! | History | [`V2HashedAccountsHistory`] | [`V2HashedStoragesHistory`] | [`V2AccountsTrieHistory`] | [`V2StoragesTrieHistory`] |
+//! | Current state | `V2HashedAccounts` | `V2HashedStorages` | `V2AccountsTrie` | `V2StoragesTrie` |
+//! | `ChangeSets` | `V2HashedAccountChangeSets` | `V2HashedStorageChangeSets` | `V2AccountTrieChangeSets` | `V2StorageTrieChangeSets` |
+//! | History | `V2HashedAccountsHistory` | `V2HashedStoragesHistory` | `V2AccountsTrieHistory` | `V2StoragesTrieHistory` |
 //!
 //! # Historical Lookup Strategy
 //!
 //! Each cursor accepts a `max_block_number` parameter. For each key encountered:
 //!
-//! 1. **History bitmap lookup**: Seek `ShardedKey(key, max_block_number)` in the history table. The
-//!    bitmap tells us which blocks modified this key.
+//! 1. **History bitmap lookup**: Seek `ShardedKey(key, max_block_number + 1)` in the history table.
+//!    This lands on the first shard whose `highest_block_number > max_block_number`. The bitmap
+//!    tells us which blocks modified this key.
 //! 2. **Find the first modification *after* `max_block_number`**: Using `rank` + `select` on the
 //!    bitmap. `rank(max_block_number)` counts entries ≤ the target block; `select(rank)` returns
 //!    the first entry strictly greater.
@@ -50,13 +51,18 @@ pub(crate) enum ResolvedSource {
 /// Search history bitmaps to determine where to read the value for a key
 /// at a given `max_block_number`.
 ///
+/// **Important**: `seek_key` must embed `max_block_number + 1` (not
+/// `max_block_number` itself) so that the seek lands on a shard whose
+/// `highest_block_number > max_block_number`. This guarantees the shard
+/// contains at least one entry after the target block, eliminating the
+/// need for a `cursor.next()` fallback.
+///
 /// The algorithm:
-/// 1. Seek the first history shard with `highest_block_number >= max_block_number`.
+/// 1. Seek the first history shard with `highest_block_number > max_block_number` (achieved by
+///    embedding `max_block_number + 1` in `seek_key`).
 /// 2. Within that shard, find the first block strictly `> max_block_number`.
 /// 3. If found → `FromChangeset(block)`.
-/// 4. If the shard boundary was hit (all entries ≤ `max_block_number`), advance to the next shard
-///    for the same key. If found → use its first entry.
-/// 5. Otherwise → `FromCurrentState`.
+/// 4. Otherwise → `FromCurrentState`.
 pub(crate) fn find_source<T, C>(
     cursor: &mut C,
     seek_key: T::Key,
@@ -67,30 +73,19 @@ where
     T: Table<Value = BlockNumberList>,
     C: DbCursorRO<T>,
 {
-    // 1. Seek the first shard with highest_block_number >= max_block_number.
+    // 1. Seek using the caller-provided key (which embeds max_block_number + 1), then filter to
+    //    ensure the shard belongs to the expected key.
     let shard = cursor.seek(seek_key)?.filter(|(k, _)| key_filter(k));
-
     let Some((_, chunk)) = shard else {
-        // No history shard found for this key (or all shards have
-        // highest < max_block_number). Current state is authoritative.
         return Ok(ResolvedSource::FromCurrentState);
     };
 
     // 2. rank(n) = count of entries ≤ n. select(rank) = first entry > n.
     let rank = chunk.rank(max_block_number);
-    if let Some(block) = chunk.select(rank) {
-        return Ok(ResolvedSource::FromChangeset(block));
-    }
-
-    // 3. All entries in this shard are ≤ max_block_number (shard boundary hit). The next shard (if
-    //    it exists for the same key) starts after this one.
-    if let Some((_, next_chunk)) = cursor.next()?.filter(|(k, _)| key_filter(k)) &&
-        let Some(block) = next_chunk.select(0)
-    {
-        return Ok(ResolvedSource::FromChangeset(block));
-    }
-
-    Ok(ResolvedSource::FromCurrentState)
+    Ok(chunk
+        .select(rank)
+        .map(ResolvedSource::FromChangeset)
+        .unwrap_or(ResolvedSource::FromCurrentState))
 }
 
 #[cfg(test)]

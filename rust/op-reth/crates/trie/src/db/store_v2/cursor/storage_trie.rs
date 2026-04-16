@@ -90,8 +90,11 @@ where
         path: Nibbles,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
         let nibbles = StoredNibbles(path);
-        let seek_key =
-            StorageTrieShardedKey::new(self.hashed_address, nibbles.clone(), self.max_block_number);
+        let seek_key = StorageTrieShardedKey::new(
+            self.hashed_address,
+            nibbles.clone(),
+            self.max_block_number.saturating_add(1),
+        );
 
         let addr = self.hashed_address;
         let nibbles_cmp = nibbles;
@@ -128,8 +131,11 @@ where
         cs_value: Option<&BranchNodeCompact>,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
         let nibbles = StoredNibbles(path);
-        let seek_key =
-            StorageTrieShardedKey::new(self.hashed_address, nibbles.clone(), self.max_block_number);
+        let seek_key = StorageTrieShardedKey::new(
+            self.hashed_address,
+            nibbles.clone(),
+            self.max_block_number.saturating_add(1),
+        );
 
         let addr = self.hashed_address;
         let nibbles_cmp = nibbles;
@@ -182,6 +188,10 @@ where
     /// cursor, yielding the next path whose node is live at `max_block_number`.
     fn find_next_live(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         loop {
+            // Step 1: Pick the minimum key from current-state and history cursors.
+            // If both have the same key, prefer the current-state value.
+            // `cs_node` is `Some` when the key exists in current state, `None`
+            // when it only appears in history (i.e. deleted after max_block_number).
             let (min_nibbles, cs_node) = match (&self.cs_next, &self.hist_next_key) {
                 (Some(cs_entry), Some(h_k)) => {
                     let cs_stored = StoredNibbles(cs_entry.nibbles.0);
@@ -198,7 +208,8 @@ where
                 (None, None) => return Ok(None),
             };
 
-            // Advance whichever cursor(s) produced this key.
+            // Step 2: Advance whichever cursor(s) produced this key.
+            // Both are advanced when they have the same key (deduplication).
             if self.cs_next.as_ref().is_some_and(|e| StoredNibbles(e.nibbles.0) == min_nibbles) {
                 self.cs_next = self.cursor.next_dup()?.map(|(_, v)| v);
             }
@@ -206,11 +217,14 @@ where
                 self.hist_next_key = self.advance_history_past(&min_nibbles)?;
             }
 
-            // Resolve the value at max_block_number.
+            // Step 3: Resolve the value at max_block_number.
+            // Returns `Some` if the key was live at that block, `None` if it
+            // didn't exist yet or was already deleted.
             if let Some(node) = self.resolve_node_merge(min_nibbles.0, cs_node.as_ref())? {
                 self.last_key = Some(StoredNibbles(min_nibbles.0));
                 return Ok(Some((min_nibbles.0, node)));
             }
+            // Key doesn't exist at max_block_number — continue to next.
         }
     }
 }

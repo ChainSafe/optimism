@@ -103,19 +103,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         }
 
         let range = (proof_window.earliest.number + 1)..=target_block;
-        let mut counts = WriteCounts::default();
 
-        // Phase A: scan and delete changesets, collecting affected keys for Phase B.
-        let acct_trie_keys = self.prune_account_trie_changesets(&range, &mut counts)?;
-        let stor_trie_keys = self.prune_storage_trie_changesets(&range, &mut counts)?;
-        let acct_keys = self.prune_hashed_account_changesets(&range, &mut counts)?;
-        let stor_keys = self.prune_hashed_storage_changesets(&range, &mut counts)?;
-
-        // Phase B: remove pruned block numbers from history bitmaps.
-        self.prune_account_trie_history(&range, &acct_trie_keys)?;
-        self.prune_storage_trie_history(&range, &stor_trie_keys)?;
-        self.prune_hashed_account_history(&range, &acct_keys)?;
-        self.prune_hashed_storage_history(&range, &stor_keys)?;
+        let counts = self.prune_changesets_and_history(&range)?;
 
         self.set_earliest_block_number_inner(target_block, new_earliest_block_ref.block.hash)?;
 
@@ -138,17 +127,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
 
         let range = to.block.number..=proof_window.latest.number;
 
-        // Single-scan: restore state, collect affected keys, delete changesets
-        let acct_trie_keys = self.unwind_and_collect_account_trie(&range)?;
-        let stor_trie_keys = self.unwind_and_collect_storage_trie(&range)?;
-        let acct_keys = self.unwind_and_collect_hashed_accounts(&range)?;
-        let stor_keys = self.unwind_and_collect_hashed_storages(&range)?;
-
-        // Phase B: remove unwound block numbers from history bitmaps
-        self.prune_account_trie_history(&range, &acct_trie_keys)?;
-        self.prune_storage_trie_history(&range, &stor_trie_keys)?;
-        self.prune_hashed_account_history(&range, &acct_keys)?;
-        self.prune_hashed_storage_history(&range, &stor_keys)?;
+        self.unwind_changesets_and_history(&range)?;
 
         // Update latest block
         self.set_latest_block_number_inner(to.block.number.saturating_sub(1), to.parent)?;
@@ -178,18 +157,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         // Phase 1: unwind to the latest common block, which is the new base of the proof window.
         {
             let range = (latest_common_block.number + 1)..=proof_window.latest.number;
-
-            // Single-scan: restore state, collect affected keys, delete changesets
-            let acct_trie_keys = self.unwind_and_collect_account_trie(&range)?;
-            let stor_trie_keys = self.unwind_and_collect_storage_trie(&range)?;
-            let acct_keys = self.unwind_and_collect_hashed_accounts(&range)?;
-            let stor_keys = self.unwind_and_collect_hashed_storages(&range)?;
-
-            // Phase B: remove old block numbers from history bitmaps
-            self.prune_account_trie_history(&range, &acct_trie_keys)?;
-            self.prune_storage_trie_history(&range, &stor_trie_keys)?;
-            self.prune_hashed_account_history(&range, &acct_keys)?;
-            self.prune_hashed_storage_history(&range, &stor_keys)?;
+            self.unwind_changesets_and_history(&range)?;
         }
 
         // Phase 2: add new blocks on top of the latest common block.

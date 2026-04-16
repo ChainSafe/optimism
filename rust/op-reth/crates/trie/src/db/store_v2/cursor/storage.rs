@@ -87,7 +87,7 @@ where
     ) -> Result<Option<U256>, DatabaseError> {
         let history_key = HashedStorageShardedKey {
             hashed_address: self.hashed_address,
-            sharded_key: ShardedKey::new(storage_key, self.max_block_number),
+            sharded_key: ShardedKey::new(storage_key, self.max_block_number.saturating_add(1)),
         };
 
         let addr = self.hashed_address;
@@ -145,6 +145,10 @@ where
     /// `max_block_number`.
     fn find_next_live(&mut self) -> Result<Option<(B256, U256)>, DatabaseError> {
         loop {
+            // Step 1: Pick the minimum key from current-state and history cursors.
+            // If both have the same key, prefer the current-state value.
+            // `cs_value` is `Some` when the key exists in current state, `None`
+            // when it only appears in history (i.e. deleted after max_block_number).
             let (min_key, cs_value) = match (&self.cs_next, &self.hist_next_key) {
                 (Some(cs_entry), Some(h_k)) => {
                     if cs_entry.key <= *h_k {
@@ -158,7 +162,8 @@ where
                 (None, None) => return Ok(None),
             };
 
-            // Advance whichever cursor(s) produced this key.
+            // Step 2: Advance whichever cursor(s) produced this key.
+            // Both are advanced when they have the same key (deduplication).
             if self.cs_next.as_ref().is_some_and(|e| e.key == min_key) {
                 self.cs_next = self.cursor.next_dup_val()?;
             }
@@ -166,7 +171,9 @@ where
                 self.hist_next_key = self.advance_history_past(&min_key)?;
             }
 
-            // Resolve the value at max_block_number.
+            // Step 3: Resolve the value at max_block_number.
+            // Returns `Some` if the key was live at that block, `None` if it
+            // didn't exist yet or was already deleted.
             if let Some(value) = self.resolve_storage_merge(min_key, cs_value.as_ref())? {
                 return Ok(Some((min_key, value)));
             }

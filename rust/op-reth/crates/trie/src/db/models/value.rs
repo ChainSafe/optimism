@@ -178,8 +178,9 @@ mod tests {
 
     #[test]
     fn test_trie_changesets_entry_roundtrip_none_node() {
-        let nibbles =
-            StoredNibblesSubKey(reth_trie_common::Nibbles::from_nibbles_unchecked([0x01, 0x02, 0x03]));
+        let nibbles = StoredNibblesSubKey(reth_trie_common::Nibbles::from_nibbles_unchecked([
+            0x01, 0x02, 0x03,
+        ]));
         let original = TrieChangeSetsEntry { nibbles, node: None };
 
         let compressed = original.clone().compress();

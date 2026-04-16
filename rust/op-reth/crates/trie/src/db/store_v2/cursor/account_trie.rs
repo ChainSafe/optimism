@@ -85,7 +85,8 @@ where
         &mut self,
         path: &StoredNibbles,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let seek_key = AccountTrieShardedKey::new(path.clone(), self.max_block_number);
+        let seek_key =
+            AccountTrieShardedKey::new(path.clone(), self.max_block_number.saturating_add(1));
         let target = path.clone();
         let source = find_source::<V2AccountsTrieHistory, _>(
             &mut self.history_cursor,
@@ -117,7 +118,8 @@ where
         path: &StoredNibbles,
         cs_value: Option<&BranchNodeCompact>,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let seek_key = AccountTrieShardedKey::new(path.clone(), self.max_block_number);
+        let seek_key =
+            AccountTrieShardedKey::new(path.clone(), self.max_block_number.saturating_add(1));
         let target = path.clone();
         let source = find_source::<V2AccountsTrieHistory, _>(
             &mut self.history_cursor,
@@ -163,7 +165,10 @@ where
     /// `max_block_number`.
     fn find_next_live(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
         loop {
-            // Pick the minimum key from the two sources.
+            // Step 1: Pick the minimum key from current-state and history cursors.
+            // If both have the same key, prefer the current-state value.
+            // `cs_value` is `Some` when the key exists in current state, `None`
+            // when it only appears in history (i.e. deleted after max_block_number).
             let (min_key, cs_value) = match (&self.cs_next, &self.hist_next_key) {
                 (Some((cs_k, cs_v)), Some(h_k)) => {
                     if cs_k <= h_k {
@@ -177,7 +182,8 @@ where
                 (None, None) => return Ok(None),
             };
 
-            // Advance whichever cursor(s) produced this key.
+            // Step 2: Advance whichever cursor(s) produced this key.
+            // Both are advanced when they have the same key (deduplication).
             if self.cs_next.as_ref().is_some_and(|(k, _)| *k == min_key) {
                 self.cs_next = self.cursor.next()?;
             }
@@ -185,7 +191,9 @@ where
                 self.hist_next_key = self.advance_history_past(&min_key)?;
             }
 
-            // Resolve the value at max_block_number.
+            // Step 3: Resolve the value at max_block_number.
+            // Returns `Some` if the key was live at that block, `None` if it
+            // didn't exist yet or was already deleted.
             if let Some(node) = self.resolve_node_merge(&min_key, cs_value.as_ref())? {
                 self.last_key = Some(min_key.clone());
                 return Ok(Some((min_key.0, node)));

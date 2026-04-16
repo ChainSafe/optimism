@@ -761,6 +761,55 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         Ok(())
     }
 
+    /// Unwind all 4 data types in `range`: restore state, collect affected keys,
+    /// delete changesets, then remove the affected block numbers from history bitmaps.
+    pub(super) fn unwind_changesets_and_history(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+    ) -> OpProofsStorageResult<()> {
+        let acct_trie_keys = self.unwind_and_collect_account_trie(range)?;
+        let stor_trie_keys = self.unwind_and_collect_storage_trie(range)?;
+        let acct_keys = self.unwind_and_collect_hashed_accounts(range)?;
+        let stor_keys = self.unwind_and_collect_hashed_storages(range)?;
+
+        self.prune_all_history(range, &acct_trie_keys, &stor_trie_keys, &acct_keys, &stor_keys)
+    }
+
+    /// Prune changesets for all 4 data types in `range`, then remove the
+    /// affected block numbers from history bitmaps.
+    pub(super) fn prune_changesets_and_history(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+    ) -> OpProofsStorageResult<WriteCounts> {
+        let mut counts = WriteCounts::default();
+
+        let acct_trie_keys = self.prune_account_trie_changesets(range, &mut counts)?;
+        let stor_trie_keys = self.prune_storage_trie_changesets(range, &mut counts)?;
+        let acct_keys = self.prune_hashed_account_changesets(range, &mut counts)?;
+        let stor_keys = self.prune_hashed_storage_changesets(range, &mut counts)?;
+
+        self.prune_all_history(range, &acct_trie_keys, &stor_trie_keys, &acct_keys, &stor_keys)?;
+
+        Ok(counts)
+    }
+
+    /// Remove block numbers in `range` from all 4 history bitmap tables for the
+    /// given sets of affected keys.
+    fn prune_all_history(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+        acct_trie_keys: &BTreeSet<StoredNibbles>,
+        stor_trie_keys: &BTreeSet<(B256, StoredNibbles)>,
+        acct_keys: &BTreeSet<B256>,
+        stor_keys: &BTreeSet<(B256, B256)>,
+    ) -> OpProofsStorageResult<()> {
+        self.prune_account_trie_history(range, acct_trie_keys)?;
+        self.prune_storage_trie_history(range, stor_trie_keys)?;
+        self.prune_hashed_account_history(range, acct_keys)?;
+        self.prune_hashed_storage_history(range, stor_keys)?;
+        Ok(())
+    }
+
     /// Phase A: delete all account-trie changeset entries in `range`, returning the
     /// set of nibble paths that were affected (used in Phase B for history pruning).
     pub(super) fn prune_account_trie_changesets(
