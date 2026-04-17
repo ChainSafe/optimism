@@ -140,6 +140,9 @@ impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsProviderRO for MdbxProofs
     }
 
     fn fetch_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<BlockStateDiff> {
-        self.fetch_trie_updates_inner(block_number)
+        Ok(BlockStateDiff {
+            sorted_trie_updates: self.fetch_block_trie_updates(block_number)?.into_sorted(),
+            sorted_post_state: self.fetch_block_post_state(block_number)?.into_sorted(),
+        })
     }
 }

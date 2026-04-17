@@ -4,8 +4,10 @@
 //! Reports per-table size, page counts, and entry counts.
 
 use super::{MdbxProofsStorageV2, Tables};
+use eyre::WrapErr;
 use metrics::{Label, gauge};
 use reth_db::Database;
+use tracing::error;
 
 impl reth_db::database_metrics::DatabaseMetrics for MdbxProofsStorageV2 {
     fn report_metrics(&self) {
@@ -15,9 +17,6 @@ impl reth_db::database_metrics::DatabaseMetrics for MdbxProofsStorageV2 {
     }
 
     fn gauge_metrics(&self) -> Vec<(&'static str, f64, Vec<Label>)> {
-        use eyre::WrapErr;
-        use tracing::error;
-
         let mut metrics = Vec::new();
 
         let _ = self

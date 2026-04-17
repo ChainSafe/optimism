@@ -27,7 +27,11 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
             return Ok(InitialStateAnchor::default());
         };
 
-        let completed = self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?.is_some();
+        let status = if self.get_block_number_hash_inner(ProofWindowKey::EarliestBlock)?.is_some() {
+            InitialStateStatus::Completed
+        } else {
+            InitialStateStatus::InProgress
+        };
 
         // Scan the last entry in each current-state table to determine resume
         // keys. This allows multi-step initialization: if the process is
@@ -52,11 +56,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsInitProvider
 
         Ok(InitialStateAnchor {
             block: Some(block),
-            status: if completed {
-                InitialStateStatus::Completed
-            } else {
-                InitialStateStatus::InProgress
-            },
+            status,
             latest_account_trie_key,
             latest_storage_trie_key,
             latest_hashed_account_key,

@@ -1,9 +1,6 @@
 //! [`OpProofsProviderRw`] implementation for [`MdbxProofsProviderV2`].
 
-use super::{
-    MdbxProofsProviderV2,
-    write::{HistoryCollector, WriteCursors},
-};
+use super::{MdbxProofsProviderV2, write::HistoryCollector};
 use crate::{
     BlockStateDiff, OpProofsStorageError, OpProofsStorageResult,
     api::{OpProofsProviderRw, WriteCounts},
@@ -24,14 +21,8 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         self.validate_block_order(&block_ref)?;
 
         let mut collector = HistoryCollector::default();
-        let mut cursors = WriteCursors::new(&self.tx)?;
-        let counts = self.store_block_updates(
-            block_ref.block.number,
-            block_state_diff,
-            &mut collector,
-            &mut cursors,
-        )?;
-        drop(cursors);
+        let counts =
+            self.store_block_updates(block_ref.block.number, block_state_diff, &mut collector)?;
         self.flush_collected_history(collector)?;
 
         self.set_latest_block_number_inner(block_ref.block.number, block_ref.block.hash)?;
@@ -44,7 +35,6 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
     ) -> OpProofsStorageResult<WriteCounts> {
         let mut total_counts = WriteCounts::default();
         let mut collector = HistoryCollector::default();
-        let mut cursors = WriteCursors::new(&self.tx)?;
 
         // Track the latest hash in memory instead of reading/writing
         // V2ProofWindow per block (saves 2 cursor opens per block).
@@ -63,20 +53,13 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
                 });
             }
 
-            let counts = self.store_block_updates(
-                block_number,
-                block_state_diff,
-                &mut collector,
-                &mut cursors,
-            )?;
+            let counts =
+                self.store_block_updates(block_number, block_state_diff, &mut collector)?;
 
             last_hash = block_ref.block.hash;
             last_written = Some((block_number, block_ref.block.hash));
             total_counts += counts;
         }
-
-        // Drop cursors before flush opens new ones for the history tables.
-        drop(cursors);
 
         // Flush all history bitmap entries in one pass — each unique key is
         // seeked, decoded, and re-encoded exactly once regardless of how many
@@ -99,7 +82,10 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         let proof_window = self.get_proof_window_inner()?;
 
         if proof_window.earliest.number >= target_block {
-            return Ok(WriteCounts::default());
+            return Err(OpProofsStorageError::PruneBeyondEarliest {
+                target_block_number: target_block,
+                earliest_block_number: proof_window.earliest.number,
+            });
         }
 
         let range = (proof_window.earliest.number + 1)..=target_block;
@@ -167,7 +153,6 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         let mut last_hash = latest_common_block.hash;
         let mut last_written = latest_common_block;
         let mut collector = HistoryCollector::default();
-        let mut cursors = WriteCursors::new(&self.tx)?;
 
         for (block_ref, diff) in blocks_to_add {
             let block_number = block_ref.block.number;
@@ -180,13 +165,12 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
                 });
             }
 
-            self.store_block_updates(block_number, diff, &mut collector, &mut cursors)?;
+            self.store_block_updates(block_number, diff, &mut collector)?;
 
             last_hash = block_ref.block.hash;
             last_written = NumHash::new(block_number, block_ref.block.hash);
         }
 
-        drop(cursors);
         self.flush_collected_history(collector)?;
 
         self.set_latest_block_number_inner(last_written.number, last_written.hash)?;

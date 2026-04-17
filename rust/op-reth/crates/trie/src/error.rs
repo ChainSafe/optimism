@@ -99,6 +99,16 @@ pub enum OpProofsStorageError {
         /// The latest stored block number
         latest_block_number: u64,
     },
+    /// Attempted to prune to a block at or before the earliest stored block
+    #[error(
+        "Attempted to prune to block {target_block_number} but earliest stored block is already {earliest_block_number}"
+    )]
+    PruneBeyondEarliest {
+        /// The target prune block number
+        target_block_number: u64,
+        /// The earliest stored block number
+        earliest_block_number: u64,
+    },
     /// Error occurred while interacting with the database.
     #[error(transparent)]
     DatabaseError(DatabaseError),

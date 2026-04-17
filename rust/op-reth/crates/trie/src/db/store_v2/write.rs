@@ -52,11 +52,7 @@ pub(super) struct HistoryCollector {
 
 /// Pre-opened write cursors for the 8 tables touched by
 /// [`MdbxProofsProviderV2::store_block_updates`].
-///
-/// Avoids re-opening cursors on every block in a batch — each `mdbx_cursor_open`
-/// has measurable overhead, and for a 5-block batch this turns 40 cursor
-/// open+drop cycles into 8.
-pub(super) struct WriteCursors<TX: DbTxMut + DbTx> {
+struct WriteCursors<TX: DbTxMut + DbTx> {
     account_trie_state: <TX as DbTxMut>::CursorMut<V2AccountsTrie>,
     account_trie_cs: <TX as DbTxMut>::DupCursorMut<V2AccountTrieChangeSets>,
     storage_trie_state: <TX as DbTxMut>::DupCursorMut<V2StoragesTrie>,
@@ -68,7 +64,7 @@ pub(super) struct WriteCursors<TX: DbTxMut + DbTx> {
 }
 
 impl<TX: DbTxMut + DbTx> WriteCursors<TX> {
-    pub(super) fn new(tx: &TX) -> OpProofsStorageResult<Self> {
+    fn new(tx: &TX) -> OpProofsStorageResult<Self> {
         Ok(Self {
             account_trie_state: tx.cursor_write::<V2AccountsTrie>()?,
             account_trie_cs: tx.cursor_dup_write::<V2AccountTrieChangeSets>()?,
@@ -387,32 +383,32 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         block_number: BlockNumber,
         block_state_diff: BlockStateDiff,
         collector: &mut HistoryCollector,
-        cursors: &mut WriteCursors<TX>,
     ) -> OpProofsStorageResult<WriteCounts> {
+        let mut cursors = WriteCursors::new(&self.tx)?;
         let BlockStateDiff { sorted_trie_updates, sorted_post_state } = block_state_diff;
         Ok(WriteCounts {
             account_trie_updates_written_total: Self::write_account_trie(
                 block_number,
                 &sorted_trie_updates,
-                cursors,
+                &mut cursors,
                 collector,
             )?,
             storage_trie_updates_written_total: Self::write_storage_trie(
                 block_number,
                 &sorted_trie_updates,
-                cursors,
+                &mut cursors,
                 collector,
             )?,
             hashed_accounts_written_total: Self::write_hashed_accounts(
                 block_number,
                 &sorted_post_state,
-                cursors,
+                &mut cursors,
                 collector,
             )?,
             hashed_storages_written_total: Self::write_hashed_storages(
                 block_number,
                 &sorted_post_state,
-                cursors,
+                &mut cursors,
                 collector,
             )?,
         })

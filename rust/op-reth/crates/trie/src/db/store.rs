@@ -108,7 +108,10 @@ impl<TX: DbTx> MdbxProofsProvider<TX> {
             return Err(NoBlocksFound);
         };
         if earliest >= target_block {
-            return Ok(None);
+            return Err(OpProofsStorageError::PruneBeyondEarliest {
+                target_block_number: target_block,
+                earliest_block_number: earliest,
+            });
         }
 
         let mut acc_candidates: HashMap<StoredNibbles, u64> = HashMap::default();
@@ -2414,13 +2417,17 @@ mod tests {
         let store = MdbxProofsStorage::new(dir.path()).expect("env");
         store.set_earliest_block_number(1, B256::random()).unwrap();
 
-        // Attempt to prune with a new earliest block that is not newer
+        // Attempt to prune with a block at or before earliest — should error
         let block_1 = BlockWithParent::new(B256::ZERO, NumHash::new(1, B256::random()));
         let block_0 = BlockWithParent::new(B256::ZERO, NumHash::new(0, B256::random()));
-        store.prune_earliest_state(block_1).unwrap();
-        store.prune_earliest_state(block_0).unwrap();
-
-        // Nothing should have been pruned, this call should not panic or error
+        assert!(matches!(
+            store.prune_earliest_state(block_1),
+            Err(OpProofsStorageError::PruneBeyondEarliest { .. })
+        ));
+        assert!(matches!(
+            store.prune_earliest_state(block_0),
+            Err(OpProofsStorageError::PruneBeyondEarliest { .. })
+        ));
     }
 
     #[test]

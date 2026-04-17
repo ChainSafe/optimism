@@ -17,7 +17,7 @@ use tempfile::TempDir;
 
 use crate::{
     BlockStateDiff, OpProofsStorageError,
-    api::{OpProofsInitProvider, OpProofsProviderRO, OpProofsProviderRw, WriteCounts},
+    api::{OpProofsInitProvider, OpProofsProviderRO, OpProofsProviderRw},
     db::{
         ProofWindowKey, V2ProofWindow,
         models::{
@@ -956,8 +956,11 @@ fn test_prune_earliest_state_no_op() {
     // Attempt to prune with a block that is not newer than earliest
     let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw"));
     let block_0 = make_block_ref(0, B256::repeat_byte(0x00), B256::ZERO);
-    let counts = provider.prune_earliest_state(block_0).expect("prune");
-    assert_eq!(counts, WriteCounts::default());
+    let result = provider.prune_earliest_state(block_0);
+    assert!(
+        matches!(result, Err(OpProofsStorageError::PruneBeyondEarliest { .. })),
+        "expected PruneBeyondEarliest, got {result:?}"
+    );
 }
 
 #[test]

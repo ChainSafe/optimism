@@ -2,7 +2,7 @@
 
 use super::MdbxProofsProviderV2;
 use crate::{
-    BlockStateDiff, OpProofsStorageError, OpProofsStorageResult,
+    OpProofsStorageError, OpProofsStorageResult,
     db::{
         ProofWindowKey, ProofWindowValue, V2ProofWindow,
         models::{
@@ -73,19 +73,11 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
         Ok(cur.seek_exact(ProofWindowKey::InitialStateAnchor)?.map(|(_k, v)| v.into()))
     }
 
-    /// Fetch the state diff for a block from changeset tables.
-    pub(super) fn fetch_trie_updates_inner(
+    /// Reconstruct [`TrieUpdates`] for a block by reading changeset + current state tables.
+    pub(super) fn fetch_block_trie_updates(
         &self,
         block_number: u64,
-    ) -> OpProofsStorageResult<BlockStateDiff> {
-        Ok(BlockStateDiff {
-            sorted_trie_updates: self.fetch_block_trie_updates(block_number)?.into_sorted(),
-            sorted_post_state: self.fetch_block_post_state(block_number)?.into_sorted(),
-        })
-    }
-
-    /// Reconstruct [`TrieUpdates`] for a block by reading changeset + current state tables.
-    fn fetch_block_trie_updates(&self, block_number: u64) -> OpProofsStorageResult<TrieUpdates> {
+    ) -> OpProofsStorageResult<TrieUpdates> {
         let mut updates = TrieUpdates::default();
 
         // Account trie: read which paths changed, look up their current node.
@@ -135,7 +127,10 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
     }
 
     /// Reconstruct [`HashedPostState`] for a block by reading changeset + current state tables.
-    fn fetch_block_post_state(&self, block_number: u64) -> OpProofsStorageResult<HashedPostState> {
+    pub(super) fn fetch_block_post_state(
+        &self,
+        block_number: u64,
+    ) -> OpProofsStorageResult<HashedPostState> {
         let mut post_state = HashedPostState::default();
 
         // Hashed accounts: read who changed, look up their current account.
