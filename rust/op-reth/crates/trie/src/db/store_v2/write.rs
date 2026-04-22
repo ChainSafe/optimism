@@ -2,7 +2,7 @@
 
 use super::MdbxProofsProviderV2;
 use crate::{
-    BlockStateDiff, OpProofsStorageError, OpProofsStorageResult,
+    BlockStateDiff, OpProofsStorageResult,
     api::WriteCounts,
     db::{
         BlockNumberHash, ProofWindowKey, V2ProofWindow,
@@ -16,7 +16,6 @@ use crate::{
         },
     },
 };
-use alloy_eips::eip1898::BlockWithParent;
 use alloy_primitives::{B256, BlockNumber, U256};
 use reth_db::{
     BlockNumberList, DatabaseError,
@@ -136,6 +135,161 @@ where
     Ok(())
 }
 
+/// Append one storage-trie node into the changeset and record it in the history collector.
+fn append_storage_trie_entry(
+    cs_cursor: &mut impl DbDupCursorRW<V2StorageTrieChangeSets>,
+    cs_key: BlockNumberHashedAddress,
+    nibbles: StoredNibblesSubKey,
+    node: Option<BranchNodeCompact>,
+    collector: &mut HistoryCollector,
+) -> OpProofsStorageResult<()> {
+    let (block_number, hashed_address) = cs_key.0;
+    cs_cursor.append_dup(cs_key, TrieChangeSetsEntry { nibbles: nibbles.clone(), node })?;
+    collector
+        .storage_trie
+        .entry((hashed_address, StoredNibbles(nibbles.0)))
+        .or_default()
+        .push(block_number);
+    Ok(())
+}
+
+/// Snapshot all existing storage-trie nodes for `hashed_address` into the changeset and
+/// collector, then delete them from the state table.
+///
+/// Returns the set of nibble subkeys that were snapshotted so the caller can avoid
+/// double-recording changeset entries for those nodes in the subsequent per-node loop.
+///
+/// Used for the `is_deleted` (full-wipe) path in [`MdbxProofsProviderV2::write_storage_trie`].
+fn snapshot_and_wipe_storage_trie(
+    state_cursor: &mut (
+             impl DbCursorRO<V2StoragesTrie>
+             + DbDupCursorRO<V2StoragesTrie>
+             + DbDupCursorRW<V2StoragesTrie>
+         ),
+    cs_cursor: &mut impl DbDupCursorRW<V2StorageTrieChangeSets>,
+    cs_key: BlockNumberHashedAddress,
+    collector: &mut HistoryCollector,
+) -> OpProofsStorageResult<BTreeSet<StoredNibblesSubKey>> {
+    let hashed_address = cs_key.0.1;
+    let mut wiped_nibbles = BTreeSet::new();
+    if let Some((_key, first_entry)) = state_cursor.seek_exact(hashed_address)? {
+        wiped_nibbles.insert(first_entry.nibbles.clone());
+        append_storage_trie_entry(cs_cursor, cs_key, first_entry.nibbles, Some(first_entry.node), collector)?;
+        while let Some((_, entry)) = state_cursor.next_dup()? {
+            wiped_nibbles.insert(entry.nibbles.clone());
+            append_storage_trie_entry(cs_cursor, cs_key, entry.nibbles, Some(entry.node), collector)?;
+        }
+        if state_cursor.seek_exact(hashed_address)?.is_some() {
+            state_cursor.delete_current_duplicates()?;
+        }
+    }
+    Ok(wiped_nibbles)
+}
+
+/// Write a single storage-trie node update: snapshot the old node into the changeset,
+/// record in the history collector, then apply the new value (upsert or delete).
+///
+/// Used for the per-node path in [`MdbxProofsProviderV2::write_storage_trie`].
+fn write_storage_trie_node(
+    state_cursor: &mut (impl DbDupCursorRO<V2StoragesTrie> + DbCursorRW<V2StoragesTrie>),
+    cs_cursor: &mut impl DbDupCursorRW<V2StorageTrieChangeSets>,
+    cs_key: BlockNumberHashedAddress,
+    subkey: StoredNibblesSubKey,
+    maybe_node: &Option<BranchNodeCompact>,
+    collector: &mut HistoryCollector,
+) -> OpProofsStorageResult<()> {
+    let hashed_address = cs_key.0.1;
+    let old_entry = state_cursor
+        .seek_by_key_subkey(hashed_address, subkey.clone())?
+        .filter(|e| e.nibbles == subkey);
+    let had_old = old_entry.is_some();
+    let old_node = old_entry.map(|e| e.node);
+
+    append_storage_trie_entry(cs_cursor, cs_key, subkey.clone(), old_node, collector)?;
+
+    if had_old {
+        state_cursor.delete_current()?;
+    }
+    if let Some(node) = maybe_node {
+        state_cursor
+            .upsert(hashed_address, &StorageTrieEntry { nibbles: subkey, node: node.clone() })?;
+    }
+    Ok(())
+}
+
+/// Append one hashed-storage slot into the changeset and record it in the history collector.
+fn append_hashed_storage_entry(
+    cs_cursor: &mut impl DbDupCursorRW<V2HashedStorageChangeSets>,
+    cs_key: BlockNumberHashedAddress,
+    entry: StorageEntry,
+    collector: &mut HistoryCollector,
+) -> OpProofsStorageResult<()> {
+    let (block_number, hashed_address) = cs_key.0;
+    cs_cursor.append_dup(cs_key, entry)?;
+    collector.hashed_storages.entry((hashed_address, entry.key)).or_default().push(block_number);
+    Ok(())
+}
+
+/// Snapshot all existing hashed-storage slots for `hashed_address` into the changeset and
+/// collector, delete them from the state table, and return the set of slot keys that were wiped.
+///
+/// Used for the `is_wiped` (full-wipe) path in [`MdbxProofsProviderV2::write_hashed_storages`].
+fn snapshot_and_wipe_hashed_storage(
+    state_cursor: &mut (
+             impl DbCursorRO<V2HashedStorages>
+             + DbDupCursorRO<V2HashedStorages>
+             + DbDupCursorRW<V2HashedStorages>
+         ),
+    cs_cursor: &mut impl DbDupCursorRW<V2HashedStorageChangeSets>,
+    cs_key: BlockNumberHashedAddress,
+    collector: &mut HistoryCollector,
+) -> OpProofsStorageResult<alloy_primitives::map::B256Set> {
+    let hashed_address = cs_key.0.1;
+    let mut wiped_slots = alloy_primitives::map::B256Set::default();
+    if let Some(entry) = state_cursor.seek_by_key_subkey(hashed_address, B256::ZERO)? {
+        append_hashed_storage_entry(cs_cursor, cs_key, entry, collector)?;
+        wiped_slots.insert(entry.key);
+        while let Some(entry) = state_cursor.next_dup_val()? {
+            append_hashed_storage_entry(cs_cursor, cs_key, entry, collector)?;
+            wiped_slots.insert(entry.key);
+        }
+        if state_cursor.seek_exact(hashed_address)?.is_some() {
+            state_cursor.delete_current_duplicates()?;
+        }
+    }
+    Ok(wiped_slots)
+}
+
+/// Write a single hashed-storage slot update: snapshot the old value into the changeset,
+/// record in the history collector, then apply the new value (upsert or delete).
+///
+/// Used for the per-slot path in [`MdbxProofsProviderV2::write_hashed_storages`].
+fn write_hashed_storage_slot(
+    state_cursor: &mut (impl DbDupCursorRO<V2HashedStorages> + DbCursorRW<V2HashedStorages>),
+    cs_cursor: &mut impl DbDupCursorRW<V2HashedStorageChangeSets>,
+    cs_key: BlockNumberHashedAddress,
+    storage_key: B256,
+    value: U256,
+    collector: &mut HistoryCollector,
+) -> OpProofsStorageResult<()> {
+    let hashed_address = cs_key.0.1;
+    let old_entry = state_cursor
+        .seek_by_key_subkey(hashed_address, storage_key)?
+        .filter(|e| e.key == storage_key);
+    let had_old = old_entry.is_some();
+    let old_value = old_entry.map(|e| e.value).unwrap_or(U256::ZERO);
+
+    append_hashed_storage_entry(cs_cursor, cs_key, StorageEntry { key: storage_key, value: old_value }, collector)?;
+
+    if had_old {
+        state_cursor.delete_current()?;
+    }
+    if value != U256::ZERO {
+        state_cursor.upsert(hashed_address, &StorageEntry { key: storage_key, value })?;
+    }
+    Ok(())
+}
+
 impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
     pub(super) fn set_earliest_block_number_inner(
         &self,
@@ -221,27 +375,57 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
     /// Correctness: the first occurrence of each path in a forward scan is the
     /// *smallest* block number in the range, whose old-value is exactly the
     /// state before the entire range — the value we need to restore.
+    /// Scan `V2AccountTrieChangeSets` over `range`, collect `path → old_node`
+    /// restorations (first occurrence wins), and delete all scanned changeset entries.
+    fn scan_and_delete_account_trie_cs(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+    ) -> OpProofsStorageResult<BTreeMap<StoredNibbles, Option<BranchNodeCompact>>> {
+        let mut restorations = BTreeMap::new();
+        let mut cs = self.tx.cursor_dup_write::<V2AccountTrieChangeSets>()?;
+        let mut entry = cs.seek(*range.start())?;
+        while let Some((block_num, val)) = entry {
+            if !range.contains(&block_num) {
+                break;
+            }
+            restorations.entry(StoredNibbles(val.nibbles.0)).or_insert(val.node);
+            while let Some((_, val)) = cs.next_dup()? {
+                restorations.entry(StoredNibbles(val.nibbles.0)).or_insert(val.node);
+            }
+            cs.delete_current_duplicates()?;
+            entry = cs.current()?;
+        }
+        Ok(restorations)
+    }
+
+    /// Scan `V2HashedAccountChangeSets` over `range`, collect `address → old_account`
+    /// restorations (first occurrence wins), and delete all scanned changeset entries.
+    fn scan_and_delete_hashed_account_cs(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+    ) -> OpProofsStorageResult<BTreeMap<B256, Option<Account>>> {
+        let mut restorations = BTreeMap::new();
+        let mut cs = self.tx.cursor_dup_write::<V2HashedAccountChangeSets>()?;
+        let mut entry = cs.seek(*range.start())?;
+        while let Some((block_num, val)) = entry {
+            if !range.contains(&block_num) {
+                break;
+            }
+            restorations.entry(val.hashed_address).or_insert(val.info);
+            while let Some((_, val)) = cs.next_dup()? {
+                restorations.entry(val.hashed_address).or_insert(val.info);
+            }
+            cs.delete_current_duplicates()?;
+            entry = cs.current()?;
+        }
+        Ok(restorations)
+    }
+
     pub(super) fn unwind_and_collect_account_trie(
         &self,
         range: &std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<BTreeSet<StoredNibbles>> {
-        let mut restorations: BTreeMap<StoredNibbles, Option<BranchNodeCompact>> = BTreeMap::new();
-        {
-            let mut cs = self.tx.cursor_dup_write::<V2AccountTrieChangeSets>()?;
-            let mut entry = cs.seek(*range.start())?;
-            while let Some((block_num, val)) = entry {
-                if !range.contains(&block_num) {
-                    break;
-                }
-                let path = StoredNibbles(val.nibbles.0);
-                restorations.entry(path).or_insert(val.node);
-                while let Some((_, val)) = cs.next_dup()? {
-                    restorations.entry(StoredNibbles(val.nibbles.0)).or_insert(val.node);
-                }
-                cs.delete_current_duplicates()?;
-                entry = cs.current()?;
-            }
-        }
+        let restorations = self.scan_and_delete_account_trie_cs(range)?;
         let mut state = self.tx.cursor_write::<V2AccountsTrie>()?;
         for (path, old_node) in &restorations {
             match old_node {
@@ -256,6 +440,57 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         Ok(restorations.into_keys().collect())
     }
 
+    /// Scan `V2StorageTrieChangeSets` over `range`, collect `(address, nibbles) → old_node`
+    /// restorations (first occurrence wins), and delete all scanned changeset entries.
+    fn scan_and_delete_storage_trie_cs(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+    ) -> OpProofsStorageResult<BTreeMap<(B256, StoredNibblesSubKey), Option<BranchNodeCompact>>>
+    {
+        let mut restorations = BTreeMap::new();
+        let mut cs = self.tx.cursor_dup_write::<V2StorageTrieChangeSets>()?;
+        let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
+        let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
+        let mut entry = cs.seek(start)?;
+        while let Some((key, val)) = entry {
+            if key > end || key < start {
+                break;
+            }
+            restorations.entry((key.0.1, val.nibbles.clone())).or_insert(val.node);
+            while let Some((k, val)) = cs.next_dup()? {
+                restorations.entry((k.0.1, val.nibbles.clone())).or_insert(val.node);
+            }
+            cs.delete_current_duplicates()?;
+            entry = cs.current()?;
+        }
+        Ok(restorations)
+    }
+
+    /// Scan `V2HashedStorageChangeSets` over `range`, collect `(address, slot) → old_value`
+    /// restorations (first occurrence wins), and delete all scanned changeset entries.
+    fn scan_and_delete_hashed_storage_cs(
+        &self,
+        range: &std::ops::RangeInclusive<u64>,
+    ) -> OpProofsStorageResult<BTreeMap<(B256, B256), U256>> {
+        let mut restorations = BTreeMap::new();
+        let mut cs = self.tx.cursor_dup_write::<V2HashedStorageChangeSets>()?;
+        let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
+        let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
+        let mut entry = cs.seek(start)?;
+        while let Some((key, val)) = entry {
+            if key > end || key < start {
+                break;
+            }
+            restorations.entry((key.0.1, val.key)).or_insert(val.value);
+            while let Some((k, val)) = cs.next_dup()? {
+                restorations.entry((k.0.1, val.key)).or_insert(val.value);
+            }
+            cs.delete_current_duplicates()?;
+            entry = cs.current()?;
+        }
+        Ok(restorations)
+    }
+
     /// Single forward scan over storage-trie changesets for `range`.
     ///
     /// See [`Self::unwind_and_collect_account_trie`] for the correctness argument.
@@ -263,25 +498,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         &self,
         range: &std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<BTreeSet<(B256, StoredNibbles)>> {
-        let mut restorations: BTreeMap<(B256, StoredNibblesSubKey), Option<BranchNodeCompact>> =
-            BTreeMap::new();
-        {
-            let mut cs = self.tx.cursor_dup_write::<V2StorageTrieChangeSets>()?;
-            let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
-            let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
-            let mut entry = cs.seek(start)?;
-            while let Some((key, val)) = entry {
-                if key > end || key < start {
-                    break;
-                }
-                restorations.entry((key.0.1, val.nibbles.clone())).or_insert(val.node);
-                while let Some((k, val)) = cs.next_dup()? {
-                    restorations.entry((k.0.1, val.nibbles.clone())).or_insert(val.node);
-                }
-                cs.delete_current_duplicates()?;
-                entry = cs.current()?;
-            }
-        }
+        let restorations = self.scan_and_delete_storage_trie_cs(range)?;
         let mut state = self.tx.cursor_dup_write::<V2StoragesTrie>()?;
         for ((addr, subkey), old_node) in &restorations {
             if state
@@ -308,22 +525,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         &self,
         range: &std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<BTreeSet<B256>> {
-        let mut restorations: BTreeMap<B256, Option<Account>> = BTreeMap::new();
-        {
-            let mut cs = self.tx.cursor_dup_write::<V2HashedAccountChangeSets>()?;
-            let mut entry = cs.seek(*range.start())?;
-            while let Some((block_num, val)) = entry {
-                if !range.contains(&block_num) {
-                    break;
-                }
-                restorations.entry(val.hashed_address).or_insert(val.info);
-                while let Some((_, val)) = cs.next_dup()? {
-                    restorations.entry(val.hashed_address).or_insert(val.info);
-                }
-                cs.delete_current_duplicates()?;
-                entry = cs.current()?;
-            }
-        }
+        let restorations = self.scan_and_delete_hashed_account_cs(range)?;
         let mut state = self.tx.cursor_write::<V2HashedAccounts>()?;
         for (addr, old_account) in &restorations {
             match old_account {
@@ -345,24 +547,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         &self,
         range: &std::ops::RangeInclusive<u64>,
     ) -> OpProofsStorageResult<BTreeSet<(B256, B256)>> {
-        let mut restorations: BTreeMap<(B256, B256), U256> = BTreeMap::new();
-        {
-            let mut cs = self.tx.cursor_dup_write::<V2HashedStorageChangeSets>()?;
-            let start = BlockNumberHashedAddress((*range.start(), B256::ZERO));
-            let end = BlockNumberHashedAddress((*range.end(), B256::repeat_byte(0xff)));
-            let mut entry = cs.seek(start)?;
-            while let Some((key, val)) = entry {
-                if key > end || key < start {
-                    break;
-                }
-                restorations.entry((key.0.1, val.key)).or_insert(val.value);
-                while let Some((k, val)) = cs.next_dup()? {
-                    restorations.entry((k.0.1, val.key)).or_insert(val.value);
-                }
-                cs.delete_current_duplicates()?;
-                entry = cs.current()?;
-            }
-        }
+        let restorations = self.scan_and_delete_hashed_storage_cs(range)?;
         let mut state = self.tx.cursor_dup_write::<V2HashedStorages>()?;
         for ((addr, slot), old_value) in &restorations {
             if state.seek_by_key_subkey(*addr, *slot)?.filter(|e| e.key == *slot).is_some() {
@@ -473,80 +658,40 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
             let cs_key = BlockNumberHashedAddress((block_number, *hashed_address));
 
             if nodes.is_deleted {
-                // Snapshot all existing nodes into the changeset before wiping.
-                if let Some((_key, first_entry)) = state_cursor.seek_exact(*hashed_address)? {
-                    cs_cursor.append_dup(
-                        cs_key,
-                        TrieChangeSetsEntry {
-                            nibbles: first_entry.nibbles.clone(),
-                            node: Some(first_entry.node.clone()),
-                        },
-                    )?;
-                    collector
-                        .storage_trie
-                        .entry((*hashed_address, StoredNibbles(first_entry.nibbles.0)))
-                        .or_default()
-                        .push(block_number);
-
-                    while let Some((_, entry)) = state_cursor.next_dup()? {
-                        cs_cursor.append_dup(
-                            cs_key,
-                            TrieChangeSetsEntry {
-                                nibbles: entry.nibbles.clone(),
-                                node: Some(entry.node.clone()),
-                            },
-                        )?;
-                        collector
-                            .storage_trie
-                            .entry((*hashed_address, StoredNibbles(entry.nibbles.0)))
-                            .or_default()
-                            .push(block_number);
-                    }
-
-                    if state_cursor.seek_exact(*hashed_address)?.is_some() {
-                        state_cursor.delete_current_duplicates()?;
-                    }
-                }
+                let wiped_nibbles =
+                    snapshot_and_wipe_storage_trie(state_cursor, cs_cursor, cs_key, collector)?;
                 count += 1;
-            }
 
-            for (nibbles, maybe_node) in nodes.storage_nodes_ref() {
-                let subkey = StoredNibblesSubKey(*nibbles);
-
-                // Seek positions the cursor — reused for the delete below.
-                let old_entry = state_cursor
-                    .seek_by_key_subkey(*hashed_address, subkey.clone())?
-                    .filter(|e| e.nibbles == subkey);
-                let had_old = old_entry.is_some();
-                let old_node = old_entry.map(|e| e.node);
-
-                cs_cursor.append_dup(
-                    cs_key,
-                    TrieChangeSetsEntry { nibbles: subkey.clone(), node: old_node },
-                )?;
-                collector
-                    .storage_trie
-                    .entry((*hashed_address, StoredNibbles(*nibbles)))
-                    .or_default()
-                    .push(block_number);
-
-                match maybe_node {
-                    Some(node) => {
-                        if had_old {
-                            state_cursor.delete_current()?;
-                        }
+                // After a wipe the state table is empty for this address, so there is no
+                // old node to seek or delete.  Nodes whose nibbles were already snapshotted
+                // above must not be recorded again (that would create conflicting duplicate
+                // changeset entries).  Brand-new nibbles get a `None` old-value entry so
+                // that unwind knows to delete them.
+                for (nibbles, maybe_node) in nodes.storage_nodes_ref() {
+                    let subkey = StoredNibblesSubKey(*nibbles);
+                    if !wiped_nibbles.contains(&subkey) {
+                        append_storage_trie_entry(cs_cursor, cs_key, subkey.clone(), None, collector)?;
+                    }
+                    if let Some(node) = maybe_node {
                         state_cursor.upsert(
                             *hashed_address,
                             &StorageTrieEntry { nibbles: subkey, node: node.clone() },
                         )?;
                     }
-                    None => {
-                        if had_old {
-                            state_cursor.delete_current()?;
-                        }
-                    }
+                    count += 1;
                 }
-                count += 1;
+            } else {
+                for (nibbles, maybe_node) in nodes.storage_nodes_ref() {
+                    write_storage_trie_node(
+                        state_cursor,
+                        cs_cursor,
+                        cs_key,
+                        StoredNibblesSubKey(*nibbles),
+                        maybe_node,
+                        collector,
+                    )?;
+                    count += 1;
+                }
             }
         }
         Ok(count)
@@ -609,48 +754,21 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
             let cs_key = BlockNumberHashedAddress((block_number, *hashed_address));
 
             if storage.is_wiped() {
-                // Snapshot all existing slots into the changeset before wiping.
-                // Track which slots were recorded so the per-slot loop below
-                // doesn't double-append them.
-                let mut wiped_slots = alloy_primitives::map::B256Set::default();
-
-                if let Some(entry) = state_cursor.seek_by_key_subkey(*hashed_address, B256::ZERO)? {
-                    cs_cursor.append_dup(cs_key, entry)?;
-                    collector
-                        .hashed_storages
-                        .entry((*hashed_address, entry.key))
-                        .or_default()
-                        .push(block_number);
-                    wiped_slots.insert(entry.key);
-
-                    while let Some(entry) = state_cursor.next_dup_val()? {
-                        cs_cursor.append_dup(cs_key, entry)?;
-                        collector
-                            .hashed_storages
-                            .entry((*hashed_address, entry.key))
-                            .or_default()
-                            .push(block_number);
-                        wiped_slots.insert(entry.key);
-                    }
-
-                    if state_cursor.seek_exact(*hashed_address)?.is_some() {
-                        state_cursor.delete_current_duplicates()?;
-                    }
-                }
+                // Snapshot + wipe existing slots; track what was wiped so the
+                // new-slots loop below doesn't double-append changeset entries.
+                let wiped_slots =
+                    snapshot_and_wipe_hashed_storage(state_cursor, cs_cursor, cs_key, collector)?;
 
                 // Write new slots. Slots not seen during the wipe get a zero
                 // old-value entry in the changeset.
                 for (storage_key, value) in storage.storage_slots_ref() {
                     if !wiped_slots.contains(storage_key) {
-                        cs_cursor.append_dup(
+                        append_hashed_storage_entry(
+                            cs_cursor,
                             cs_key,
                             StorageEntry { key: *storage_key, value: U256::ZERO },
+                            collector,
                         )?;
-                        collector
-                            .hashed_storages
-                            .entry((*hashed_address, *storage_key))
-                            .or_default()
-                            .push(block_number);
                     }
                     if *value != U256::ZERO {
                         state_cursor.upsert(
@@ -662,30 +780,14 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 }
             } else {
                 for (storage_key, value) in storage.storage_slots_ref() {
-                    // Seek positions the cursor — reused for the delete below.
-                    let old_entry = state_cursor
-                        .seek_by_key_subkey(*hashed_address, *storage_key)?
-                        .filter(|e| e.key == *storage_key);
-                    let had_old = old_entry.is_some();
-                    let old_value = old_entry.map(|e| e.value).unwrap_or(U256::ZERO);
-
-                    cs_cursor
-                        .append_dup(cs_key, StorageEntry { key: *storage_key, value: old_value })?;
-                    collector
-                        .hashed_storages
-                        .entry((*hashed_address, *storage_key))
-                        .or_default()
-                        .push(block_number);
-
-                    if had_old {
-                        state_cursor.delete_current()?;
-                    }
-                    if *value != U256::ZERO {
-                        state_cursor.upsert(
-                            *hashed_address,
-                            &StorageEntry { key: *storage_key, value: *value },
-                        )?;
-                    }
+                    write_hashed_storage_slot(
+                        state_cursor,
+                        cs_cursor,
+                        cs_key,
+                        *storage_key,
+                        *value,
+                        collector,
+                    )?;
                     count += 1;
                 }
             }
@@ -733,26 +835,6 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 sharded_key: ShardedKey::new(slot, highest),
             }
         });
-
-        Ok(())
-    }
-
-    /// Validate block ordering and return the block number.
-    pub(super) fn validate_block_order(
-        &self,
-        block_ref: &BlockWithParent,
-    ) -> OpProofsStorageResult<()> {
-        let block_number = block_ref.block.number;
-
-        let proof_window = self.get_proof_window_inner()?;
-
-        if proof_window.latest.hash != block_ref.parent {
-            return Err(OpProofsStorageError::OutOfOrder {
-                block_number,
-                parent_block_hash: block_ref.parent,
-                latest_block_hash: proof_window.latest.hash,
-            });
-        }
 
         Ok(())
     }

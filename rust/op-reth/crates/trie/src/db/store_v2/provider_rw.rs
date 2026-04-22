@@ -18,7 +18,14 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsProviderRw
         block_ref: BlockWithParent,
         block_state_diff: BlockStateDiff,
     ) -> OpProofsStorageResult<WriteCounts> {
-        self.validate_block_order(&block_ref)?;
+        let proof_window = self.get_proof_window_inner()?;
+        if proof_window.latest.hash != block_ref.parent {
+            return Err(OpProofsStorageError::OutOfOrder {
+                block_number: block_ref.block.number,
+                parent_block_hash: block_ref.parent,
+                latest_block_hash: proof_window.latest.hash,
+            });
+        }
 
         let mut collector = HistoryCollector::default();
         let counts =
