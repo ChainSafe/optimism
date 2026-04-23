@@ -39,9 +39,9 @@ use reth_db::{BlockNumberList, DatabaseError, cursor::DbCursorRO, table::Table};
 
 /// Shared merge-walk state used by all four history-aware V2 cursors.
 #[derive(Debug)]
-pub(super) struct MergeState<K, CS> {
-    /// Pre-fetched next entry from the current-state walk.
-    pub(super) cs_next: Option<CS>,
+pub(super) struct MergeState<K, V> {
+    /// Pre-fetched next `(key, value)` pair from the current-state walk.
+    pub(super) cs_next: Option<(K, V)>,
     /// Pre-fetched next unique key from the history walk.
     pub(super) hist_next_key: Option<K>,
     /// Last key yielded by `seek`/`next` (used by trie cursors for `current()`).
@@ -50,7 +50,7 @@ pub(super) struct MergeState<K, CS> {
     pub(super) seeked: bool,
 }
 
-impl<K, CS> MergeState<K, CS> {
+impl<K, V> MergeState<K, V> {
     pub(super) const fn new() -> Self {
         Self { cs_next: None, hist_next_key: None, last_key: None, seeked: false }
     }
@@ -60,6 +60,53 @@ impl<K, CS> MergeState<K, CS> {
         self.hist_next_key = None;
         self.last_key = None;
         self.seeked = false;
+    }
+}
+
+/// Drives the merge-walk loop, returning the next live `(key, value)` pair.
+///
+/// - `advance_cs`   — advance the current-state cursor, returning the next `(K, V)` pair.
+/// - `advance_hist` — advance the history cursor past all shards of `key`.
+/// - `resolve`      — determine the actual value at `max_block_number` (calls
+///   [`resolve_historical`] internally). Receives the pre-fetched current-state value as
+///   `Option<V>`.
+pub(super) fn find_next_live<K, V: Clone>(
+    state: &mut MergeState<K, V>,
+    mut advance_cs: impl FnMut() -> Result<Option<(K, V)>, DatabaseError>,
+    mut advance_hist: impl FnMut(&K) -> Result<Option<K>, DatabaseError>,
+    mut resolve: impl FnMut(&K, Option<V>) -> Result<Option<V>, DatabaseError>,
+) -> Result<Option<(K, V)>, DatabaseError>
+where
+    K: Ord + Clone,
+{
+    loop {
+        // Step 1: Pick the minimum key across both cursors.
+        let (min_key, cs_value) = match (&state.cs_next, &state.hist_next_key) {
+            (Some((cs_k, cs_v)), Some(h_k)) => {
+                if cs_k <= h_k {
+                    (cs_k.clone(), Some(cs_v.clone()))
+                } else {
+                    (h_k.clone(), None)
+                }
+            }
+            (Some((cs_k, cs_v)), None) => (cs_k.clone(), Some(cs_v.clone())),
+            (None, Some(h_k)) => (h_k.clone(), None),
+            (None, None) => return Ok(None),
+        };
+
+        // Step 2: Advance whichever cursor(s) produced min_key.
+        if state.cs_next.as_ref().is_some_and(|(k, _)| *k == min_key) {
+            state.cs_next = advance_cs()?;
+        }
+        if state.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
+            state.hist_next_key = advance_hist(&min_key)?;
+        }
+
+        // Step 3: Resolve the value at max_block_number.
+        if let Some(v) = resolve(&min_key, cs_value)? {
+            state.last_key = Some(min_key.clone());
+            return Ok(Some((min_key, v)));
+        }
     }
 }
 

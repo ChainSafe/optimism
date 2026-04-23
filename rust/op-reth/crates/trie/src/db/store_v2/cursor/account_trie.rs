@@ -8,7 +8,7 @@ use reth_trie::{
     BranchNodeCompact, Nibbles, StoredNibbles, StoredNibblesSubKey, trie_cursor::TrieCursor,
 };
 
-use super::{MergeState, resolve_historical};
+use super::{MergeState, find_next_live, resolve_historical};
 use crate::db::models::{
     AccountTrieShardedKey, V2AccountTrieChangeSets, V2AccountsTrie, V2AccountsTrieHistory,
 };
@@ -35,7 +35,7 @@ pub struct V2AccountTrieCursor<C, HC, CC> {
     /// Target block number.
     max_block_number: u64,
     /// Shared merge-walk state.
-    state: MergeState<StoredNibbles, (StoredNibbles, BranchNodeCompact)>,
+    state: MergeState<StoredNibbles, BranchNodeCompact>,
     /// Fast path: when `true`, skip all history/changeset lookups.
     is_latest: bool,
 }
@@ -96,49 +96,19 @@ where
         )
     }
 
-    /// Resolve a key using a pre-fetched current-state value.
-    ///
-    /// Does **not** touch the walk cursor, so it is safe to call from the
-    /// merge loop (`find_next_live`).
-    fn resolve_node_merge(
-        &mut self,
-        path: &StoredNibbles,
-        cs_value: Option<&BranchNodeCompact>,
-    ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let target = path.clone();
-        let max_block_number = self.max_block_number;
-        let hc = &mut self.history_cursor;
-        let cc = &mut self.changeset_cursor;
-        resolve_historical::<V2AccountsTrieHistory, _, _>(
-            hc,
-            max_block_number,
-            |bn| AccountTrieShardedKey::new(target.clone(), bn),
-            |k| k.key == target,
-            |block| {
-                Ok(cc
-                    .seek_by_key_subkey(block, StoredNibblesSubKey(target.0))?
-                    .filter(|e| e.nibbles == StoredNibblesSubKey(target.0))
-                    .and_then(|e| e.node))
-            },
-            || Ok(cs_value.cloned()),
-        )
-    }
-
     /// Advance the history walk cursor past all shards of `key` and return
     /// the next distinct key, if any.
+    ///
+    /// Takes the cursor directly so this can be called both from `seek_exact`
+    /// (via `&mut self.history_walk_cursor`) and from the `advance_hist` closure
+    /// inside [`Self::find_next_live`] (via the borrow-split `hwc`).
     fn advance_history_past(
-        &mut self,
+        hwc: &mut HC,
         key: &StoredNibbles,
     ) -> Result<Option<StoredNibbles>, DatabaseError> {
-        // Jump to the last shard of this key (or past it entirely).
-        let entry =
-            self.history_walk_cursor.seek(AccountTrieShardedKey::new(key.clone(), u64::MAX))?;
+        let entry = hwc.seek(AccountTrieShardedKey::new(key.clone(), u64::MAX))?;
         match entry {
-            Some((k, _)) if k.key == *key => {
-                // On the last shard of this key — one more step to reach the
-                // next distinct key.
-                Ok(self.history_walk_cursor.next()?.map(|(k, _)| k.key))
-            }
+            Some((k, _)) if k.key == *key => Ok(hwc.next()?.map(|(k, _)| k.key)),
             Some((k, _)) => Ok(Some(k.key)),
             None => Ok(None),
         }
@@ -148,42 +118,32 @@ where
     /// yielding the next key (in ascending order) whose value is live at
     /// `max_block_number`.
     fn find_next_live(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        loop {
-            // Step 1: Pick the minimum key from current-state and history cursors.
-            // If both have the same key, prefer the current-state value.
-            // `cs_value` is `Some` when the key exists in current state, `None`
-            // when it only appears in history (i.e. deleted after max_block_number).
-            let (min_key, cs_value) = match (&self.state.cs_next, &self.state.hist_next_key) {
-                (Some((cs_k, cs_v)), Some(h_k)) => {
-                    if cs_k <= h_k {
-                        (cs_k.clone(), Some(cs_v.clone()))
-                    } else {
-                        (h_k.clone(), None)
-                    }
-                }
-                (Some((cs_k, cs_v)), None) => (cs_k.clone(), Some(cs_v.clone())),
-                (None, Some(h_k)) => (h_k.clone(), None),
-                (None, None) => return Ok(None),
-            };
-
-            // Step 2: Advance whichever cursor(s) produced this key.
-            // Both are advanced when they have the same key (deduplication).
-            if self.state.cs_next.as_ref().is_some_and(|(k, _)| *k == min_key) {
-                self.state.cs_next = self.cursor.next()?;
-            }
-            if self.state.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
-                self.state.hist_next_key = self.advance_history_past(&min_key)?;
-            }
-
-            // Step 3: Resolve the value at max_block_number.
-            // Returns `Some` if the key was live at that block, `None` if it
-            // didn't exist yet or was already deleted.
-            if let Some(node) = self.resolve_node_merge(&min_key, cs_value.as_ref())? {
-                self.state.last_key = Some(min_key.clone());
-                return Ok(Some((min_key.0, node)));
-            }
-            // Key doesn't exist at max_block_number — continue to next.
-        }
+        let cursor = &mut self.cursor;
+        let hwc = &mut self.history_walk_cursor;
+        let hc = &mut self.history_cursor;
+        let cc = &mut self.changeset_cursor;
+        let max = self.max_block_number;
+        find_next_live(
+            &mut self.state,
+            || cursor.next(),
+            |k| Self::advance_history_past(hwc, k),
+            |k, cs| {
+                resolve_historical::<V2AccountsTrieHistory, _, _>(
+                    hc,
+                    max,
+                    |bn| AccountTrieShardedKey::new(k.clone(), bn),
+                    |shk| shk.key == *k,
+                    |block| {
+                        Ok(cc
+                            .seek_by_key_subkey(block, StoredNibblesSubKey(k.0))?
+                            .filter(|e| e.nibbles == StoredNibblesSubKey(k.0))
+                            .and_then(|e| e.node))
+                    },
+                    || Ok(cs),
+                )
+            },
+        )
+        .map(|opt| opt.map(|(k, v)| (k.0, v)))
     }
 }
 
@@ -217,7 +177,8 @@ where
             Some((k, _)) if k == path => self.cursor.next()?,
             other => other,
         };
-        self.state.hist_next_key = self.advance_history_past(&path)?;
+        self.state.hist_next_key =
+            Self::advance_history_past(&mut self.history_walk_cursor, &path)?;
 
         if node.is_some() {
             self.state.last_key = Some(path);

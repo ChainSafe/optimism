@@ -8,7 +8,7 @@ use reth_db::{
 };
 use reth_trie::hashed_cursor::{HashedCursor, HashedStorageCursor};
 
-use super::{MergeState, resolve_historical};
+use super::{MergeState, find_next_live, resolve_historical};
 use crate::db::models::{
     BlockNumberHashedAddress, HashedStorageShardedKey, V2HashedStorageChangeSets, V2HashedStorages,
     V2HashedStoragesHistory,
@@ -35,7 +35,7 @@ pub struct V2StorageCursor<C, HC, CC> {
     /// Target block number for historical reads.
     max_block_number: u64,
     /// Shared merge-walk state.
-    state: MergeState<B256, reth_primitives_traits::StorageEntry>,
+    state: MergeState<B256, U256>,
     /// Fast path: when `true`, skip all history/changeset lookups.
     is_latest: bool,
 }
@@ -70,105 +70,57 @@ where
     HC: DbCursorRO<V2HashedStoragesHistory>,
     CC: DbCursorRO<V2HashedStorageChangeSets> + DbDupCursorRO<V2HashedStorageChangeSets>,
 {
-    /// Resolve a storage slot using a pre-fetched current-state value.
-    ///
-    /// Does **not** touch the walk cursor, so it is safe to call from the
-    /// merge loop (`find_next_live`).
-    fn resolve_storage_merge(
-        &mut self,
-        storage_key: B256,
-        cs_value: Option<&U256>,
-    ) -> Result<Option<U256>, DatabaseError> {
-        let addr = self.hashed_address;
-        let max_block_number = self.max_block_number;
-        let hc = &mut self.history_cursor;
-        let cc = &mut self.changeset_cursor;
-        resolve_historical::<V2HashedStoragesHistory, _, _>(
-            hc,
-            max_block_number,
-            |bn| HashedStorageShardedKey {
-                hashed_address: addr,
-                sharded_key: ShardedKey::new(storage_key, bn),
-            },
-            |k| k.hashed_address == addr && k.sharded_key.key == storage_key,
-            |block| {
-                let entry = cc
-                    .seek_by_key_subkey(BlockNumberHashedAddress((block, addr)), storage_key)?
-                    .filter(|e| e.key == storage_key);
-                match entry {
-                    Some(e) if e.value.is_zero() => Ok(None),
-                    Some(e) => Ok(Some(e.value)),
-                    None => Ok(None),
-                }
-            },
-            || Ok(cs_value.copied().filter(|v| !v.is_zero())),
-        )
-    }
-
-    /// Advance the history walk cursor past all shards of `key` (for this
-    /// address) and return the next distinct storage key, if any.
-    fn advance_history_past(&mut self, key: &B256) -> Result<Option<B256>, DatabaseError> {
-        let seek = HashedStorageShardedKey {
-            hashed_address: self.hashed_address,
-            sharded_key: ShardedKey::new(*key, u64::MAX),
-        };
-        let entry = self
-            .history_walk_cursor
-            .seek(seek)?
-            .filter(|(k, _)| k.hashed_address == self.hashed_address);
-        match entry {
-            Some((k, _)) if k.sharded_key.key == *key => {
-                // On the last shard of this key — advance once more.
-                Ok(self
-                    .history_walk_cursor
-                    .next()?
-                    .filter(|(k, _)| k.hashed_address == self.hashed_address)
-                    .map(|(k, _)| k.sharded_key.key))
-            }
-            Some((k, _)) => Ok(Some(k.sharded_key.key)),
-            None => Ok(None),
-        }
-    }
-
     /// Merge-walk both the current-state `DupSort` cursor and the history-bitmap
     /// cursor, yielding the next storage slot whose value is live at
     /// `max_block_number`.
     fn find_next_live(&mut self) -> Result<Option<(B256, U256)>, DatabaseError> {
-        loop {
-            // Step 1: Pick the minimum key from current-state and history cursors.
-            // If both have the same key, prefer the current-state value.
-            // `cs_value` is `Some` when the key exists in current state, `None`
-            // when it only appears in history (i.e. deleted after max_block_number).
-            let (min_key, cs_value) = match (&self.state.cs_next, &self.state.hist_next_key) {
-                (Some(cs_entry), Some(h_k)) => {
-                    if cs_entry.key <= *h_k {
-                        (cs_entry.key, Some(cs_entry.value))
-                    } else {
-                        (*h_k, None)
-                    }
+        let cursor = &mut self.cursor;
+        let hwc = &mut self.history_walk_cursor;
+        let hc = &mut self.history_cursor;
+        let cc = &mut self.changeset_cursor;
+        let addr = self.hashed_address;
+        let max = self.max_block_number;
+        find_next_live(
+            &mut self.state,
+            || cursor.next_dup_val().map(|opt| opt.map(|e| (e.key, e.value))),
+            |k| {
+                let seek = HashedStorageShardedKey {
+                    hashed_address: addr,
+                    sharded_key: ShardedKey::new(*k, u64::MAX),
+                };
+                let entry = hwc.seek(seek)?.filter(|(shk, _)| shk.hashed_address == addr);
+                match entry {
+                    Some((shk, _)) if shk.sharded_key.key == *k => Ok(hwc
+                        .next()?
+                        .filter(|(shk, _)| shk.hashed_address == addr)
+                        .map(|(shk, _)| shk.sharded_key.key)),
+                    Some((shk, _)) => Ok(Some(shk.sharded_key.key)),
+                    None => Ok(None),
                 }
-                (Some(cs_entry), None) => (cs_entry.key, Some(cs_entry.value)),
-                (None, Some(h_k)) => (*h_k, None),
-                (None, None) => return Ok(None),
-            };
-
-            // Step 2: Advance whichever cursor(s) produced this key.
-            // Both are advanced when they have the same key (deduplication).
-            if self.state.cs_next.as_ref().is_some_and(|e| e.key == min_key) {
-                self.state.cs_next = self.cursor.next_dup_val()?;
-            }
-            if self.state.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
-                self.state.hist_next_key = self.advance_history_past(&min_key)?;
-            }
-
-            // Step 3: Resolve the value at max_block_number.
-            // Returns `Some` if the key was live at that block, `None` if it
-            // didn't exist yet or was already deleted.
-            if let Some(value) = self.resolve_storage_merge(min_key, cs_value.as_ref())? {
-                return Ok(Some((min_key, value)));
-            }
-            // Key doesn't exist at max_block_number — continue to next.
-        }
+            },
+            |k, cs| {
+                resolve_historical::<V2HashedStoragesHistory, _, _>(
+                    hc,
+                    max,
+                    |bn| HashedStorageShardedKey {
+                        hashed_address: addr,
+                        sharded_key: ShardedKey::new(*k, bn),
+                    },
+                    |shk| shk.hashed_address == addr && shk.sharded_key.key == *k,
+                    |block| {
+                        let entry = cc
+                            .seek_by_key_subkey(BlockNumberHashedAddress((block, addr)), *k)?
+                            .filter(|e| e.key == *k);
+                        match entry {
+                            Some(e) if e.value.is_zero() => Ok(None),
+                            Some(e) => Ok(Some(e.value)),
+                            None => Ok(None),
+                        }
+                    },
+                    || Ok(cs.filter(|v| !v.is_zero())),
+                )
+            },
+        )
     }
 }
 
@@ -197,7 +149,8 @@ where
         }
 
         // Initialize both merge cursors at the target key.
-        self.state.cs_next = self.cursor.seek_by_key_subkey(self.hashed_address, subkey)?;
+        self.state.cs_next =
+            self.cursor.seek_by_key_subkey(self.hashed_address, subkey)?.map(|e| (e.key, e.value));
         let hist_seek = HashedStorageShardedKey {
             hashed_address: self.hashed_address,
             sharded_key: ShardedKey::new(subkey, 0),
