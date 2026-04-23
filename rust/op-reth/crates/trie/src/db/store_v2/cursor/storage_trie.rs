@@ -100,14 +100,21 @@ where
             max_block_number,
             |bn| StorageTrieShardedKey::new(addr, nibbles_cmp.clone(), bn),
             |k| k.hashed_address == addr && k.key == nibbles_cmp,
-            |block| Ok(cc
-                .seek_by_key_subkey(BlockNumberHashedAddress((block, addr)), StoredNibblesSubKey(path))?
-                .filter(|e| e.nibbles == StoredNibblesSubKey(path))
-                .and_then(|e| e.node)),
-            || Ok(cur
-                .seek_by_key_subkey(addr, StoredNibblesSubKey(path))?
-                .filter(|e| e.nibbles == StoredNibblesSubKey(path))
-                .map(|e| e.node)),
+            |block| {
+                Ok(cc
+                    .seek_by_key_subkey(
+                        BlockNumberHashedAddress((block, addr)),
+                        StoredNibblesSubKey(path),
+                    )?
+                    .filter(|e| e.nibbles == StoredNibblesSubKey(path))
+                    .and_then(|e| e.node))
+            },
+            || {
+                Ok(cur
+                    .seek_by_key_subkey(addr, StoredNibblesSubKey(path))?
+                    .filter(|e| e.nibbles == StoredNibblesSubKey(path))
+                    .map(|e| e.node))
+            },
         )
     }
 
@@ -129,10 +136,15 @@ where
             max_block_number,
             |bn| StorageTrieShardedKey::new(addr, nibbles_cmp.clone(), bn),
             |k| k.hashed_address == addr && k.key == nibbles_cmp,
-            |block| Ok(cc
-                .seek_by_key_subkey(BlockNumberHashedAddress((block, addr)), StoredNibblesSubKey(path))?
-                .filter(|e| e.nibbles == StoredNibblesSubKey(path))
-                .and_then(|e| e.node)),
+            |block| {
+                Ok(cc
+                    .seek_by_key_subkey(
+                        BlockNumberHashedAddress((block, addr)),
+                        StoredNibblesSubKey(path),
+                    )?
+                    .filter(|e| e.nibbles == StoredNibblesSubKey(path))
+                    .and_then(|e| e.node))
+            },
             || Ok(cs_value.cloned()),
         )
     }

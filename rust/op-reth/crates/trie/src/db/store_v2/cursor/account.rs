@@ -92,10 +92,12 @@ where
             max_block_number,
             |bn| HashedAccountShardedKey::new(hashed_address, bn),
             |k| k.0.key == hashed_address,
-            |block| Ok(cc
-                .seek_by_key_subkey(block, hashed_address)?
-                .filter(|e| e.hashed_address == hashed_address)
-                .and_then(|e| e.info)),
+            |block| {
+                Ok(cc
+                    .seek_by_key_subkey(block, hashed_address)?
+                    .filter(|e| e.hashed_address == hashed_address)
+                    .and_then(|e| e.info))
+            },
             || Ok(cs_value.copied()),
         )
     }

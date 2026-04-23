@@ -73,8 +73,8 @@ where
     T: Table<Value = BlockNumberList>,
     C: DbCursorRO<T>,
 {
-    // 1. Build the seek key with max_block_number + 1 embedded, then filter to
-    //    ensure the shard belongs to the expected key.
+    // 1. Build the seek key with max_block_number + 1 embedded, then filter to ensure the shard
+    //    belongs to the expected key.
     let seek_key = seek_key_fn(max_block_number.saturating_add(1));
     let shard = cursor.seek(seek_key)?.filter(|(k, _)| key_filter(k));
     let Some((_, chunk)) = shard else {
@@ -93,10 +93,9 @@ where
 /// bitmap to decide which source to read from.
 ///
 /// - `seek_key_fn` and `key_filter` are forwarded to [`find_source`].
-/// - `read_changeset(block)` is called when the value must come from the
-///   changeset at `block`.
-/// - `read_current_state()` is called when no modification exists after
-///   `max_block_number` and the current-state table is authoritative.
+/// - `read_changeset(block)` is called when the value must come from the changeset at `block`.
+/// - `read_current_state()` is called when no modification exists after `max_block_number` and the
+///   current-state table is authoritative.
 pub(crate) fn resolve_historical<HT, HC, V>(
     history_cursor: &mut HC,
     max_block_number: u64,

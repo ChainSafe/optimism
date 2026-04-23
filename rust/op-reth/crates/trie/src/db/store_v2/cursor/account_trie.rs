@@ -95,10 +95,12 @@ where
             max_block_number,
             |bn| AccountTrieShardedKey::new(target.clone(), bn),
             |k| k.key == target,
-            |block| Ok(cc
-                .seek_by_key_subkey(block, StoredNibblesSubKey(target.0))?
-                .filter(|e| e.nibbles == StoredNibblesSubKey(target.0))
-                .and_then(|e| e.node)),
+            |block| {
+                Ok(cc
+                    .seek_by_key_subkey(block, StoredNibblesSubKey(target.0))?
+                    .filter(|e| e.nibbles == StoredNibblesSubKey(target.0))
+                    .and_then(|e| e.node))
+            },
             || Ok(cur.seek_exact(target.clone())?.map(|(_, node)| node)),
         )
     }
@@ -121,10 +123,12 @@ where
             max_block_number,
             |bn| AccountTrieShardedKey::new(target.clone(), bn),
             |k| k.key == target,
-            |block| Ok(cc
-                .seek_by_key_subkey(block, StoredNibblesSubKey(target.0))?
-                .filter(|e| e.nibbles == StoredNibblesSubKey(target.0))
-                .and_then(|e| e.node)),
+            |block| {
+                Ok(cc
+                    .seek_by_key_subkey(block, StoredNibblesSubKey(target.0))?
+                    .filter(|e| e.nibbles == StoredNibblesSubKey(target.0))
+                    .and_then(|e| e.node))
+            },
             || Ok(cs_value.cloned()),
         )
     }

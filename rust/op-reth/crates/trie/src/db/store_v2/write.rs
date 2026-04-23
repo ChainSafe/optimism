@@ -174,10 +174,22 @@ fn snapshot_and_wipe_storage_trie(
     let mut wiped_nibbles = BTreeSet::new();
     if let Some((_key, first_entry)) = state_cursor.seek_exact(hashed_address)? {
         wiped_nibbles.insert(first_entry.nibbles.clone());
-        append_storage_trie_entry(cs_cursor, cs_key, first_entry.nibbles, Some(first_entry.node), collector)?;
+        append_storage_trie_entry(
+            cs_cursor,
+            cs_key,
+            first_entry.nibbles,
+            Some(first_entry.node),
+            collector,
+        )?;
         while let Some((_, entry)) = state_cursor.next_dup()? {
             wiped_nibbles.insert(entry.nibbles.clone());
-            append_storage_trie_entry(cs_cursor, cs_key, entry.nibbles, Some(entry.node), collector)?;
+            append_storage_trie_entry(
+                cs_cursor,
+                cs_key,
+                entry.nibbles,
+                Some(entry.node),
+                collector,
+            )?;
         }
         if state_cursor.seek_exact(hashed_address)?.is_some() {
             state_cursor.delete_current_duplicates()?;
@@ -279,7 +291,12 @@ fn write_hashed_storage_slot(
     let had_old = old_entry.is_some();
     let old_value = old_entry.map(|e| e.value).unwrap_or(U256::ZERO);
 
-    append_hashed_storage_entry(cs_cursor, cs_key, StorageEntry { key: storage_key, value: old_value }, collector)?;
+    append_hashed_storage_entry(
+        cs_cursor,
+        cs_key,
+        StorageEntry { key: storage_key, value: old_value },
+        collector,
+    )?;
 
     if had_old {
         state_cursor.delete_current()?;
@@ -327,11 +344,14 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         T::Key: Clone,
     {
         let mut entry = cursor.seek(first_shard_key)?;
-        while let Some((key, list)) = entry
-            && same_logical_key(&key)
-            && list.iter().next().is_some_and(|first| first <= *range.end())
+        while let Some((key, list)) = entry &&
+            same_logical_key(&key) &&
+            list.iter().next().is_some_and(|first| first <= *range.end())
         {
-            let original_len: usize = list.len().try_into().map_err(|e| DatabaseError::Other(format!("shard length overflow: {e}")))?;
+            let original_len: usize = list
+                .len()
+                .try_into()
+                .map_err(|e| DatabaseError::Other(format!("shard length overflow: {e}")))?;
             let filtered: Vec<u64> = list.iter().filter(|&bn| !range.contains(&bn)).collect();
 
             if filtered.is_empty() {
@@ -663,7 +683,13 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 for (nibbles, maybe_node) in nodes.storage_nodes_ref() {
                     let subkey = StoredNibblesSubKey(*nibbles);
                     if !wiped_nibbles.contains(&subkey) {
-                        append_storage_trie_entry(cs_cursor, cs_key, subkey.clone(), None, collector)?;
+                        append_storage_trie_entry(
+                            cs_cursor,
+                            cs_key,
+                            subkey.clone(),
+                            None,
+                            collector,
+                        )?;
                     }
                     if let Some(node) = maybe_node {
                         state_cursor.upsert(

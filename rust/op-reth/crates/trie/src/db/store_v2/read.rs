@@ -83,11 +83,17 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
         let mut acct_state = self.tx.cursor_read::<V2AccountsTrie>()?;
         let mut cs = self.tx.cursor_read::<V2AccountTrieChangeSets>()?;
         let mut walker = cs.walk(Some(block_number))?;
-        while let Some(Ok((bn, entry))) = walker.next() && bn == block_number {
+        while let Some(Ok((bn, entry))) = walker.next() &&
+            bn == block_number
+        {
             let path = entry.nibbles.0;
             match acct_state.seek_exact(StoredNibbles(path))?.map(|(_, n)| n) {
-                Some(node) => { updates.account_nodes.insert(path, node); }
-                None => { updates.removed_nodes.insert(path); }
+                Some(node) => {
+                    updates.account_nodes.insert(path, node);
+                }
+                None => {
+                    updates.removed_nodes.insert(path);
+                }
             }
         }
         Ok(())
@@ -114,8 +120,12 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
                 .map(|e| e.node);
             let stu = updates.storage_tries.entry(hashed_address).or_default();
             match current_node {
-                Some(node) => { stu.storage_nodes.insert(entry.nibbles.0, node); }
-                None => { stu.removed_nodes.insert(entry.nibbles.0); }
+                Some(node) => {
+                    stu.storage_nodes.insert(entry.nibbles.0, node);
+                }
+                None => {
+                    stu.removed_nodes.insert(entry.nibbles.0);
+                }
             }
         }
         Ok(())
@@ -142,7 +152,9 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
         let mut acct_state = self.tx.cursor_read::<V2HashedAccounts>()?;
         let mut cs = self.tx.cursor_read::<V2HashedAccountChangeSets>()?;
         let mut walker = cs.walk(Some(block_number))?;
-        while let Some(Ok((bn, entry))) = walker.next() && bn == block_number {
+        while let Some(Ok((bn, entry))) = walker.next() &&
+            bn == block_number
+        {
             let current = acct_state.seek_exact(entry.hashed_address)?.map(|(_, a)| a);
             post_state.accounts.insert(entry.hashed_address, current);
         }
@@ -168,7 +180,12 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
                 .filter(|e| e.key == entry.key)
                 .map(|e| e.value)
                 .unwrap_or(U256::ZERO);
-            post_state.storages.entry(hashed_address).or_default().storage.insert(entry.key, current_value);
+            post_state
+                .storages
+                .entry(hashed_address)
+                .or_default()
+                .storage
+                .insert(entry.key, current_value);
         }
         Ok(())
     }
