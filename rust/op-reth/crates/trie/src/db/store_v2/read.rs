@@ -73,33 +73,33 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
         Ok(cur.seek_exact(ProofWindowKey::InitialStateAnchor)?.map(|(_k, v)| v.into()))
     }
 
-    /// Reconstruct [`TrieUpdates`] for a block by reading changeset + current state tables.
-    pub(super) fn fetch_block_trie_updates(
+    /// Walk `V2AccountTrieChangeSets` for `block_number` and populate `updates`
+    /// with the current node (or mark as removed) for each changed path.
+    fn populate_account_trie_updates(
         &self,
         block_number: u64,
-    ) -> OpProofsStorageResult<TrieUpdates> {
-        let mut updates = TrieUpdates::default();
-
-        // Account trie: read which paths changed, look up their current node.
+        updates: &mut TrieUpdates,
+    ) -> OpProofsStorageResult<()> {
         let mut acct_state = self.tx.cursor_read::<V2AccountsTrie>()?;
         let mut cs = self.tx.cursor_read::<V2AccountTrieChangeSets>()?;
         let mut walker = cs.walk(Some(block_number))?;
-        while let Some(Ok((bn, entry))) = walker.next() {
-            if bn != block_number {
-                break;
-            }
+        while let Some(Ok((bn, entry))) = walker.next() && bn == block_number {
             let path = entry.nibbles.0;
             match acct_state.seek_exact(StoredNibbles(path))?.map(|(_, n)| n) {
-                Some(node) => {
-                    updates.account_nodes.insert(path, node);
-                }
-                None => {
-                    updates.removed_nodes.insert(path);
-                }
+                Some(node) => { updates.account_nodes.insert(path, node); }
+                None => { updates.removed_nodes.insert(path); }
             }
         }
+        Ok(())
+    }
 
-        // Storage trie: same pattern, keyed by (block_number, hashed_address).
+    /// Walk `V2StorageTrieChangeSets` for `block_number` and populate `updates`
+    /// with the current node (or mark as removed) for each changed (address, nibble) pair.
+    fn populate_storage_trie_updates(
+        &self,
+        block_number: u64,
+        updates: &mut TrieUpdates,
+    ) -> OpProofsStorageResult<()> {
         let mut stor_state = self.tx.cursor_dup_read::<V2StoragesTrie>()?;
         let mut cs = self.tx.cursor_read::<V2StorageTrieChangeSets>()?;
         let blk_range = BlockNumberHashedAddress((block_number, B256::ZERO))..=
@@ -114,38 +114,48 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
                 .map(|e| e.node);
             let stu = updates.storage_tries.entry(hashed_address).or_default();
             match current_node {
-                Some(node) => {
-                    stu.storage_nodes.insert(entry.nibbles.0, node);
-                }
-                None => {
-                    stu.removed_nodes.insert(entry.nibbles.0);
-                }
+                Some(node) => { stu.storage_nodes.insert(entry.nibbles.0, node); }
+                None => { stu.removed_nodes.insert(entry.nibbles.0); }
             }
         }
+        Ok(())
+    }
 
+    /// Reconstruct [`TrieUpdates`] for a block by reading changeset + current state tables.
+    pub(super) fn fetch_block_trie_updates(
+        &self,
+        block_number: u64,
+    ) -> OpProofsStorageResult<TrieUpdates> {
+        let mut updates = TrieUpdates::default();
+        self.populate_account_trie_updates(block_number, &mut updates)?;
+        self.populate_storage_trie_updates(block_number, &mut updates)?;
         Ok(updates)
     }
 
-    /// Reconstruct [`HashedPostState`] for a block by reading changeset + current state tables.
-    pub(super) fn fetch_block_post_state(
+    /// Walk `V2HashedAccountChangeSets` for `block_number` and populate `post_state`
+    /// with the current account (or `None` if deleted) for each changed address.
+    fn populate_hashed_accounts(
         &self,
         block_number: u64,
-    ) -> OpProofsStorageResult<HashedPostState> {
-        let mut post_state = HashedPostState::default();
-
-        // Hashed accounts: read who changed, look up their current account.
+        post_state: &mut HashedPostState,
+    ) -> OpProofsStorageResult<()> {
         let mut acct_state = self.tx.cursor_read::<V2HashedAccounts>()?;
         let mut cs = self.tx.cursor_read::<V2HashedAccountChangeSets>()?;
         let mut walker = cs.walk(Some(block_number))?;
-        while let Some(Ok((bn, entry))) = walker.next() {
-            if bn != block_number {
-                break;
-            }
+        while let Some(Ok((bn, entry))) = walker.next() && bn == block_number {
             let current = acct_state.seek_exact(entry.hashed_address)?.map(|(_, a)| a);
             post_state.accounts.insert(entry.hashed_address, current);
         }
+        Ok(())
+    }
 
-        // Hashed storages: read which slots changed, look up their current value.
+    /// Walk `V2HashedStorageChangeSets` for `block_number` and populate `post_state`
+    /// with the current slot value for each changed (address, slot) pair.
+    fn populate_hashed_storages(
+        &self,
+        block_number: u64,
+        post_state: &mut HashedPostState,
+    ) -> OpProofsStorageResult<()> {
         let mut stor_state = self.tx.cursor_dup_read::<V2HashedStorages>()?;
         let mut cs = self.tx.cursor_read::<V2HashedStorageChangeSets>()?;
         let blk_range = BlockNumberHashedAddress((block_number, B256::ZERO))..=
@@ -158,14 +168,19 @@ impl<TX: DbTx> MdbxProofsProviderV2<TX> {
                 .filter(|e| e.key == entry.key)
                 .map(|e| e.value)
                 .unwrap_or(U256::ZERO);
-            post_state
-                .storages
-                .entry(hashed_address)
-                .or_default()
-                .storage
-                .insert(entry.key, current_value);
+            post_state.storages.entry(hashed_address).or_default().storage.insert(entry.key, current_value);
         }
+        Ok(())
+    }
 
+    /// Reconstruct [`HashedPostState`] for a block by reading changeset + current state tables.
+    pub(super) fn fetch_block_post_state(
+        &self,
+        block_number: u64,
+    ) -> OpProofsStorageResult<HashedPostState> {
+        let mut post_state = HashedPostState::default();
+        self.populate_hashed_accounts(block_number, &mut post_state)?;
+        self.populate_hashed_storages(block_number, &mut post_state)?;
         Ok(post_state)
     }
 }

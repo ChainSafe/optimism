@@ -327,14 +327,11 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
         T::Key: Clone,
     {
         let mut entry = cursor.seek(first_shard_key)?;
-        loop {
-            let Some((key, list)) = entry else { break };
-
-            if !same_logical_key(&key) {
-                break;
-            }
-
-            let original_len = list.len() as usize;
+        while let Some((key, list)) = entry
+            && same_logical_key(&key)
+            && list.iter().next().is_some_and(|first| first <= *range.end())
+        {
+            let original_len: usize = list.len().try_into().map_err(|e| DatabaseError::Other(format!("shard length overflow: {e}")))?;
             let filtered: Vec<u64> = list.iter().filter(|&bn| !range.contains(&bn)).collect();
 
             if filtered.is_empty() {
@@ -347,11 +344,7 @@ impl<TX: DbTxMut + DbTx> MdbxProofsProviderV2<TX> {
                 cursor.upsert(key, &new_list)?;
                 entry = cursor.next()?;
             } else {
-                // No blocks in this shard were in range.
-                // If the shard's lowest block is past our range, stop.
-                if list.iter().next().is_none_or(|first| first > *range.end()) {
-                    break;
-                }
+                // No blocks in this shard were in range; advance to the next shard.
                 entry = cursor.next()?;
             }
         }
