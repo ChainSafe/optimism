@@ -8,7 +8,7 @@ use reth_db::{
 };
 use reth_trie::hashed_cursor::{HashedCursor, HashedStorageCursor};
 
-use super::resolve_historical;
+use super::{MergeState, resolve_historical};
 use crate::db::models::{
     BlockNumberHashedAddress, HashedStorageShardedKey, V2HashedStorageChangeSets, V2HashedStorages,
     V2HashedStoragesHistory,
@@ -34,12 +34,8 @@ pub struct V2StorageCursor<C, HC, CC> {
     hashed_address: B256,
     /// Target block number for historical reads.
     max_block_number: u64,
-    /// Pre-fetched next entry from the current state walk (within address).
-    cs_next: Option<reth_primitives_traits::StorageEntry>,
-    /// Pre-fetched next unique storage key from the history walk.
-    hist_next_key: Option<B256>,
-    /// Whether `seek` has been called to initialize the merge cursors.
-    seeked: bool,
+    /// Shared merge-walk state.
+    state: MergeState<B256, reth_primitives_traits::StorageEntry>,
     /// Fast path: when `true`, skip all history/changeset lookups.
     is_latest: bool,
 }
@@ -62,9 +58,7 @@ impl<C, HC, CC> V2StorageCursor<C, HC, CC> {
             changeset_cursor,
             hashed_address,
             max_block_number,
-            cs_next: None,
-            hist_next_key: None,
-            seeked: false,
+            state: MergeState::new(),
             is_latest,
         }
     }
@@ -145,7 +139,7 @@ where
             // If both have the same key, prefer the current-state value.
             // `cs_value` is `Some` when the key exists in current state, `None`
             // when it only appears in history (i.e. deleted after max_block_number).
-            let (min_key, cs_value) = match (&self.cs_next, &self.hist_next_key) {
+            let (min_key, cs_value) = match (&self.state.cs_next, &self.state.hist_next_key) {
                 (Some(cs_entry), Some(h_k)) => {
                     if cs_entry.key <= *h_k {
                         (cs_entry.key, Some(cs_entry.value))
@@ -160,11 +154,11 @@ where
 
             // Step 2: Advance whichever cursor(s) produced this key.
             // Both are advanced when they have the same key (deduplication).
-            if self.cs_next.as_ref().is_some_and(|e| e.key == min_key) {
-                self.cs_next = self.cursor.next_dup_val()?;
+            if self.state.cs_next.as_ref().is_some_and(|e| e.key == min_key) {
+                self.state.cs_next = self.cursor.next_dup_val()?;
             }
-            if self.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
-                self.hist_next_key = self.advance_history_past(&min_key)?;
+            if self.state.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
+                self.state.hist_next_key = self.advance_history_past(&min_key)?;
             }
 
             // Step 3: Resolve the value at max_block_number.
@@ -187,7 +181,7 @@ where
     type Value = U256;
 
     fn seek(&mut self, subkey: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
-        self.seeked = true;
+        self.state.seeked = true;
 
         if self.is_latest {
             // Fast path: current state is authoritative.
@@ -203,12 +197,12 @@ where
         }
 
         // Initialize both merge cursors at the target key.
-        self.cs_next = self.cursor.seek_by_key_subkey(self.hashed_address, subkey)?;
+        self.state.cs_next = self.cursor.seek_by_key_subkey(self.hashed_address, subkey)?;
         let hist_seek = HashedStorageShardedKey {
             hashed_address: self.hashed_address,
             sharded_key: ShardedKey::new(subkey, 0),
         };
-        self.hist_next_key = self
+        self.state.hist_next_key = self
             .history_walk_cursor
             .seek(hist_seek)?
             .filter(|(k, _)| k.hashed_address == self.hashed_address)
@@ -217,7 +211,7 @@ where
     }
 
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
-        if !self.seeked {
+        if !self.state.seeked {
             return self.seek(B256::ZERO);
         }
 
@@ -235,9 +229,7 @@ where
     }
 
     fn reset(&mut self) {
-        self.cs_next = None;
-        self.hist_next_key = None;
-        self.seeked = false;
+        self.state.reset();
     }
 }
 
@@ -253,8 +245,6 @@ where
 
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.hashed_address = hashed_address;
-        self.cs_next = None;
-        self.hist_next_key = None;
-        self.seeked = false;
+        self.state.reset();
     }
 }

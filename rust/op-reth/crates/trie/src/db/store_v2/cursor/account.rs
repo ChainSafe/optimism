@@ -8,7 +8,7 @@ use reth_db::{
 use reth_primitives_traits::Account;
 use reth_trie::hashed_cursor::HashedCursor;
 
-use super::resolve_historical;
+use super::{MergeState, resolve_historical};
 use crate::db::models::{
     HashedAccountShardedKey, V2HashedAccountChangeSets, V2HashedAccounts, V2HashedAccountsHistory,
 };
@@ -34,12 +34,8 @@ pub struct V2AccountCursor<C, HC, CC> {
     changeset_cursor: CC,
     /// Target block number for historical reads.
     max_block_number: u64,
-    /// Pre-fetched next entry from the current state walk.
-    cs_next: Option<(B256, Account)>,
-    /// Pre-fetched next unique key from the history walk.
-    hist_next_key: Option<B256>,
-    /// Whether `seek` has been called to initialize the merge cursors.
-    seeked: bool,
+    /// Shared merge-walk state.
+    state: MergeState<B256, (B256, Account)>,
     /// Fast path: when `true`, skip all history/changeset lookups and
     /// read directly from the current-state table.
     is_latest: bool,
@@ -61,9 +57,7 @@ impl<C, HC, CC> V2AccountCursor<C, HC, CC> {
             history_walk_cursor,
             changeset_cursor,
             max_block_number,
-            cs_next: None,
-            hist_next_key: None,
-            seeked: false,
+            state: MergeState::new(),
             is_latest,
         }
     }
@@ -125,7 +119,7 @@ where
             // If both have the same key, prefer the current-state value.
             // `cs_value` is `Some` when the key exists in current state, `None`
             // when it only appears in history (i.e. deleted after max_block_number).
-            let (min_key, cs_value) = match (&self.cs_next, &self.hist_next_key) {
+            let (min_key, cs_value) = match (&self.state.cs_next, &self.state.hist_next_key) {
                 (Some((cs_k, cs_v)), Some(h_k)) => {
                     if cs_k <= h_k {
                         (*cs_k, Some(*cs_v))
@@ -140,11 +134,11 @@ where
 
             // Step 2: Advance whichever cursor(s) produced this key.
             // Both are advanced when they have the same key (deduplication).
-            if self.cs_next.as_ref().is_some_and(|(k, _)| *k == min_key) {
-                self.cs_next = self.cursor.next()?;
+            if self.state.cs_next.as_ref().is_some_and(|(k, _)| *k == min_key) {
+                self.state.cs_next = self.cursor.next()?;
             }
-            if self.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
-                self.hist_next_key = self.advance_history_past(&min_key)?;
+            if self.state.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
+                self.state.hist_next_key = self.advance_history_past(&min_key)?;
             }
 
             // Step 3: Resolve the value at max_block_number.
@@ -167,7 +161,7 @@ where
     type Value = Account;
 
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
-        self.seeked = true;
+        self.state.seeked = true;
 
         if self.is_latest {
             // Fast path: current state is authoritative, no history needed.
@@ -175,8 +169,8 @@ where
         }
 
         // Initialize both merge cursors at the target key.
-        self.cs_next = self.cursor.seek(key)?;
-        self.hist_next_key = self
+        self.state.cs_next = self.cursor.seek(key)?;
+        self.state.hist_next_key = self
             .history_walk_cursor
             .seek(HashedAccountShardedKey::new(key, 0))?
             .map(|(k, _)| k.0.key);
@@ -184,7 +178,7 @@ where
     }
 
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
-        if !self.seeked {
+        if !self.state.seeked {
             return self.seek(B256::ZERO);
         }
 
@@ -196,8 +190,6 @@ where
     }
 
     fn reset(&mut self) {
-        self.cs_next = None;
-        self.hist_next_key = None;
-        self.seeked = false;
+        self.state.reset();
     }
 }

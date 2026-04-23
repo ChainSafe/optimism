@@ -37,6 +37,32 @@ pub use storage_trie::V2StorageTrieCursor;
 
 use reth_db::{BlockNumberList, DatabaseError, cursor::DbCursorRO, table::Table};
 
+/// Shared merge-walk state used by all four history-aware V2 cursors.
+#[derive(Debug)]
+pub(super) struct MergeState<K, CS> {
+    /// Pre-fetched next entry from the current-state walk.
+    pub(super) cs_next: Option<CS>,
+    /// Pre-fetched next unique key from the history walk.
+    pub(super) hist_next_key: Option<K>,
+    /// Last key yielded by `seek`/`next` (used by trie cursors for `current()`).
+    pub(super) last_key: Option<K>,
+    /// Whether `seek`/`seek_exact` has initialized the merge cursors.
+    pub(super) seeked: bool,
+}
+
+impl<K, CS> MergeState<K, CS> {
+    pub(super) const fn new() -> Self {
+        Self { cs_next: None, hist_next_key: None, last_key: None, seeked: false }
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.cs_next = None;
+        self.hist_next_key = None;
+        self.last_key = None;
+        self.seeked = false;
+    }
+}
+
 /// Enum to define where to read the value for a given key at a specific block.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ResolvedSource {

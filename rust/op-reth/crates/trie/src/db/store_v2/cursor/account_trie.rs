@@ -8,7 +8,7 @@ use reth_trie::{
     BranchNodeCompact, Nibbles, StoredNibbles, StoredNibblesSubKey, trie_cursor::TrieCursor,
 };
 
-use super::resolve_historical;
+use super::{MergeState, resolve_historical};
 use crate::db::models::{
     AccountTrieShardedKey, V2AccountTrieChangeSets, V2AccountsTrie, V2AccountsTrieHistory,
 };
@@ -34,14 +34,8 @@ pub struct V2AccountTrieCursor<C, HC, CC> {
     changeset_cursor: CC,
     /// Target block number.
     max_block_number: u64,
-    /// Pre-fetched next entry from the current state walk.
-    cs_next: Option<(StoredNibbles, BranchNodeCompact)>,
-    /// Pre-fetched next unique key from the history walk.
-    hist_next_key: Option<StoredNibbles>,
-    /// Last key yielded by `seek`/`next` (for `current()`).
-    last_key: Option<StoredNibbles>,
-    /// Whether `seek` or `seek_exact` has been called to initialize the merge cursors.
-    seeked: bool,
+    /// Shared merge-walk state.
+    state: MergeState<StoredNibbles, (StoredNibbles, BranchNodeCompact)>,
     /// Fast path: when `true`, skip all history/changeset lookups.
     is_latest: bool,
 }
@@ -62,10 +56,7 @@ impl<C, HC, CC> V2AccountTrieCursor<C, HC, CC> {
             history_walk_cursor,
             changeset_cursor,
             max_block_number,
-            cs_next: None,
-            hist_next_key: None,
-            last_key: None,
-            seeked: false,
+            state: MergeState::new(),
             is_latest,
         }
     }
@@ -162,7 +153,7 @@ where
             // If both have the same key, prefer the current-state value.
             // `cs_value` is `Some` when the key exists in current state, `None`
             // when it only appears in history (i.e. deleted after max_block_number).
-            let (min_key, cs_value) = match (&self.cs_next, &self.hist_next_key) {
+            let (min_key, cs_value) = match (&self.state.cs_next, &self.state.hist_next_key) {
                 (Some((cs_k, cs_v)), Some(h_k)) => {
                     if cs_k <= h_k {
                         (cs_k.clone(), Some(cs_v.clone()))
@@ -177,18 +168,18 @@ where
 
             // Step 2: Advance whichever cursor(s) produced this key.
             // Both are advanced when they have the same key (deduplication).
-            if self.cs_next.as_ref().is_some_and(|(k, _)| *k == min_key) {
-                self.cs_next = self.cursor.next()?;
+            if self.state.cs_next.as_ref().is_some_and(|(k, _)| *k == min_key) {
+                self.state.cs_next = self.cursor.next()?;
             }
-            if self.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
-                self.hist_next_key = self.advance_history_past(&min_key)?;
+            if self.state.hist_next_key.as_ref().is_some_and(|k| *k == min_key) {
+                self.state.hist_next_key = self.advance_history_past(&min_key)?;
             }
 
             // Step 3: Resolve the value at max_block_number.
             // Returns `Some` if the key was live at that block, `None` if it
             // didn't exist yet or was already deleted.
             if let Some(node) = self.resolve_node_merge(&min_key, cs_value.as_ref())? {
-                self.last_key = Some(min_key.clone());
+                self.state.last_key = Some(min_key.clone());
                 return Ok(Some((min_key.0, node)));
             }
             // Key doesn't exist at max_block_number — continue to next.
@@ -206,13 +197,13 @@ where
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        self.seeked = true;
+        self.state.seeked = true;
 
         if self.is_latest {
             // Fast path: direct current-state lookup.
             let result = self.cursor.seek_exact(StoredNibbles(key))?;
             if result.is_some() {
-                self.last_key = Some(StoredNibbles(key));
+                self.state.last_key = Some(StoredNibbles(key));
             }
             return Ok(result.map(|(_, node)| (key, node)));
         }
@@ -222,14 +213,14 @@ where
 
         // Re-sync the walk state so a subsequent next() starts after `path`.
         let cs_at_key = self.cursor.seek(path.clone())?;
-        self.cs_next = match cs_at_key {
+        self.state.cs_next = match cs_at_key {
             Some((k, _)) if k == path => self.cursor.next()?,
             other => other,
         };
-        self.hist_next_key = self.advance_history_past(&path)?;
+        self.state.hist_next_key = self.advance_history_past(&path)?;
 
         if node.is_some() {
-            self.last_key = Some(path);
+            self.state.last_key = Some(path);
         }
         Ok(node.map(|n| (key, n)))
     }
@@ -238,20 +229,20 @@ where
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        self.seeked = true;
+        self.state.seeked = true;
 
         if self.is_latest {
             // Fast path: direct current-state walk.
             let result = self.cursor.seek(StoredNibbles(key))?;
             if let Some((ref k, _)) = result {
-                self.last_key = Some(k.clone());
+                self.state.last_key = Some(k.clone());
             }
             return Ok(result.map(|(k, node)| (k.0, node)));
         }
 
         // Initialize both merge cursors at the target key.
-        self.cs_next = self.cursor.seek(StoredNibbles(key))?;
-        self.hist_next_key = self
+        self.state.cs_next = self.cursor.seek(StoredNibbles(key))?;
+        self.state.hist_next_key = self
             .history_walk_cursor
             .seek(AccountTrieShardedKey::new(StoredNibbles(key), 0))?
             .map(|(k, _)| k.key);
@@ -259,14 +250,14 @@ where
     }
 
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        if !self.seeked {
+        if !self.state.seeked {
             return self.seek(Nibbles::default());
         }
 
         if self.is_latest {
             let result = self.cursor.next()?;
             if let Some((ref k, _)) = result {
-                self.last_key = Some(k.clone());
+                self.state.last_key = Some(k.clone());
             }
             return Ok(result.map(|(k, node)| (k.0, node)));
         }
@@ -275,13 +266,10 @@ where
     }
 
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
-        Ok(self.last_key.as_ref().map(|k| k.0))
+        Ok(self.state.last_key.as_ref().map(|k| k.0))
     }
 
     fn reset(&mut self) {
-        self.cs_next = None;
-        self.hist_next_key = None;
-        self.last_key = None;
-        self.seeked = false;
+        self.state.reset();
     }
 }
