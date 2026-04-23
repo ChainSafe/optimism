@@ -8,7 +8,7 @@ use reth_trie::{
     BranchNodeCompact, Nibbles, StoredNibbles, StoredNibblesSubKey, trie_cursor::TrieCursor,
 };
 
-use super::{ResolvedSource, find_source};
+use super::resolve_historical;
 use crate::db::models::{
     AccountTrieShardedKey, V2AccountTrieChangeSets, V2AccountsTrie, V2AccountsTrieHistory,
 };
@@ -85,28 +85,22 @@ where
         &mut self,
         path: &StoredNibbles,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let seek_key =
-            AccountTrieShardedKey::new(path.clone(), self.max_block_number.saturating_add(1));
         let target = path.clone();
-        let source = find_source::<V2AccountsTrieHistory, _>(
-            &mut self.history_cursor,
-            seek_key,
-            self.max_block_number,
+        let max_block_number = self.max_block_number;
+        let hc = &mut self.history_cursor;
+        let cc = &mut self.changeset_cursor;
+        let cur = &mut self.cursor;
+        resolve_historical::<V2AccountsTrieHistory, _, _>(
+            hc,
+            max_block_number,
+            |bn| AccountTrieShardedKey::new(target.clone(), bn),
             |k| k.key == target,
-        )?;
-
-        match source {
-            ResolvedSource::FromChangeset(changeset_block) => {
-                let entry = self
-                    .changeset_cursor
-                    .seek_by_key_subkey(changeset_block, StoredNibblesSubKey(path.0))?
-                    .filter(|e| e.nibbles == StoredNibblesSubKey(path.0));
-                Ok(entry.and_then(|e| e.node))
-            }
-            ResolvedSource::FromCurrentState => {
-                Ok(self.cursor.seek_exact(path.clone())?.map(|(_, node)| node))
-            }
-        }
+            |block| Ok(cc
+                .seek_by_key_subkey(block, StoredNibblesSubKey(target.0))?
+                .filter(|e| e.nibbles == StoredNibblesSubKey(target.0))
+                .and_then(|e| e.node)),
+            || Ok(cur.seek_exact(target.clone())?.map(|(_, node)| node)),
+        )
     }
 
     /// Resolve a key using a pre-fetched current-state value.
@@ -118,26 +112,21 @@ where
         path: &StoredNibbles,
         cs_value: Option<&BranchNodeCompact>,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let seek_key =
-            AccountTrieShardedKey::new(path.clone(), self.max_block_number.saturating_add(1));
         let target = path.clone();
-        let source = find_source::<V2AccountsTrieHistory, _>(
-            &mut self.history_cursor,
-            seek_key,
-            self.max_block_number,
+        let max_block_number = self.max_block_number;
+        let hc = &mut self.history_cursor;
+        let cc = &mut self.changeset_cursor;
+        resolve_historical::<V2AccountsTrieHistory, _, _>(
+            hc,
+            max_block_number,
+            |bn| AccountTrieShardedKey::new(target.clone(), bn),
             |k| k.key == target,
-        )?;
-
-        match source {
-            ResolvedSource::FromChangeset(changeset_block) => {
-                let entry = self
-                    .changeset_cursor
-                    .seek_by_key_subkey(changeset_block, StoredNibblesSubKey(path.0))?
-                    .filter(|e| e.nibbles == StoredNibblesSubKey(path.0));
-                Ok(entry.and_then(|e| e.node))
-            }
-            ResolvedSource::FromCurrentState => Ok(cs_value.cloned()),
-        }
+            |block| Ok(cc
+                .seek_by_key_subkey(block, StoredNibblesSubKey(target.0))?
+                .filter(|e| e.nibbles == StoredNibblesSubKey(target.0))
+                .and_then(|e| e.node)),
+            || Ok(cs_value.cloned()),
+        )
     }
 
     /// Advance the history walk cursor past all shards of `key` and return

@@ -8,7 +8,7 @@ use reth_db::{
 use reth_primitives_traits::Account;
 use reth_trie::hashed_cursor::HashedCursor;
 
-use super::{ResolvedSource, find_source};
+use super::resolve_historical;
 use crate::db::models::{
     HashedAccountShardedKey, V2HashedAccountChangeSets, V2HashedAccounts, V2HashedAccountsHistory,
 };
@@ -84,25 +84,20 @@ where
         hashed_address: B256,
         cs_value: Option<&Account>,
     ) -> Result<Option<Account>, DatabaseError> {
-        let history_key =
-            HashedAccountShardedKey::new(hashed_address, self.max_block_number.saturating_add(1));
-        let source = find_source::<V2HashedAccountsHistory, _>(
-            &mut self.history_cursor,
-            history_key,
-            self.max_block_number,
+        let max_block_number = self.max_block_number;
+        let hc = &mut self.history_cursor;
+        let cc = &mut self.changeset_cursor;
+        resolve_historical::<V2HashedAccountsHistory, _, _>(
+            hc,
+            max_block_number,
+            |bn| HashedAccountShardedKey::new(hashed_address, bn),
             |k| k.0.key == hashed_address,
-        )?;
-
-        match source {
-            ResolvedSource::FromChangeset(changeset_block) => {
-                let entry = self
-                    .changeset_cursor
-                    .seek_by_key_subkey(changeset_block, hashed_address)?
-                    .filter(|e| e.hashed_address == hashed_address);
-                Ok(entry.and_then(|e| e.info))
-            }
-            ResolvedSource::FromCurrentState => Ok(cs_value.copied()),
-        }
+            |block| Ok(cc
+                .seek_by_key_subkey(block, hashed_address)?
+                .filter(|e| e.hashed_address == hashed_address)
+                .and_then(|e| e.info)),
+            || Ok(cs_value.copied()),
+        )
     }
 
     /// Advance the history walk cursor past all shards of `key` and return

@@ -51,30 +51,31 @@ pub(crate) enum ResolvedSource {
 /// Search history bitmaps to determine where to read the value for a key
 /// at a given `max_block_number`.
 ///
-/// **Important**: `seek_key` must embed `max_block_number + 1` (not
-/// `max_block_number` itself) so that the seek lands on a shard whose
-/// `highest_block_number > max_block_number`. This guarantees the shard
-/// contains at least one entry after the target block, eliminating the
-/// need for a `cursor.next()` fallback.
+/// `seek_key_fn` is called with `max_block_number + 1` to produce the seek
+/// key. This lands on the first shard whose `highest_block_number >
+/// max_block_number`, guaranteeing the shard contains at least one entry
+/// after the target block and eliminating the need for a `cursor.next()`
+/// fallback. Callers do not need to apply the `+ 1` shift themselves.
 ///
 /// The algorithm:
-/// 1. Seek the first history shard with `highest_block_number > max_block_number` (achieved by
-///    embedding `max_block_number + 1` in `seek_key`).
+/// 1. Seek the first history shard with `highest_block_number > max_block_number` (by calling
+///    `seek_key_fn(max_block_number + 1)`).
 /// 2. Within that shard, find the first block strictly `> max_block_number`.
 /// 3. If found → `FromChangeset(block)`.
 /// 4. Otherwise → `FromCurrentState`.
 pub(crate) fn find_source<T, C>(
     cursor: &mut C,
-    seek_key: T::Key,
     max_block_number: u64,
+    seek_key_fn: impl Fn(u64) -> T::Key,
     key_filter: impl Fn(&T::Key) -> bool,
 ) -> Result<ResolvedSource, DatabaseError>
 where
     T: Table<Value = BlockNumberList>,
     C: DbCursorRO<T>,
 {
-    // 1. Seek using the caller-provided key (which embeds max_block_number + 1), then filter to
+    // 1. Build the seek key with max_block_number + 1 embedded, then filter to
     //    ensure the shard belongs to the expected key.
+    let seek_key = seek_key_fn(max_block_number.saturating_add(1));
     let shard = cursor.seek(seek_key)?.filter(|(k, _)| key_filter(k));
     let Some((_, chunk)) = shard else {
         return Ok(ResolvedSource::FromCurrentState);
@@ -86,6 +87,32 @@ where
         .select(rank)
         .map(ResolvedSource::FromChangeset)
         .unwrap_or(ResolvedSource::FromCurrentState))
+}
+
+/// Resolve a historical key's value at `max_block_number` using the history
+/// bitmap to decide which source to read from.
+///
+/// - `seek_key_fn` and `key_filter` are forwarded to [`find_source`].
+/// - `read_changeset(block)` is called when the value must come from the
+///   changeset at `block`.
+/// - `read_current_state()` is called when no modification exists after
+///   `max_block_number` and the current-state table is authoritative.
+pub(crate) fn resolve_historical<HT, HC, V>(
+    history_cursor: &mut HC,
+    max_block_number: u64,
+    seek_key_fn: impl Fn(u64) -> HT::Key,
+    key_filter: impl Fn(&HT::Key) -> bool,
+    read_changeset: impl FnOnce(u64) -> Result<Option<V>, DatabaseError>,
+    read_current_state: impl FnOnce() -> Result<Option<V>, DatabaseError>,
+) -> Result<Option<V>, DatabaseError>
+where
+    HT: Table<Value = BlockNumberList>,
+    HC: DbCursorRO<HT>,
+{
+    match find_source::<HT, HC>(history_cursor, max_block_number, seek_key_fn, key_filter)? {
+        ResolvedSource::FromChangeset(block) => read_changeset(block),
+        ResolvedSource::FromCurrentState => read_current_state(),
+    }
 }
 
 #[cfg(test)]

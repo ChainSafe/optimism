@@ -11,7 +11,7 @@ use reth_trie::{
 };
 use reth_trie_common::StorageTrieEntry;
 
-use super::{ResolvedSource, find_source};
+use super::resolve_historical;
 use crate::db::models::{
     BlockNumberHashedAddress, StorageTrieShardedKey, V2StorageTrieChangeSets, V2StoragesTrie,
     V2StoragesTrieHistory,
@@ -89,37 +89,26 @@ where
         &mut self,
         path: Nibbles,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let nibbles = StoredNibbles(path);
-        let seek_key = StorageTrieShardedKey::new(
-            self.hashed_address,
-            nibbles.clone(),
-            self.max_block_number.saturating_add(1),
-        );
-
+        let nibbles_cmp = StoredNibbles(path);
         let addr = self.hashed_address;
-        let nibbles_cmp = nibbles;
-        let source = find_source::<V2StoragesTrieHistory, _>(
-            &mut self.history_cursor,
-            seek_key,
-            self.max_block_number,
+        let max_block_number = self.max_block_number;
+        let hc = &mut self.history_cursor;
+        let cc = &mut self.changeset_cursor;
+        let cur = &mut self.cursor;
+        resolve_historical::<V2StoragesTrieHistory, _, _>(
+            hc,
+            max_block_number,
+            |bn| StorageTrieShardedKey::new(addr, nibbles_cmp.clone(), bn),
             |k| k.hashed_address == addr && k.key == nibbles_cmp,
-        )?;
-
-        match source {
-            ResolvedSource::FromChangeset(changeset_block) => {
-                let cs_key = BlockNumberHashedAddress((changeset_block, self.hashed_address));
-                let entry = self
-                    .changeset_cursor
-                    .seek_by_key_subkey(cs_key, StoredNibblesSubKey(path))?
-                    .filter(|e| e.nibbles == StoredNibblesSubKey(path));
-                Ok(entry.and_then(|e| e.node))
-            }
-            ResolvedSource::FromCurrentState => Ok(self
-                .cursor
-                .seek_by_key_subkey(self.hashed_address, StoredNibblesSubKey(path))?
+            |block| Ok(cc
+                .seek_by_key_subkey(BlockNumberHashedAddress((block, addr)), StoredNibblesSubKey(path))?
+                .filter(|e| e.nibbles == StoredNibblesSubKey(path))
+                .and_then(|e| e.node)),
+            || Ok(cur
+                .seek_by_key_subkey(addr, StoredNibblesSubKey(path))?
                 .filter(|e| e.nibbles == StoredNibblesSubKey(path))
                 .map(|e| e.node)),
-        }
+        )
     }
 
     /// Resolve a key using a pre-fetched current-state value.
@@ -130,33 +119,22 @@ where
         path: Nibbles,
         cs_value: Option<&BranchNodeCompact>,
     ) -> Result<Option<BranchNodeCompact>, DatabaseError> {
-        let nibbles = StoredNibbles(path);
-        let seek_key = StorageTrieShardedKey::new(
-            self.hashed_address,
-            nibbles.clone(),
-            self.max_block_number.saturating_add(1),
-        );
-
+        let nibbles_cmp = StoredNibbles(path);
         let addr = self.hashed_address;
-        let nibbles_cmp = nibbles;
-        let source = find_source::<V2StoragesTrieHistory, _>(
-            &mut self.history_cursor,
-            seek_key,
-            self.max_block_number,
+        let max_block_number = self.max_block_number;
+        let hc = &mut self.history_cursor;
+        let cc = &mut self.changeset_cursor;
+        resolve_historical::<V2StoragesTrieHistory, _, _>(
+            hc,
+            max_block_number,
+            |bn| StorageTrieShardedKey::new(addr, nibbles_cmp.clone(), bn),
             |k| k.hashed_address == addr && k.key == nibbles_cmp,
-        )?;
-
-        match source {
-            ResolvedSource::FromChangeset(changeset_block) => {
-                let cs_key = BlockNumberHashedAddress((changeset_block, self.hashed_address));
-                let entry = self
-                    .changeset_cursor
-                    .seek_by_key_subkey(cs_key, StoredNibblesSubKey(path))?
-                    .filter(|e| e.nibbles == StoredNibblesSubKey(path));
-                Ok(entry.and_then(|e| e.node))
-            }
-            ResolvedSource::FromCurrentState => Ok(cs_value.cloned()),
-        }
+            |block| Ok(cc
+                .seek_by_key_subkey(BlockNumberHashedAddress((block, addr)), StoredNibblesSubKey(path))?
+                .filter(|e| e.nibbles == StoredNibblesSubKey(path))
+                .and_then(|e| e.node)),
+            || Ok(cs_value.cloned()),
+        )
     }
 
     /// Advance the history walk cursor past all shards of `key` (for this

@@ -8,7 +8,7 @@ use reth_db::{
 };
 use reth_trie::hashed_cursor::{HashedCursor, HashedStorageCursor};
 
-use super::{ResolvedSource, find_source};
+use super::resolve_historical;
 use crate::db::models::{
     BlockNumberHashedAddress, HashedStorageShardedKey, V2HashedStorageChangeSets, V2HashedStorages,
     V2HashedStoragesHistory,
@@ -85,34 +85,30 @@ where
         storage_key: B256,
         cs_value: Option<&U256>,
     ) -> Result<Option<U256>, DatabaseError> {
-        let history_key = HashedStorageShardedKey {
-            hashed_address: self.hashed_address,
-            sharded_key: ShardedKey::new(storage_key, self.max_block_number.saturating_add(1)),
-        };
-
         let addr = self.hashed_address;
-        let source = find_source::<V2HashedStoragesHistory, _>(
-            &mut self.history_cursor,
-            history_key,
-            self.max_block_number,
+        let max_block_number = self.max_block_number;
+        let hc = &mut self.history_cursor;
+        let cc = &mut self.changeset_cursor;
+        resolve_historical::<V2HashedStoragesHistory, _, _>(
+            hc,
+            max_block_number,
+            |bn| HashedStorageShardedKey {
+                hashed_address: addr,
+                sharded_key: ShardedKey::new(storage_key, bn),
+            },
             |k| k.hashed_address == addr && k.sharded_key.key == storage_key,
-        )?;
-
-        match source {
-            ResolvedSource::FromChangeset(changeset_block) => {
-                let cs_key = BlockNumberHashedAddress((changeset_block, self.hashed_address));
-                let entry = self
-                    .changeset_cursor
-                    .seek_by_key_subkey(cs_key, storage_key)?
+            |block| {
+                let entry = cc
+                    .seek_by_key_subkey(BlockNumberHashedAddress((block, addr)), storage_key)?
                     .filter(|e| e.key == storage_key);
                 match entry {
                     Some(e) if e.value.is_zero() => Ok(None),
                     Some(e) => Ok(Some(e.value)),
                     None => Ok(None),
                 }
-            }
-            ResolvedSource::FromCurrentState => Ok(cs_value.copied().filter(|v| !v.is_zero())),
-        }
+            },
+            || Ok(cs_value.copied().filter(|v| !v.is_zero())),
+        )
     }
 
     /// Advance the history walk cursor past all shards of `key` (for this

@@ -57,8 +57,8 @@ fn find_source_returns_current_state_when_no_history() {
 
     let result = find_source::<V2HashedAccountsHistory, _>(
         &mut cursor,
-        HashedAccountShardedKey::new(addr, 11),
         10,
+        |bn| HashedAccountShardedKey::new(addr, bn),
         |k| k.0.key == addr,
     )
     .expect("ok");
@@ -89,8 +89,8 @@ fn find_source_returns_changeset_when_modification_after_target() {
     // Target block 7 → first block > 7 in [5, 10, 15] is 10
     let result = find_source::<V2HashedAccountsHistory, _>(
         &mut cursor,
-        HashedAccountShardedKey::new(addr, 8),
         7,
+        |bn| HashedAccountShardedKey::new(addr, bn),
         |k| k.0.key == addr,
     )
     .expect("ok");
@@ -121,8 +121,8 @@ fn find_source_returns_current_state_when_no_modification_after_target() {
     // Target block 10 → no block > 10 in [3, 7]
     let result = find_source::<V2HashedAccountsHistory, _>(
         &mut cursor,
-        HashedAccountShardedKey::new(addr, 11),
         10,
+        |bn| HashedAccountShardedKey::new(addr, bn),
         |k| k.0.key == addr,
     )
     .expect("ok");
@@ -153,8 +153,8 @@ fn find_source_handles_exact_match_block() {
     // Target block 10 (exactly in the bitmap) → first block > 10 is 15
     let result = find_source::<V2HashedAccountsHistory, _>(
         &mut cursor,
-        HashedAccountShardedKey::new(addr, 11),
         10,
+        |bn| HashedAccountShardedKey::new(addr, bn),
         |k| k.0.key == addr,
     )
     .expect("ok");
@@ -202,8 +202,8 @@ fn find_source_resolves_root_path_despite_child_history() {
     // (the first modification after block 12).
     let result = find_source::<V2AccountsTrieHistory, _>(
         &mut cursor,
-        AccountTrieShardedKey::new(root_path.clone(), 13),
         12,
+        |bn| AccountTrieShardedKey::new(root_path.clone(), bn),
         |k| k.key == root_path,
     )
     .expect("ok");
@@ -221,8 +221,8 @@ fn find_source_trie_returns_current_state_when_no_history() {
 
     let result = find_source::<V2AccountsTrieHistory, _>(
         &mut cursor,
-        AccountTrieShardedKey::new(root_path.clone(), 11),
         10,
+        |bn| AccountTrieShardedKey::new(root_path.clone(), bn),
         |k| k.key == root_path,
     )
     .expect("ok");
@@ -253,8 +253,8 @@ fn find_source_trie_returns_current_state_when_all_modifications_before_target()
     // Target block 10 — all modifications (5, 8) are ≤ 10
     let result = find_source::<V2AccountsTrieHistory, _>(
         &mut cursor,
-        AccountTrieShardedKey::new(root_path.clone(), 11),
         10,
+        |bn| AccountTrieShardedKey::new(root_path.clone(), bn),
         |k| k.key == root_path,
     )
     .expect("ok");
@@ -296,8 +296,8 @@ fn find_source_handles_root_path_with_child_history() {
     // find_source with AccountTrieShardedKey correctly returns FromChangeset(15)
     let result = find_source::<V2AccountsTrieHistory, _>(
         &mut cursor,
-        AccountTrieShardedKey::new(root_path.clone(), 13),
         12,
+        |bn| AccountTrieShardedKey::new(root_path.clone(), bn),
         |k| k.key == root_path,
     )
     .expect("ok");
