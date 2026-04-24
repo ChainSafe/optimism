@@ -10,64 +10,8 @@ use crate::metrics::PersistenceMetrics;
 use alloy_eips::eip1898::BlockWithParent;
 use reth_provider::BlockHashReader;
 use crossbeam_channel::{Receiver, Sender};
-use parking_lot::{Mutex, Condvar};
 use std::{sync::Arc, thread, time::Instant};
 use tracing::{debug, error, info};
-
-/// Thread-safe tracker for whether a background persistence task is running.
-#[derive(Debug)]
-pub struct PersistenceStatus {
-    is_running: Mutex<bool>,
-    done: Condvar,
-}
-
-impl Default for PersistenceStatus {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PersistenceStatus {
-    /// Create a new idle status.
-    pub fn new() -> Self {
-        Self {
-            is_running: Mutex::new(false),
-            done: Condvar::new(),
-        }
-    }
-
-    /// Returns `true` if a persistence task is currently running.
-    pub fn is_running(&self) -> bool {
-        *self.is_running.lock()
-    }
-
-    /// Mark persistence as running.  Returns `true` if it was previously idle
-    /// (i.e. this call "won" the race), `false` if already running.
-    pub fn mark_running(&self) -> bool {
-        let mut running = self.is_running.lock();
-        if *running {
-            false
-        } else {
-            *running = true;
-            true
-        }
-    }
-
-    /// Mark persistence as idle and wake all waiters.
-    pub fn mark_idle(&self) {
-        let mut running = self.is_running.lock();
-        *running = false;
-        self.done.notify_all();
-    }
-
-    /// Block the calling thread until persistence is idle.
-    pub fn wait_until_idle(&self) {
-        let mut running = self.is_running.lock();
-        while *running {
-            self.done.wait(&mut running);
-        }
-    }
-}
 
 /// Messages sent to the persistence service.
 #[derive(Debug)]

@@ -13,7 +13,8 @@ use reth_evm_ethereum::EthEvmConfig;
 use reth_node_api::{NodePrimitives, NodeTypesWithDB};
 use reth_optimism_trie::{
     MdbxProofsStorage, MdbxProofsStorageV2, OpProofStoragePruner, OpProofsStorage,
-    OpProofsStorageError, OpProofsStore, initialize::InitializationJob, live::LiveTrieCollector,
+    OpProofsStorageError, OpProofsStore, initialize::InitializationJob,
+    live::LiveTrieCollectorHandle,
 };
 use reth_primitives_traits::{Block as _, RecoveredBlock};
 use reth_provider::{
@@ -278,7 +279,7 @@ where
     let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;
     let pruner = OpProofStoragePruner::new(storage.clone(), blockchain_db.clone(), 1000);
     let live_trie_collector =
-        LiveTrieCollector::new(evm_config, blockchain_db, storage.clone(), pruner);
+        LiveTrieCollectorHandle::spawn(evm_config, blockchain_db, storage.clone(), pruner);
 
     for (idx, block_spec) in scenario.blocks_after_initialization.iter().enumerate() {
         let block_number = last_block_number + idx as u64 + 1;
@@ -394,7 +395,7 @@ where
     #[allow(clippy::useless_conversion)]
     let storage_wrapped: OpProofsStorage<S> = storage.into();
     let pruner = OpProofStoragePruner::new(storage_wrapped.clone(), blockchain_db.clone(), 1000);
-    let collector = LiveTrieCollector::new(
+    let collector = LiveTrieCollectorHandle::spawn(
         EthEvmConfig::ethereum(chain_spec.clone()),
         blockchain_db,
         storage_wrapped,
@@ -445,7 +446,7 @@ where
     #[allow(clippy::useless_conversion)]
     let storage_wrapped: OpProofsStorage<Arc<S>> = storage.into();
     let pruner = OpProofStoragePruner::new(storage_wrapped.clone(), blockchain_db.clone(), 1000);
-    let collector = LiveTrieCollector::new(
+    let collector = LiveTrieCollectorHandle::spawn(
         EthEvmConfig::ethereum(chain_spec.clone()),
         blockchain_db,
         storage_wrapped,

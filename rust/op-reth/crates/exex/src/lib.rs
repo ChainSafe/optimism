@@ -15,7 +15,7 @@ use reth_execution_types::Chain;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
 use reth_optimism_trie::{
-    live::LiveTrieCollector, OpProofsProviderRO, OpProofStoragePruner, OpProofsStore,
+    live::LiveTrieCollectorHandle, OpProofsProviderRO, OpProofStoragePruner, OpProofsStore,
 };
 use reth_provider::{BlockNumReader, BlockReader, TransactionVariant};
 use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted, SortedTrieData};
@@ -210,12 +210,12 @@ where
             self.proofs_history_window,
         );
 
-        let collector = Arc::new(LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn(
             self.ctx.evm_config().clone(),
             self.ctx.provider().clone(),
             self.storage.clone(),
             pruner,
-        ));
+        );
 
         let sync_target_tx = self.spawn_sync_task(collector.clone());
 
@@ -271,7 +271,7 @@ where
     /// Spawn the background sync task and return the target sender
     fn spawn_sync_task(
         &self,
-        collector: Arc<LiveTrieCollector<Node::Evm, Node::Provider, Storage>>,
+        collector: LiveTrieCollectorHandle<Primitives::Block>,
     ) -> watch::Sender<u64> {
         let (sync_target_tx, sync_target_rx) = watch::channel(0u64);
         let task_provider = self.ctx.provider().clone();
@@ -289,7 +289,7 @@ where
     async fn sync_loop(
         mut sync_target_rx: watch::Receiver<u64>,
         provider: Node::Provider,
-        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollectorHandle<Primitives::Block>,
     ) {
         debug!(target: "optimism::exex", "Starting proofs storage sync loop");
 
@@ -328,7 +328,7 @@ where
         start: u64,
         target: u64,
         provider: &Node::Provider,
-        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollectorHandle<Primitives::Block>,
         batch_size: usize,
     ) -> eyre::Result<()> {
         let end = (start + batch_size as u64).min(target);
@@ -353,7 +353,7 @@ where
     fn handle_notification(
         &self,
         notification: ExExNotification<Primitives>,
-        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollectorHandle<Primitives::Block>,
         sync_target_tx: &watch::Sender<u64>,
     ) -> eyre::Result<()> {
         let latest_stored = match collector.get_tip_block_number() {
@@ -386,7 +386,7 @@ where
         &self,
         new: Arc<Chain<Primitives>>,
         latest_stored: u64,
-        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollectorHandle<Primitives::Block>,
         sync_target_tx: &watch::Sender<u64>,
     ) -> eyre::Result<()> {
         debug!(
@@ -449,7 +449,7 @@ where
         &self,
         block_number: u64,
         chain: &Chain<Primitives>,
-        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollectorHandle<Primitives::Block>,
     ) -> eyre::Result<()> {
         // Check if this block should be verified via full execution
         let should_verify = self.verification_interval > 0 &&
@@ -518,7 +518,7 @@ where
         old: Arc<Chain<Primitives>>,
         new: Arc<Chain<Primitives>>,
         latest_stored: u64,
-        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollectorHandle<Primitives::Block>,
     ) -> eyre::Result<()> {
         info!(
             old_block_number = old.tip().number(),
@@ -578,7 +578,7 @@ where
         &self,
         old: Arc<Chain<Primitives>>,
         latest_stored: u64,
-        collector: &LiveTrieCollector<Node::Evm, Node::Provider, Storage>,
+        collector: &LiveTrieCollectorHandle<Primitives::Block>,
     ) -> eyre::Result<()> {
         info!(
             target: "optimism::exex",
@@ -611,7 +611,8 @@ mod tests {
     use reth_ethereum_primitives::{Block, Receipt};
     use reth_execution_types::{Chain, ExecutionOutcome};
     use reth_optimism_trie::{
-        db::MdbxProofsStorageV2, BlockStateDiff, OpProofsProviderRO, OpProofsProviderRw, OpProofsStore,
+        db::MdbxProofsStorageV2, live::LiveTrieCollectorHandle, BlockStateDiff, OpProofsProviderRO,
+        OpProofsProviderRw, OpProofsStore,
     };
     use reth_primitives_traits::RecoveredBlock;
     use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted, LazyTrieData};
@@ -720,14 +721,14 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
             pruner,
-        )
-            .with_persistence_threshold(1)
-            .with_backpressure_threshold(2);
+            1,
+            2,
+        );
         let exex = build_test_exex(ctx, store.clone());
 
         // Notification: chain committed 1..5
@@ -759,14 +760,14 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
-            pruner
-        )
-            .with_persistence_threshold(1)
-            .with_backpressure_threshold(2);
+            pruner,
+            1,
+            2,
+        );
 
         let exex = build_test_exex(ctx, store.clone());
 
@@ -809,14 +810,14 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
             pruner,
-        )
-            .with_persistence_threshold(1)
-            .with_backpressure_threshold(2);
+            1,
+            2,
+        );
 
         let exex = build_test_exex(ctx, store.clone());
 
@@ -863,14 +864,14 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
             pruner,
-        )
-            .with_persistence_threshold(1)
-            .with_backpressure_threshold(2);
+            1,
+            2,
+        );
 
         let exex = build_test_exex(ctx, store.clone());
 
@@ -918,14 +919,14 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
             pruner,
-        )
-            .with_persistence_threshold(1)
-            .with_backpressure_threshold(2);
+            1,
+            2,
+        );
 
         let exex = build_test_exex(ctx, store.clone());
 
@@ -972,14 +973,14 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
             pruner,
-        )
-            .with_persistence_threshold(1)
-            .with_backpressure_threshold(2);
+            1,
+            2,
+        );
 
         let exex = build_test_exex(ctx, store.clone());
 
@@ -1080,14 +1081,14 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
             pruner,
-        )
-            .with_persistence_threshold(1)
-            .with_backpressure_threshold(2);
+            1,
+            2,
+        );
 
         let exex = build_test_exex(ctx, store.clone());
 
@@ -1116,14 +1117,14 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollector::new(
+        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
             pruner,
-        )
-            .with_persistence_threshold(1)
-            .with_backpressure_threshold(2);
+            1,
+            2,
+        );
 
         let exex = build_test_exex(ctx, store.clone());
 
