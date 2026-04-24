@@ -5,8 +5,8 @@ use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, EnvironmentArgs};
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
-use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_node::args::ProofsStorageVersion;
+use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_trie::{
     OpProofStoragePruner, OpProofsProviderRO, OpProofsStore,
     db::{MdbxProofsStorage, MdbxProofsStorageV2},
@@ -59,37 +59,13 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> PruneCommand<C> {
     /// Execute [`PruneCommand`].
     pub async fn execute<N: CliNodeTypes<ChainSpec = C::ChainSpec, Primitives = OpPrimitives>>(
         self,
+        runtime: reth_tasks::Runtime,
     ) -> eyre::Result<()> {
         info!(target: "reth::cli", "reth {} starting", version_metadata().short_version);
         info!(target: "reth::cli", "Pruning OP proofs storage at: {:?}", self.storage_path);
 
         // Initialize the environment with read-only access
-        let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
-
-        macro_rules! run_prune {
-            ($storage:expr) => {{
-                let storage = $storage;
-
-                let provider_ro = storage.provider_ro()?;
-                let earliest_block = provider_ro.get_earliest_block_number()?;
-                let latest_block = provider_ro.get_latest_block_number()?;
-                info!(
-                    target: "reth::cli",
-                    ?earliest_block,
-                    ?latest_block,
-                    "Current proofs storage block range"
-                );
-                drop(provider_ro);
-
-                let pruner = OpProofStoragePruner::new(
-                    storage,
-                    provider_factory,
-                    self.proofs_history_window,
-                );
-                let pruner = pruner.with_batch_size(self.proofs_history_prune_batch_size);
-                pruner.run();
-            }};
-        }
+        let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO, runtime)?;
 
         match self.storage_version {
             ProofsStorageVersion::V1 => {
@@ -97,17 +73,55 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> PruneCommand<C> {
                     MdbxProofsStorage::new(&self.storage_path)
                         .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
                 );
-                run_prune!(storage);
+                Self::run_prune(
+                    storage,
+                    provider_factory,
+                    self.proofs_history_window,
+                    self.proofs_history_prune_batch_size,
+                )?;
             }
             ProofsStorageVersion::V2 => {
                 let storage: Arc<MdbxProofsStorageV2> = Arc::new(
                     MdbxProofsStorageV2::new(&self.storage_path)
                         .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
                 );
-                run_prune!(storage);
+                Self::run_prune(
+                    storage,
+                    provider_factory,
+                    self.proofs_history_window,
+                    self.proofs_history_prune_batch_size,
+                )?;
             }
         }
 
+        Ok(())
+    }
+
+    /// Run the pruner against the given proofs storage.
+    fn run_prune(
+        storage: impl OpProofsStore,
+        block_hash_reader: impl reth_provider::BlockHashReader,
+        proofs_history_window: u64,
+        prune_batch_size: u64,
+    ) -> eyre::Result<()> {
+        let provider_ro = storage.provider_ro()?;
+        let earliest_block = provider_ro.get_earliest_block_number()?;
+        let latest_block = provider_ro.get_latest_block_number()?;
+        info!(
+            target: "reth::cli",
+            ?earliest_block,
+            ?latest_block,
+            "Current proofs storage block range"
+        );
+        drop(provider_ro);
+
+        let pruner = OpProofStoragePruner::new(
+            storage,
+            block_hash_reader,
+            proofs_history_window,
+        )
+        .with_batch_size(prune_batch_size);
+        pruner.run();
         Ok(())
     }
 }

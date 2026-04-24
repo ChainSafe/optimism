@@ -13,9 +13,9 @@ import { Config } from "scripts/libraries/Config.sol";
 import { EIP1967Helper } from "test/mocks/EIP1967Helper.sol";
 import { Claim, Hash } from "src/dispute/lib/LibUDT.sol";
 import { GameType, GameTypes, Proposal } from "src/dispute/lib/Types.sol";
+import { Constants } from "src/libraries/Constants.sol";
 import { DevFeatures } from "src/libraries/DevFeatures.sol";
 import { Features } from "src/libraries/Features.sol";
-import { Constants } from "src/libraries/Constants.sol";
 
 // Interfaces
 import { IResourceMetering } from "interfaces/L1/IResourceMetering.sol";
@@ -29,7 +29,6 @@ import { IOPContractsManagerUtils } from "interfaces/L1/opcm/IOPContractsManager
 import { IOPContractsManagerContainer } from "interfaces/L1/opcm/IOPContractsManagerContainer.sol";
 import { IOPContractsManagerMigrator } from "interfaces/L1/opcm/IOPContractsManagerMigrator.sol";
 import { IOptimismPortal2 } from "interfaces/L1/IOptimismPortal2.sol";
-import { IOptimismPortalInterop } from "interfaces/L1/IOptimismPortalInterop.sol";
 import { IDisputeGameFactory } from "interfaces/dispute/IDisputeGameFactory.sol";
 import { IAnchorStateRegistry } from "interfaces/dispute/IAnchorStateRegistry.sol";
 import { IETHLockbox } from "interfaces/L1/IETHLockbox.sol";
@@ -52,7 +51,6 @@ contract OPContractsManagerV2_TestInit is CommonTest {
     /// @notice Sets up the test suite.
     function setUp() public virtual override {
         super.setUp();
-        skipIfDevFeatureDisabled(DevFeatures.OPCM_V2);
     }
 
     /// @notice Helper function that runs an OPCM V2 deploy, asserts that the deploy was successful,
@@ -501,8 +499,6 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
 
     /// @notice Tests that the upgrade function succeeds when executed normally.
     function test_upgrade_succeeds() public {
-        skipIfDevFeatureDisabled(DevFeatures.OPCM_V2);
-
         // Run the upgrade test and checks
         runCurrentUpgradeV2(chainPAO);
     }
@@ -510,8 +506,6 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
     /// @notice Tests that calling upgrade twice does not revert, ensuring the upgrade function
     ///         has no one-time-only state transitions that would block a subsequent upgrade call.
     function test_upgrade_calledTwice_succeeds() public {
-        skipIfDevFeatureDisabled(DevFeatures.OPCM_V2);
-
         runCurrentUpgradeV2(chainPAO);
         runCurrentUpgradeV2(chainPAO);
     }
@@ -754,8 +748,6 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
 
     /// @notice Tests that the upgrade flow can update the Cannon and Permissioned prestate.
     function test_upgrade_updatePrestate_succeeds() public {
-        skipIfDevFeatureDisabled(DevFeatures.OPCM_V2);
-
         // Run baseline upgrade and capture the current prestates.
         runCurrentUpgradeV2(chainPAO);
         assertEq(
@@ -838,8 +830,6 @@ contract OPContractsManagerV2_Upgrade_Test is OPContractsManagerV2_Upgrade_TestI
     ///         even when the SuperchainConfig has the system globally paused. This is critical
     ///         because upgrades may be needed during incident response when the system is paused.
     function test_upgrade_whenPaused_succeeds() public {
-        skipIfDevFeatureDisabled(DevFeatures.OPCM_V2);
-
         // First, pause the system globally using the guardian.
         address guardian = superchainConfig.guardian();
         vm.prank(guardian);
@@ -1387,11 +1377,7 @@ contract OPContractsManagerV2_IsPermittedUpgradeSequence_Test is OPContractsMana
         address oldOPCM = makeAddr("oldOPCM");
 
         // Mock the current OPCM version to be 7.0.0 (below threshold).
-        vm.mockCall(
-            address(opcmV2),
-            abi.encodeCall(IOPContractsManagerV2.version, ()),
-            abi.encode(Constants.OPCM_V2_MIN_VERSION)
-        );
+        vm.mockCall(address(opcmV2), abi.encodeCall(IOPContractsManagerV2.version, ()), abi.encode("7.0.0"));
 
         // Mock lastUsedOPCM to return the old OPCM address.
         vm.mockCall(address(systemConfig), abi.encodeCall(ISystemConfig.lastUsedOPCM, ()), abi.encode(oldOPCM));
@@ -2054,16 +2040,13 @@ contract OPContractsManagerV2_Migrate_Test is OPContractsManagerV2_TestInit {
         assertTrue(newLockbox.authorizedPortals(portal1), "ETHLockbox does not have portal 1 authorized");
         assertTrue(newLockbox.authorizedPortals(portal2), "ETHLockbox does not have portal 2 authorized");
 
-        // Check that superRootsActive is true on both portals.
+        // Check that the INTEROP feature is enabled on both SystemConfigs.
         assertTrue(
-            IOptimismPortalInterop(payable(address(portal1))).superRootsActive(),
-            "Portal 1 superRootsActive should be true"
+            chainContracts1.systemConfig.isFeatureEnabled(Features.INTEROP), "Chain 1 INTEROP feature should be enabled"
         );
         assertTrue(
-            IOptimismPortalInterop(payable(address(portal2))).superRootsActive(),
-            "Portal 2 superRootsActive should be true"
+            chainContracts2.systemConfig.isFeatureEnabled(Features.INTEROP), "Chain 2 INTEROP feature should be enabled"
         );
-
         // Check that the ETH_LOCKBOX feature is enabled on both SystemConfigs.
         assertTrue(
             chainContracts1.systemConfig.isFeatureEnabled(Features.ETH_LOCKBOX),
@@ -2100,6 +2083,11 @@ contract OPContractsManagerV2_Migrate_Test is OPContractsManagerV2_TestInit {
     /// @param _owner2 The owner address for the second chain's ProxyAdmin.
     function testFuzz_migrate_mismatchedProxyAdminOwners_reverts(address _owner1, address _owner2) public {
         vm.assume(_owner1 != _owner2);
+        // Exclude the OPCM address itself: when the pranked delegate-call address equals
+        // address(opcmV2), the _onlyDelegateCall guard reverts before the owner check,
+        // producing a different revert selector than this test expects.
+        vm.assume(_owner1 != address(opcmV2));
+        vm.assume(_owner2 != address(opcmV2));
         assumeNotPrecompile(_owner1);
         assumeNotPrecompile(_owner2);
         assumeNotForgeAddress(_owner1);

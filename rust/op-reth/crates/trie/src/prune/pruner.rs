@@ -625,21 +625,18 @@ mod tests {
         assert_eq!(out, PrunerOutput::default(), "should early-return default output");
     }
 
-    // The earliest block is None, but the latest block exists -> early return default.
+    // When only earliest is set (and latest is absent), latest falls back to earliest.
+    // This yields interval=0, so pruning should no-op.
     #[tokio::test]
     async fn run_inner_earliest_none_real_db() {
-        use crate::BlockStateDiff;
-
         let dir = TempDir::new().unwrap();
         let store: OpProofsStorage<Arc<MdbxProofsStorageV2>> =
             OpProofsStorage::from(Arc::new(MdbxProofsStorageV2::new(dir.path()).expect("env")));
 
-        // Write a single block to set *latest* only.
+        // Set earliest only. In V2, get_latest_block_number() falls back to earliest.
         {
             let provider = store.provider_rw().expect("provider_rw");
-            provider
-                .store_trie_updates(block(3, B256::ZERO), BlockStateDiff::default())
-                .expect("store b1");
+            provider.set_earliest_block_number(3, b256(3)).expect("set earliest");
             provider.commit().expect("commit");
         }
 
@@ -647,8 +644,8 @@ mod tests {
             let provider = store.provider_ro().unwrap();
             let earliest = provider.get_earliest_block_number().unwrap();
             let latest = provider.get_latest_block_number().unwrap();
-            assert!(earliest.is_none(), "earliest must remain None");
-            assert_eq!(latest.unwrap().0, 3);
+            assert_eq!(earliest.unwrap().0, 3);
+            assert_eq!(latest.unwrap().0, 3, "latest should fall back to earliest");
         }
 
         let block_hash_reader = MockBlockHashReader::new();

@@ -6,8 +6,8 @@ use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, Environment, EnvironmentArgs};
 use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
-use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_node::args::ProofsStorageVersion;
+use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_trie::{
     InitializationJob, OpProofsProviderRO, OpProofsStore,
     db::{MdbxProofsStorage, MdbxProofsStorageV2},
@@ -49,58 +49,13 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> InitCommand<C> {
     /// Execute `initialize-op-proofs` command
     pub async fn execute<N: CliNodeTypes<ChainSpec = C::ChainSpec, Primitives = OpPrimitives>>(
         self,
+        runtime: reth_tasks::Runtime,
     ) -> eyre::Result<()> {
         info!(target: "reth::cli", "reth {} starting", version_metadata().short_version);
         info!(target: "reth::cli", "Initializing OP proofs storage at: {:?}", self.storage_path);
 
         // Initialize the environment with read-only access
-        let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
-
-        macro_rules! run_init {
-            ($storage:expr) => {{
-                let storage = $storage;
-
-                // Check if already initialized
-                if let Some((block_number, block_hash)) =
-                    storage.provider_ro()?.get_earliest_block_number()?
-                {
-                    info!(
-                        target: "reth::cli",
-                        block_number = block_number,
-                        block_hash = ?block_hash,
-                        "Proofs storage already initialized"
-                    );
-                    return Ok(());
-                }
-
-                // Get the current chain state
-                let ChainInfo { best_number, best_hash, .. } = provider_factory.chain_info()?;
-
-                info!(
-                    target: "reth::cli",
-                    best_number = best_number,
-                    best_hash = ?best_hash,
-                    "Starting backfill job for current chain state"
-                );
-
-                // Run the backfill job
-                {
-                    let db_provider = provider_factory
-                        .database_provider_ro()?
-                        .disable_long_read_transaction_safety();
-                    let db_tx = db_provider.into_tx();
-
-                    InitializationJob::new(storage, db_tx).run(best_number, best_hash)?;
-                }
-
-                info!(
-                    target: "reth::cli",
-                    best_number = best_number,
-                    best_hash = ?best_hash,
-                    "Proofs storage initialized successfully"
-                );
-            }};
-        }
+        let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO, runtime)?;
 
         // Create the proofs storage without the metrics wrapper.
         // During initialization we write billions of entries; the metrics layer's
@@ -112,16 +67,65 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> InitCommand<C> {
                     MdbxProofsStorage::new(&self.storage_path)
                         .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
                 );
-                run_init!(storage);
+                Self::run_init(&provider_factory, storage)?;
             }
             ProofsStorageVersion::V2 => {
                 let storage: Arc<MdbxProofsStorageV2> = Arc::new(
                     MdbxProofsStorageV2::new(&self.storage_path)
                         .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
                 );
-                run_init!(storage);
+                Self::run_init(&provider_factory, storage)?;
             }
         }
+
+        Ok(())
+    }
+
+    /// Run the initialization against the given proofs storage.
+    ///
+    /// If the storage is already initialized this is a no-op.
+    fn run_init<F>(provider_factory: &F, storage: impl OpProofsStore) -> eyre::Result<()>
+    where
+        F: DatabaseProviderFactory + BlockNumReader,
+        F::Provider: DBProvider,
+    {
+        // Check if already initialized
+        if let Some((block_number, block_hash)) =
+            storage.provider_ro()?.get_earliest_block_number()?
+        {
+            info!(
+                target: "reth::cli",
+                block_number = block_number,
+                block_hash = ?block_hash,
+                "Proofs storage already initialized"
+            );
+            return Ok(());
+        }
+
+        // Get the current chain state
+        let ChainInfo { best_number, best_hash, .. } = provider_factory.chain_info()?;
+
+        info!(
+            target: "reth::cli",
+            best_number = best_number,
+            best_hash = ?best_hash,
+            "Starting backfill job for current chain state"
+        );
+
+        {
+            let db_provider =
+                provider_factory.database_provider_ro()?.disable_long_read_transaction_safety();
+            let db_tx = db_provider.into_tx();
+
+            InitializationJob::new(storage, db_tx).run(best_number, best_hash)?;
+        }
+
+        info!(
+            target: "reth::cli",
+            best_number = best_number,
+            best_hash = ?best_hash,
+            "Proofs storage initialized successfully"
+        );
 
         Ok(())
     }

@@ -149,7 +149,6 @@ where
 ///     .install_exex("proofs-history", move |exex_context| async move {
 ///         Ok(OpProofsExEx::builder(exex_context, storage_exec)
 ///             .with_proofs_history_window(proofs_history_window)
-///             .with_proofs_history_prune_interval(proofs_history_prune_interval)
 ///             .with_verification_interval(verification_interval)
 ///             .build()
 ///             .run()

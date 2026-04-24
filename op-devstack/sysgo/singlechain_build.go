@@ -98,7 +98,7 @@ func buildSingleChainWorld(t devtest.T, keys devkeys.Keys, localContractArtifact
 		genesis:    wb.outL2Genesis[l2ID],
 		rollupCfg:  wb.outL2RollupCfg[l2ID],
 		deployment: wb.outL2Deployment[l2ID],
-		opcmImpl:   wb.output.ImplementationsDeployment.OpcmImpl,
+		opcmImpl:   wb.output.ImplementationsDeployment.OpcmV2Impl,
 		mipsImpl:   wb.output.ImplementationsDeployment.MipsImpl,
 		keys:       keys,
 	}
@@ -156,7 +156,9 @@ func startL2ELForKey(t devtest.T, l2Net *L2Network, jwtPath string, jwtSecret [3
 	switch devstackL2ELKind() {
 	case MixedL2ELOpGeth:
 		return startL2ELNode(t, l2Net, jwtPath, jwtSecret, key, identity)
-	default: // op-reth
+	case MixedL2ELOpRethV2:
+		return startMixedOpRethNode(t, l2Net, key, jwtPath, jwtSecret, nil, "v2")
+	default: // op-reth v1
 		return startMixedOpRethNode(t, l2Net, key, jwtPath, jwtSecret, nil, "v1")
 	}
 }
@@ -415,6 +417,7 @@ func startL2CLNode(
 			SupportsPostFinalizationELSync: false,
 			L2FollowSourceEndpoint:         cfg.FollowSource,
 			NeedInitialResetEngine:         false,
+			OffsetELSafe:                   cfg.OffsetELSafe,
 		},
 		ConfigPersistence:               config.DisabledConfigPersistence{},
 		Metrics:                         opmetrics.CLIConfig{},

@@ -88,14 +88,6 @@ where
 {
     fn storage(&self, address: Address, storage_key: B256) -> ProviderResult<Option<StorageValue>> {
         let hashed_slot = keccak256(storage_key);
-        self.storage_by_hashed_key(address, hashed_slot)
-    }
-
-    fn storage_by_hashed_key(
-        &self,
-        address: Address,
-        hashed_key: B256,
-    ) -> ProviderResult<Option<StorageValue>> {
         let hashed_address = keccak256(address);
 
         // Check buffer via trie_input cache
@@ -104,7 +96,7 @@ where
         // Check for storage updates or wipes in the overlay
         if let Some(account_storage) = state.storages.get(&hashed_address) {
             // Check specific slot
-            if let Some(value) = account_storage.storage.get(&hashed_key) {
+            if let Some(value) = account_storage.storage.get(&hashed_slot) {
                 return Ok(Some(*value));
             }
             // If the whole storage was wiped in the overlay (e.g. reused address), we return 0
@@ -120,7 +112,7 @@ where
             }
         }
 
-        self.inner.storage_by_hashed_key(address, hashed_key)
+        self.inner.storage(address, storage_key)
     }
 }
 
