@@ -21,8 +21,8 @@ use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use reth_evm::{execute::Executor, ConfigureEvm};
 use reth_primitives_traits::{AlloyBlockHeader, BlockTy, NodePrimitives, RecoveredBlock};
 use reth_provider::{
-    BlockHashReader, DatabaseProviderFactory, HashedPostStateProvider, StateProviderFactory,
-    StateReader, StateRootProvider,
+    BlockHashReader, BlockReader, DatabaseProviderFactory, HashedPostStateProvider,
+    StateProviderFactory, StateReader, StateRootProvider, TransactionVariant,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_trie_common::{updates::TrieUpdatesSorted, HashedPostStateSorted};
@@ -42,6 +42,31 @@ pub const DEFAULT_BACKPRESSURE_THRESHOLD: u64 = 10;
 
 /// Default timeout for waiting on a persistence save/unwind operation (in seconds).
 pub const DEFAULT_PERSISTENCE_TIMEOUT_SECS: u64 = 60;
+
+/// Number of blocks to process per sync catch-up batch before re-checking for new actions.
+const SYNC_BLOCKS_BATCH_SIZE: u64 = 50;
+
+/// How long the engine idles (blocking recv timeout) when the sync target is met.
+const SYNC_IDLE_SLEEP_SECS: u64 = 5;
+
+// ---------------------------------------------------------------------------
+// Public types used across the ExEx / engine boundary
+// ---------------------------------------------------------------------------
+
+/// One block's commit data extracted from an [`ExExNotification`].
+///
+/// The engine uses `precomputed` when present (fast path: pre-computed trie updates
+/// carried by the notification) and falls back to full block execution when `None`.
+///
+/// [`ExExNotification`]: reth_exex::ExExNotification
+#[derive(Debug)]
+pub struct NotificationCommitEntry {
+    /// Block identity and parent link.
+    pub block_with_parent: BlockWithParent,
+    /// Pre-computed trie data from the notification, if available and not overridden
+    /// by periodic verification.  `None` → engine must execute the block.
+    pub precomputed: Option<(TrieUpdatesSorted, HashedPostStateSorted)>,
+}
 
 // ---------------------------------------------------------------------------
 // CollectorAction – messages sent from the handle to the engine
@@ -75,9 +100,21 @@ enum CollectorAction<Block: reth_primitives_traits::Block> {
     WaitForPersistence {
         reply: Sender<()>,
     },
-    /// Query the tip block number.
+    /// Update the sync catch-up target (fire-and-forget).
+    SetSyncTarget(u64),
+    /// Query the current tip block number (memory first, then disk).
     GetTipBlockNumber {
-        reply: Sender<Result<u64, OpProofsStorageError>>,
+        reply: Sender<Option<u64>>,
+    },
+    /// Process a committed chain notification.
+    ///
+    /// The engine uses the pre-computed trie data in each entry when present
+    /// (fast path) and falls back to full execution otherwise.  It also owns
+    /// the decision of whether entries are sequential and near-tip.
+    HandleCommit {
+        entries: Vec<NotificationCommitEntry>,
+        tip: u64,
+        reply: Sender<Result<(), OpProofsStorageError>>,
     },
 }
 
@@ -115,6 +152,7 @@ impl<Block: reth_primitives_traits::Block + Send + 'static> LiveTrieCollectorHan
             + StateReader
             + DatabaseProviderFactory
             + StateProviderFactory
+            + BlockReader<Block = Block>
             + Clone
             + 'static,
         Store: OpProofsStore + Clone + 'static,
@@ -144,6 +182,7 @@ impl<Block: reth_primitives_traits::Block + Send + 'static> LiveTrieCollectorHan
             + StateReader
             + DatabaseProviderFactory
             + StateProviderFactory
+            + BlockReader<Block = Block>
             + Clone
             + 'static,
         Store: OpProofsStore + Clone + 'static,
@@ -244,9 +283,33 @@ impl<Block: reth_primitives_traits::Block + Send + 'static> LiveTrieCollectorHan
         }
     }
 
-    /// Returns the block number of the true tip of the collector.
-    pub fn get_tip_block_number(&self) -> Result<u64, OpProofsStorageError> {
-        self.send_and_recv(|reply| CollectorAction::GetTipBlockNumber { reply })?
+    /// Returns the current tip block number (memory first, then disk).
+    /// Returns `None` if no blocks have been stored at all.
+    pub fn get_tip_block_number(&self) -> Result<Option<u64>, OpProofsStorageError> {
+        self.send_and_recv(|reply| CollectorAction::GetTipBlockNumber { reply })
+    }
+
+    /// Process a committed chain notification.
+    ///
+    /// Entries should be ordered oldest → newest.  The engine decides internally
+    /// whether to consume the pre-computed data or re-execute, and sets the sync
+    /// target for any gap.
+    pub fn handle_commit(
+        &self,
+        entries: Vec<NotificationCommitEntry>,
+        tip: u64,
+    ) -> Result<(), OpProofsStorageError> {
+        self.send_and_recv(|reply| CollectorAction::HandleCommit { entries, tip, reply })?
+    }
+
+    /// Update the sync catch-up target. The engine will execute blocks up to `target`
+    /// in its idle time, prioritising any incoming actions over sync work.
+    ///
+    /// Fire-and-forget: returns as soon as the message is enqueued.
+    pub fn set_sync_target(&self, target: u64) -> Result<(), OpProofsStorageError> {
+        self.sender
+            .send(CollectorAction::SetSyncTarget(target))
+            .map_err(|_| OpProofsStorageError::Other("Collector engine died".into()))
     }
 }
 
@@ -259,7 +322,7 @@ impl<Block: reth_primitives_traits::Block + Send + 'static> LiveTrieCollectorHan
 struct LiveTrieCollectorEngine<Evm, Provider, Store>
 where
     Evm: ConfigureEvm,
-    Provider: StateReader + DatabaseProviderFactory + StateProviderFactory,
+    Provider: StateReader + DatabaseProviderFactory + StateProviderFactory + BlockReader,
 {
     evm_config: Evm,
     provider: Provider,
@@ -275,6 +338,9 @@ where
     /// Reply channel for the in-flight persistence save (if any).
     persist_reply_rx: Option<Receiver<Option<u64>>>,
 
+    /// The highest block number the engine should sync to in its idle time.
+    sync_target: u64,
+
     incoming: Receiver<CollectorAction<BlockTy<Evm::Primitives>>>,
 
     #[cfg(feature = "metrics")]
@@ -288,6 +354,7 @@ where
         + StateReader
         + DatabaseProviderFactory
         + StateProviderFactory
+        + BlockReader<Block = BlockTy<Evm::Primitives>>
         + Clone
         + 'static,
     Store: OpProofsStore + Clone + 'static,
@@ -313,6 +380,8 @@ where
 
             persist_in_flight: false,
             persist_reply_rx: None,
+
+            sync_target: 0,
 
             incoming,
 
@@ -344,44 +413,81 @@ where
         );
         debug!(target: "live-trie::engine", "Collector engine started");
 
-        while let Ok(action) = self.incoming.recv() {
-            match action {
-                CollectorAction::ExecuteAndStore { block, reply } => {
-                    let result = self.do_execute_and_store(&block);
-                    let _ = reply.send(result);
+        'main: loop {
+            // Priority 1: drain all pending actions before doing any sync work.
+            loop {
+                match self.incoming.try_recv() {
+                    Ok(action) => self.process_action(action),
+                    Err(crossbeam_channel::TryRecvError::Empty) => break,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => break 'main,
                 }
-                CollectorAction::StoreBlockUpdates {
-                    block,
-                    sorted_trie_updates,
-                    sorted_post_state,
-                    reply,
-                } => {
-                    let result =
-                        self.do_store_block_updates(block, sorted_trie_updates, sorted_post_state);
-                    let _ = reply.send(result);
+            }
+
+            // Priority 2: sync catch-up if behind target.
+            let current_tip = self.get_tip().map(|t| t.number).unwrap_or(0);
+            if self.sync_target > current_tip {
+                if let Err(e) = self.do_sync_batch() {
+                    error!(target: "live-trie::engine", ?e, "Sync batch failed");
                 }
-                CollectorAction::UnwindAndStore { block_updates, reply } => {
-                    let result = self.do_unwind_and_store(block_updates);
-                    let _ = reply.send(result);
-                }
-                CollectorAction::UnwindHistory { to, reply } => {
-                    let result = self.do_unwind_history(to);
-                    let _ = reply.send(result);
-                }
-                CollectorAction::WaitForPersistence { reply } => {
-                    self.wait_for_persist_result();
-                    let _ = reply.send(());
-                }
-                CollectorAction::GetTipBlockNumber { reply } => {
-                    let _ = reply.send(self.get_tip_block_number());
-                }
+                continue 'main;
+            }
+
+            // Priority 3: nothing to sync — block until next action or periodic wake-up.
+            match self.incoming.recv_timeout(Duration::from_secs(SYNC_IDLE_SLEEP_SECS)) {
+                Ok(action) => self.process_action(action),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break 'main,
             }
         }
 
-        // Channel closed — handle is dropped, shut down gracefully.
         debug!(target: "live-trie::engine", "Collector engine shutting down, draining in-flight persist");
         self.wait_for_persist_result();
         debug!(target: "live-trie::engine", "Collector engine stopped");
+    }
+
+    fn process_action(&mut self, action: CollectorAction<BlockTy<Evm::Primitives>>) {
+        match action {
+            CollectorAction::ExecuteAndStore { block, reply } => {
+                let result = self.do_execute_and_store(&block);
+                let _ = reply.send(result);
+            }
+            CollectorAction::StoreBlockUpdates {
+                block,
+                sorted_trie_updates,
+                sorted_post_state,
+                reply,
+            } => {
+                let result =
+                    self.do_store_block_updates(block, sorted_trie_updates, sorted_post_state);
+                let _ = reply.send(result);
+            }
+            CollectorAction::UnwindAndStore { block_updates, reply } => {
+                let result = self.do_unwind_and_store(block_updates);
+                let _ = reply.send(result);
+            }
+            CollectorAction::UnwindHistory { to, reply } => {
+                let result = self.do_unwind_history(to);
+                let _ = reply.send(result);
+            }
+            CollectorAction::WaitForPersistence { reply } => {
+                self.wait_for_persist_result();
+                let _ = reply.send(());
+            }
+            CollectorAction::SetSyncTarget(target) => {
+                if target > self.sync_target {
+                    self.sync_target = target;
+                    debug!(target: "live-trie::engine", sync_target = target, "Sync target updated");
+                }
+            }
+            CollectorAction::GetTipBlockNumber { reply } => {
+                let tip = self.get_tip().ok().map(|t| t.number);
+                let _ = reply.send(tip);
+            }
+            CollectorAction::HandleCommit { entries, tip, reply } => {
+                let result = self.do_handle_commit(entries, tip);
+                let _ = reply.send(result);
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -734,8 +840,80 @@ where
             .ok_or(OpProofsStorageError::NoBlocksFound)
     }
 
-    fn get_tip_block_number(&self) -> Result<u64, OpProofsStorageError> {
-        self.get_tip().map(|tip| tip.number)
+    /// Process a committed chain notification.
+    ///
+    /// The engine always owns the decision logic:
+    ///
+    /// 1. Update `sync_target` so the idle loop fills any gap.
+    /// 2. If the entries are *sequential* (start right after the engine's current tip),
+    ///    process them immediately using the pre-computed data when available.
+    /// 3. If there is a gap between the engine tip and the first entry, skip inline
+    ///    processing — `sync_target` will drive catch-up via [`Self::do_sync_batch`].
+    fn do_handle_commit(
+        &mut self,
+        entries: Vec<NotificationCommitEntry>,
+        tip: u64,
+    ) -> Result<(), OpProofsStorageError> {
+        // Always advance the sync target so the idle loop covers any gap.
+        if tip > self.sync_target {
+            self.sync_target = tip;
+        }
+
+        let Some(first) = entries.first() else { return Ok(()) };
+
+        // Read the authoritative tip from the engine's own state — no stale snapshot.
+        let engine_tip = self.get_tip()?.number;
+
+        // Only process entries inline when they begin exactly at our next block.
+        if first.block_with_parent.block.number != engine_tip + 1 {
+            // Gap detected — sync_target already set; do_sync_batch will fill it.
+            return Ok(());
+        }
+
+        for entry in entries {
+            if let Some((trie_updates, post_state)) = entry.precomputed {
+                // Fast path: use pre-computed data from the notification.
+                self.do_store_block_updates(entry.block_with_parent, trie_updates, post_state)?;
+            } else {
+                // Slow path: fetch and execute.
+                let block_num = entry.block_with_parent.block.number;
+                let block = self
+                    .provider
+                    .recovered_block(block_num.into(), TransactionVariant::NoHash)?
+                    .ok_or_else(|| {
+                        OpProofsStorageError::Other(format!("Missing block {block_num}"))
+                    })?;
+                self.do_execute_and_store(&block)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Execute one batch of sync catch-up blocks, then return so the event loop
+    /// can re-check for incoming actions before continuing.
+    fn do_sync_batch(&mut self) -> Result<(), OpProofsStorageError> {
+        let current_tip = self.get_tip()?.number;
+        if current_tip >= self.sync_target {
+            return Ok(());
+        }
+        let end = (current_tip + SYNC_BLOCKS_BATCH_SIZE).min(self.sync_target);
+        info!(
+            target: "live-trie::engine",
+            start = current_tip + 1,
+            end,
+            "Processing sync catch-up batch"
+        );
+        for block_num in (current_tip + 1)..=end {
+            let block = self
+                .provider
+                .recovered_block(block_num.into(), TransactionVariant::NoHash)?
+                .ok_or_else(|| {
+                    OpProofsStorageError::Other(format!("Missing block {block_num}"))
+                })?;
+            self.do_execute_and_store(&block)?;
+        }
+        Ok(())
     }
 
     /// Returns all buffered blocks to persist, ordered oldest to newest.
