@@ -396,8 +396,9 @@ func startMixedOpRethNode(
 	jwtPath string,
 	jwtSecret [32]byte,
 	metricsRegistrar L2MetricsRegistrar,
+	storageVersion string,
 ) *OpReth {
-	node := buildMixedOpRethNode(t, l2Net, key, jwtPath, jwtSecret, metricsRegistrar)
+	node := buildMixedOpRethNode(t, l2Net, key, jwtPath, jwtSecret, metricsRegistrar, storageVersion)
 	t.Logger().Info("Starting op-reth", "name", key, "chain", l2Net.ChainID())
 	node.Start()
 	t.Cleanup(node.Stop)
@@ -415,8 +416,9 @@ func startMixedOpRethNodeWithSupervisorURL(
 	jwtSecret [32]byte,
 	metricsRegistrar L2MetricsRegistrar,
 	supervisorURL string,
+	storageVersion string,
 ) *OpReth {
-	node := buildMixedOpRethNode(t, l2Net, key, jwtPath, jwtSecret, metricsRegistrar)
+	node := buildMixedOpRethNode(t, l2Net, key, jwtPath, jwtSecret, metricsRegistrar, storageVersion)
 	if supervisorURL != "" {
 		node.args = append(node.args, "--rollup.supervisor-http="+supervisorURL)
 	}
