@@ -423,7 +423,6 @@ func startL2CLNode(
 		Metrics:                         opmetrics.CLIConfig{},
 		Pprof:                           oppprof.CLIConfig{},
 		SafeDBPath:                      cfg.SafeDBPath,
-		RollupHalt:                      "",
 		Cancel:                          nil,
 		ConductorEnabled:                false,
 		ConductorRpc:                    nil,
@@ -433,12 +432,13 @@ func startL2CLNode(
 		ExperimentalOPStackAPI:          true,
 	}
 	l2CL := &OpNode{
-		name:   startCfg.Key,
-		opNode: nil,
-		cfg:    nodeCfg,
-		p:      t,
-		logger: logger,
-		clock:  clock.SystemClock,
+		name:     startCfg.Key,
+		opNode:   nil,
+		cfg:      nodeCfg,
+		syncMode: syncMode,
+		p:        t,
+		logger:   logger,
+		clock:    clock.SystemClock,
 	}
 	l2CL.Start()
 	t.Cleanup(l2CL.Stop)
