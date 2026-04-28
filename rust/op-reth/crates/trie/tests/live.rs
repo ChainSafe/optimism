@@ -18,7 +18,7 @@ use reth_optimism_trie::{
 use reth_primitives_traits::{Block as _, RecoveredBlock};
 use reth_provider::{
     BlockWriter as _, ExecutionOutcome, HashedPostStateProvider, LatestStateProviderRef,
-    ProviderFactory, StateRootProvider,
+    ProviderFactory, StateRootProvider, StorageSettingsCache,
     providers::{BlockchainProvider, ProviderNodeTypes},
     test_utils::create_test_provider_factory_with_chain_spec,
 };
@@ -251,9 +251,14 @@ where
     }
 
     {
+        let trie_layout = if provider_factory.cached_storage_settings().is_v2() {
+            RethTrieStorageLayout::Packed
+        } else {
+            RethTrieStorageLayout::Legacy
+        };
         let provider = provider_factory.db_ref();
         let tx = provider.tx()?;
-        let initialization_job = InitializationJob::new(storage.clone(), tx);
+        let initialization_job = InitializationJob::new(storage.clone(), tx, trie_layout);
         initialization_job.run(last_block_number, last_block_hash)?;
     }
 
