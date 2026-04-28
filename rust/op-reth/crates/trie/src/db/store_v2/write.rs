@@ -82,6 +82,18 @@ impl<TX: DbTxMut + DbTx> WriteCursors<TX> {
 ///
 /// This is the batched equivalent of a single-block
 /// `append_history_index_with_cursor` call.
+///
+/// # Assumption: `block_numbers` always belong to the last shard
+///
+/// This function **only seeks the last shard** (keyed by `sharded_key_factory(u64::MAX)`).
+/// It relies on the invariant that all values in `block_numbers` are strictly greater than
+/// every block number already stored for this key across *all* shards. Because shards are
+/// ordered and the last shard (sentinel key `u64::MAX`) holds the global maximum for the key,
+/// verifying `first_new > last_shard.last()` is sufficient: a block that follows the
+/// last-shard tail necessarily follows every earlier shard too.
+///
+/// Callers must guarantee that block numbers are provided in strictly increasing order across
+/// successive calls (i.e. history is append-only).
 fn append_history_indices_batched<T>(
     cursor: &mut (impl DbCursorRO<T> + DbCursorRW<T>),
     block_numbers: &[BlockNumber],
@@ -101,6 +113,25 @@ where
         .seek_exact(last_key.clone())?
         .map(|(_, list)| list)
         .unwrap_or_else(BlockNumberList::empty);
+
+    if let Some(first_new) = block_numbers.first().copied() {
+        debug_assert!(
+            block_numbers.windows(2).all(|w| w[0] <= w[1]),
+            "append_history_indices_batched expects non-decreasing block_numbers"
+        );
+        // Verifies the last-shard assumption: `first_new > existing_last` guarantees
+        // that block_numbers extend beyond all previously stored entries (since the last
+        // shard contains the global maximum), so they correctly belong in the last shard.
+        if let Some(existing_last) = last_shard.iter().next_back() {
+            debug_assert!(
+                first_new > existing_last,
+                "block_numbers must extend the last shard's tail \
+                 (first_new={first_new} <= existing_last={existing_last}); \
+                 all new block numbers must be strictly greater than any previously \
+                 stored block number for this key"
+            );
+        }
+    }
 
     for &bn in block_numbers {
         last_shard
