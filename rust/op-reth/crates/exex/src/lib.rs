@@ -14,11 +14,12 @@ use futures_util::TryStreamExt;
 use reth_execution_types::Chain;
 use reth_exex::{ExExContext, ExExEvent, ExExNotification};
 use reth_node_api::{FullNodeComponents, NodePrimitives, NodeTypes};
+use reth_provider::BlockNumReader;
 use reth_optimism_trie::{
-    live::{LiveTrieCollectorHandle, NotificationCommitEntry},
+    engine::EngineHandle,
     OpProofsProviderRO, OpProofStoragePruner, OpProofsStore,
 };
-use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted};
+use reth_trie::{updates::TrieUpdatesSorted, HashedPostStateSorted, SortedTrieData};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -31,8 +32,13 @@ const MAX_PRUNE_BLOCKS_STARTUP: u64 = 1000;
 /// Default proofs history window: 1 month of blocks at 2s block time
 const DEFAULT_PROOFS_HISTORY_WINDOW: u64 = 1_296_000;
 
-/// Default verification interval: disabled
-const DEFAULT_VERIFICATION_INTERVAL: u64 = 0; // disabled
+/// Default verification interval: disabled (0 = no periodic re-execution)
+const DEFAULT_VERIFICATION_INTERVAL: u64 = 0;
+
+/// Number of blocks behind the chain tip within which we consider the ExEx to be in real-time
+/// operation. Notifications further behind than this are treated as sync catch-up and handled
+/// asynchronously by the engine.
+const REAL_TIME_BLOCKS_THRESHOLD: u64 = 64;
 
 /// Builder for [`OpProofsExEx`].
 #[derive(Debug)]
@@ -66,7 +72,11 @@ where
         self
     }
 
-    /// Sets the verification interval.
+    /// Sets the interval at which blocks are re-executed to verify pre-computed trie data.
+    ///
+    /// Every `interval`-th block (by block number) will be executed in full even when
+    /// pre-computed trie data is available, allowing detection of any divergence.
+    /// Set to `0` (the default) to disable periodic verification.
     pub const fn with_verification_interval(mut self, interval: u64) -> Self {
         self.verification_interval = interval;
         self
@@ -128,9 +138,6 @@ where
 /// let proofs_history_window = 1_296_000u64;
 /// let proofs_history_prune_interval = Duration::from_secs(3600);
 ///
-/// // Verification interval: perform full execution every N blocks
-/// let verification_interval = 0; // 0 = disabled, 100 = verify every 100 blocks
-///
 /// // Can also use install_exex_if along with a boolean flag
 /// // Set this based on your configuration or CLI args
 /// let _builder = NodeBuilder::new(config)
@@ -140,7 +147,6 @@ where
 ///     .install_exex("proofs-history", move |exex_context| async move {
 ///         Ok(OpProofsExEx::builder(exex_context, storage_exec)
 ///             .with_proofs_history_window(proofs_history_window)
-///             .with_verification_interval(verification_interval)
 ///             .build()
 ///             .run()
 ///             .boxed())
@@ -161,9 +167,8 @@ where
     /// The window to span blocks for proofs history. Value is the number of blocks, received as
     /// cli arg.
     proofs_history_window: u64,
-    /// Verification interval: perform full block execution every N blocks for data integrity.
-    /// If 0, verification is disabled (always use fast path when available).
-    /// If 1, verification is always enabled (always execute blocks).
+    /// How often (in blocks) to re-execute a block for verification even when pre-computed trie
+    /// data is available. `0` disables periodic verification.
     verification_interval: u64,
 }
 
@@ -189,6 +194,7 @@ impl<Node, Storage, Primitives> OpProofsExEx<Node, Storage>
 where
     Node: FullNodeComponents<Types: NodeTypes<Primitives = Primitives>>,
     Primitives: NodePrimitives,
+    Primitives::Block: Clone,
     Storage: OpProofsStore + Clone + 'static,
 {
     /// Main execution loop for the ExEx
@@ -201,7 +207,7 @@ where
             self.proofs_history_window,
         );
 
-        let collector = LiveTrieCollectorHandle::spawn(
+        let engine_handle = EngineHandle::spawn(
             self.ctx.evm_config().clone(),
             self.ctx.provider().clone(),
             self.storage.clone(),
@@ -209,7 +215,7 @@ where
         );
 
         while let Some(notification) = self.ctx.notifications.try_next().await? {
-            self.handle_notification(notification, &collector)?;
+            self.handle_notification(notification, &engine_handle)?;
         }
 
         Ok(())
@@ -260,25 +266,17 @@ where
     fn handle_notification(
         &self,
         notification: ExExNotification<Primitives>,
-        collector: &LiveTrieCollectorHandle<Primitives::Block>,
+        engine_handle: &EngineHandle<Primitives::Block>,
     ) -> eyre::Result<()> {
         match &notification {
             ExExNotification::ChainCommitted { new } => {
-                // Engine owns all decision logic (sequential check, near-tip check).
-                // No stale latest_stored snapshot needed here.
-                self.handle_chain_committed(new.clone(), collector)?
+                self.handle_chain_committed(new.clone(), engine_handle)?
             }
             ExExNotification::ChainReorged { old, new } => {
-                let latest_stored = collector
-                    .get_tip_block_number()?
-                    .ok_or_else(|| eyre::eyre!("No blocks stored in proofs storage"))?;
-                self.handle_chain_reorged(old.clone(), new.clone(), latest_stored, collector)?
+                self.handle_chain_reorged(old.clone(), new.clone(), engine_handle)?
             }
             ExExNotification::ChainReverted { old } => {
-                let latest_stored = collector
-                    .get_tip_block_number()?
-                    .ok_or_else(|| eyre::eyre!("No blocks stored in proofs storage"))?;
-                self.handle_chain_reverted(old.clone(), latest_stored, collector)?
+                self.handle_chain_reverted(old.clone(), engine_handle)?
             }
         }
 
@@ -292,7 +290,7 @@ where
     fn handle_chain_committed(
         &self,
         new: Arc<Chain<Primitives>>,
-        collector: &LiveTrieCollectorHandle<Primitives::Block>,
+        engine_handle: &EngineHandle<Primitives::Block>,
     ) -> eyre::Result<()> {
         debug!(
             target: "optimism::exex",
@@ -301,34 +299,33 @@ where
             "ChainCommitted notification received",
         );
 
-        let tip = new.tip().number();
+        let best_block = self.ctx.provider().best_block_number()?;
+        let is_near_tip =
+            best_block.saturating_sub(new.tip().number()) < REAL_TIME_BLOCKS_THRESHOLD;
+        if !is_near_tip {
+            engine_handle.sync_to(new.tip().number())?;
+            return Ok(());
+        }
 
-        // Build commit entries from the notification.  `Chain::blocks()` is a BTreeMap
-        // so iteration is already ordered oldest → newest.
-        let entries: Vec<NotificationCommitEntry> = new
-            .blocks()
-            .iter()
-            .map(|(&block_number, block)| {
-                let should_verify = self.verification_interval > 0
-                    && block_number.is_multiple_of(self.verification_interval);
+        // `Chain::blocks()` is a BTreeMap so iteration is already ordered oldest → newest.
+        for (&block_number, block) in new.blocks() {
+            // Fast path: use pre-computed trie data only when verification is not due.
+            let should_verify = self.verification_interval > 0
+                && block_number.is_multiple_of(self.verification_interval);
+            let precomputed = (!should_verify).then(|| new.trie_data_at(block_number)).flatten();
 
-                let precomputed = if !should_verify {
-                    new.trie_data_at(block_number).map(|data| {
-                        let d = data.get();
-                        ((*d.trie_updates).clone(), (*d.hashed_state).clone())
-                    })
-                } else {
-                    None
-                };
-
-                NotificationCommitEntry { block_with_parent: block.block_with_parent(), precomputed }
-            })
-            .collect();
-
-        // Hand everything to the engine.  It reads its own authoritative tip, decides
-        // whether to process entries inline or defer to sync catch-up, and updates
-        // the sync target for any gap — no stale snapshot involved.
-        collector.handle_commit(entries, tip)?;
+            if let Some(d) = precomputed {
+                let SortedTrieData { hashed_state, trie_updates } = d.get();
+                engine_handle.index_block(
+                    block.block_with_parent(),
+                    (**trie_updates).clone(),
+                    (**hashed_state).clone(),
+                )?;
+            } else {
+                // Slow path: execute the block in full (no trie data, or verification interval hit).
+                engine_handle.execute_block(block)?;
+            }
+        }
 
         Ok(())
     }
@@ -337,8 +334,7 @@ where
         &self,
         old: Arc<Chain<Primitives>>,
         new: Arc<Chain<Primitives>>,
-        latest_stored: u64,
-        collector: &LiveTrieCollectorHandle<Primitives::Block>,
+        engine_handle: &EngineHandle<Primitives::Block>,
     ) -> eyre::Result<()> {
         info!(
             old_block_number = old.tip().number(),
@@ -348,27 +344,20 @@ where
             "ChainReorged notification received",
         );
 
-        if old.first().number() > latest_stored {
-            debug!(target: "optimism::exex", "Reorg beyond stored blocks, skipping");
-            return Ok(());
+        if old.fork_block() != new.fork_block() {
+            return Err(eyre::eyre!(
+                "Fork blocks do not match: old fork block {:?}, new fork block {:?}",
+                old.fork_block(),
+                new.fork_block()
+            ));
         }
 
-        // find the common ancestor
         let mut block_updates: Vec<(
             BlockWithParent,
             Arc<TrieUpdatesSorted>,
             Arc<HashedPostStateSorted>,
         )> = Vec::with_capacity(new.len());
         for block_number in new.blocks().keys() {
-            // verify if the fork point matches
-            if old.fork_block() != new.fork_block() {
-                return Err(eyre::eyre!(
-                    "Fork blocks do not match: old fork block {:?}, new fork block {:?}",
-                    old.fork_block(),
-                    new.fork_block()
-                ));
-            }
-
             let block = new
                 .blocks()
                 .get(block_number)
@@ -389,7 +378,7 @@ where
             ));
         }
 
-        collector.unwind_and_store_block_updates(block_updates)?;
+        engine_handle.reorg(block_updates)?;
 
         Ok(())
     }
@@ -397,8 +386,7 @@ where
     fn handle_chain_reverted(
         &self,
         old: Arc<Chain<Primitives>>,
-        latest_stored: u64,
-        collector: &LiveTrieCollectorHandle<Primitives::Block>,
+        engine_handle: &EngineHandle<Primitives::Block>,
     ) -> eyre::Result<()> {
         info!(
             target: "optimism::exex",
@@ -407,17 +395,7 @@ where
             "ChainReverted notification received",
         );
 
-        if old.first().number() > latest_stored {
-            debug!(
-                target: "optimism::exex",
-                first_block_number = old.first().number(),
-                latest_stored = latest_stored,
-                "Fork block number is greater than latest stored, skipping",
-            );
-            return Ok(());
-        }
-
-        collector.unwind_history(old.first().block_with_parent())?;
+        engine_handle.unwind(old.first().block_with_parent())?;
         Ok(())
     }
 }
@@ -431,7 +409,7 @@ mod tests {
     use reth_ethereum_primitives::{Block, Receipt};
     use reth_execution_types::{Chain, ExecutionOutcome};
     use reth_optimism_trie::{
-        db::MdbxProofsStorageV2, live::LiveTrieCollectorHandle, BlockStateDiff, OpProofsProviderRO,
+        db::MdbxProofsStorageV2, engine::EngineHandle, BlockStateDiff, OpProofsProviderRO,
         OpProofsProviderRw, OpProofsStore,
     };
     use reth_primitives_traits::RecoveredBlock;
@@ -541,7 +519,7 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
+        let engine_handle = EngineHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
@@ -555,9 +533,9 @@ mod tests {
         let new_chain = Arc::new(mk_chain_with_updates(1, 1, None));
         let notif = ExExNotification::ChainCommitted { new: new_chain };
 
-        exex.handle_notification(notif, &collector).expect("handle chain commit");
+        exex.handle_notification(notif, &engine_handle).expect("handle chain commit");
 
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 1);
     }
@@ -578,7 +556,7 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
+        let engine_handle = EngineHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
@@ -593,18 +571,18 @@ mod tests {
         for i in 1..=5 {
             let new_chain = Arc::new(mk_chain_with_updates(i, i, None));
             let notif = ExExNotification::ChainCommitted { new: new_chain };
-            exex.handle_notification(notif, &collector).expect("handle chain commit");
+            exex.handle_notification(notif, &engine_handle).expect("handle chain commit");
         }
 
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
 
         // Try to handle already processed notification
         let new_chain = Arc::new(mk_chain_with_updates(5, 5, Some(hash_for_num(10))));
         let notif = ExExNotification::ChainCommitted { new: new_chain };
-        exex.handle_notification(notif, &collector).expect("handle chain commit");
-        collector.wait_for_persistence();
+        exex.handle_notification(notif, &engine_handle).expect("handle chain commit");
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok");
         assert_eq!(latest.0, 5);
         assert_eq!(latest.1, hash_for_num(5)); // block was not updated
@@ -626,7 +604,7 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
+        let engine_handle = EngineHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
@@ -640,11 +618,11 @@ mod tests {
         for i in 1..=10 {
             let new_chain = Arc::new(mk_chain_with_updates(i, i, None));
             let notif = ExExNotification::ChainCommitted { new: new_chain };
-            exex.handle_notification(notif, &collector)
+            exex.handle_notification(notif, &engine_handle)
                 .expect("handle chain commit");
         }
 
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
@@ -655,9 +633,9 @@ mod tests {
         // Notification: chain reorged 6..12
         let notif = ExExNotification::ChainReorged { new: new_chain, old: old_chain };
 
-        exex.handle_notification(notif, &collector)
+        exex.handle_notification(notif, &engine_handle)
             .expect("handle chain re-orged");
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 12);
     }
@@ -678,7 +656,7 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
+        let engine_handle = EngineHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
@@ -693,24 +671,26 @@ mod tests {
             let new_chain = Arc::new(mk_chain_with_updates(i, i, None));
             let notif = ExExNotification::ChainCommitted { new: new_chain };
 
-            exex.handle_notification(notif, &collector)
+            exex.handle_notification(notif, &engine_handle)
                 .expect("handle chain commit");
         }
 
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
-        // Now the tip is 10, and we want to reorg from block 12..15
+        // Now the tip is 10, and we want to reorg starting at block 12 (beyond stored tip).
+        // Both chains share the same fork point (block 11), so this is a valid reorg notification
+        // that starts beyond what we've indexed — the engine should skip it.
         let old_chain = Arc::new(mk_chain_with_updates(12, 15, None));
-        let new_chain = Arc::new(mk_chain_with_updates(10, 20, None));
+        let new_chain = Arc::new(mk_chain_with_updates(12, 20, None));
 
-        // Notification: chain reorged 12..15
+        // Notification: chain reorged 12..20, fork at 11
         let notif = ExExNotification::ChainReorged { new: new_chain, old: old_chain };
 
-        exex.handle_notification(notif, &collector)
+        exex.handle_notification(notif, &engine_handle)
             .expect("handle chain re-orged");
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
     }
@@ -731,7 +711,7 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
+        let engine_handle = EngineHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
@@ -746,11 +726,11 @@ mod tests {
             let new_chain = Arc::new(mk_chain_with_updates(i, i, None));
             let notif = ExExNotification::ChainCommitted { new: new_chain };
 
-            exex.handle_notification(notif, &collector)
+            exex.handle_notification(notif, &engine_handle)
                 .expect("handle chain commit");
         }
 
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 10);
 
@@ -760,9 +740,9 @@ mod tests {
         // Notification: chain reverted 9..10
         let notif = ExExNotification::ChainReverted { old: old_chain };
 
-        exex.handle_notification(notif, &collector)
+        exex.handle_notification(notif, &engine_handle)
             .expect("handle chain reverted");
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 8);
     }
@@ -783,7 +763,7 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
+        let engine_handle = EngineHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
@@ -798,10 +778,10 @@ mod tests {
             let new_chain = Arc::new(mk_chain_with_updates(i, i, None));
             let notif = ExExNotification::ChainCommitted { new: new_chain };
 
-            exex.handle_notification(notif, &collector).expect("handle chain commit");
+            exex.handle_notification(notif, &engine_handle).expect("handle chain commit");
         }
 
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
 
@@ -811,9 +791,9 @@ mod tests {
         // Notification: chain reverted 9..10
         let notif = ExExNotification::ChainReverted { old: old_chain };
 
-        exex.handle_notification(notif, &collector)
+        exex.handle_notification(notif, &engine_handle)
             .expect("handle chain reverted");
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get latest block").expect("ok").0;
         assert_eq!(latest, 5);
     }
@@ -888,7 +868,7 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
+        let engine_handle = EngineHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
@@ -903,7 +883,7 @@ mod tests {
         let new_chain = Arc::new(mk_chain_with_updates(1, 5, None));
         let notif = ExExNotification::ChainCommitted { new: new_chain };
 
-        let err = exex.handle_notification(notif, &collector).unwrap_err();
+        let err = exex.handle_notification(notif, &engine_handle).unwrap_err();
         // Error now comes from the engine layer (storage not initialised).
         assert_eq!(err.to_string(), "No blocks found");
     }
@@ -924,7 +904,7 @@ mod tests {
             ctx.components.provider.clone(),
             20,
         );
-        let collector = LiveTrieCollectorHandle::spawn_with_thresholds(
+        let engine_handle = EngineHandle::spawn_with_thresholds(
             ctx.components.components.evm_config.clone(),
             ctx.components.provider.clone(),
             store.clone(),
@@ -940,13 +920,13 @@ mod tests {
         let notif = ExExNotification::ChainCommitted { new: new_chain };
 
         // Process notification — should return immediately (gap detected, deferred to engine).
-        exex.handle_notification(notif, &collector)
+        exex.handle_notification(notif, &engine_handle)
             .expect("handle chain commit should return ok immediately");
 
         // Verify the notification handler did NOT process blocks synchronously.
         // The engine has a sync target set but no blocks in the provider, so its catch-up
         // will error out without writing anything. Storage stays at block 0.
-        collector.wait_for_persistence();
+        engine_handle.flush();
         let latest = store.provider_ro().expect("provider ro").get_latest_block_number().expect("get").expect("ok").0;
         assert_eq!(latest, 0, "Main thread should not have processed the blocks synchronously");
     }

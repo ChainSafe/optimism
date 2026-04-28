@@ -17,7 +17,7 @@ use std::{fmt::Debug, sync::{Arc, OnceLock}};
 
 /// A state provider that overlays in-memory buffered blocks on top of the persistent proofs storage.
 #[derive(Debug)]
-pub struct MemoryOverlayOpProofsStateProviderRef<'a, P>
+pub(crate) struct MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO,
 {
@@ -34,7 +34,7 @@ where
     /// Create a new overlay provider.
     ///
     /// `memory` should be strictly ordered from oldest to newest.
-    pub fn new(
+    pub(crate) fn new(
         inner: OpProofsStateProviderRef<'a, P>,
         memory: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
     ) -> Self {

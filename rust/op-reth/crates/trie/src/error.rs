@@ -41,18 +41,6 @@ pub enum OpProofsStorageError {
         /// Latest stored block number
         latest_block_number: u64,
     },
-    /// State root mismatch
-    #[error(
-        "State root mismatch for block {block_number} (have: {current_state_hash}, expected: {expected_state_hash})"
-    )]
-    StateRootMismatch {
-        /// Block number
-        block_number: u64,
-        /// Have state root
-        current_state_hash: B256,
-        /// Expected state root
-        expected_state_hash: B256,
-    },
     /// No change set for block
     #[error("No change set found for block {0}")]
     NoChangeSetForBlock(u64),

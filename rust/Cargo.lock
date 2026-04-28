@@ -11293,6 +11293,7 @@ dependencies = [
  "reth-execution-errors",
  "reth-metrics",
  "reth-node-api",
+ "reth-optimism-trie",
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",

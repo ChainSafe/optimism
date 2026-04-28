@@ -49,9 +49,8 @@ pub type OpProofsStorage<S> = S;
 pub mod proof;
 
 pub mod provider;
-pub mod overlay_provider;
 
-pub mod live;
+pub mod engine;
 
 pub mod cursor;
 #[cfg(not(feature = "metrics"))]
@@ -69,5 +68,3 @@ pub use prune::{
     PrunerOutput,
 };
 
-pub mod state;
-pub mod persistence;

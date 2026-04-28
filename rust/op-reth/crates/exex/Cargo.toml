@@ -31,11 +31,11 @@ alloy-eips.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
-tokio.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
 reth-db = { workspace = true, features = ["test-utils"] }
+reth-optimism-trie = { workspace = true, features = ["test-utils"] }
 reth-node-builder.workspace = true
 reth-optimism-node.workspace = true
 reth-optimism-chainspec.workspace = true
@@ -43,9 +43,11 @@ reth-primitives-traits.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-exex-test-utils.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
 
 [features]
 test-utils = [
+    "reth-optimism-trie/test-utils",
     "reth-db/test-utils",
     "reth-trie/test-utils",
     "reth-node-builder/test-utils",

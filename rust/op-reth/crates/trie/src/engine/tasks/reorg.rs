@@ -1,0 +1,118 @@
+use super::super::state::EngineState;
+use crate::{engine::EngineError, BlockStateDiff, OpProofsStore};
+use alloy_eips::eip1898::BlockWithParent;
+use crossbeam_channel::Sender;
+use reth_evm::ConfigureEvm;
+use reth_primitives_traits::BlockTy;
+use reth_provider::{
+    BlockHashReader, BlockReader, DatabaseProviderFactory, StateProviderFactory, StateReader,
+};
+use reth_trie_common::{updates::TrieUpdatesSorted, HashedPostStateSorted};
+use std::{sync::Arc, time::Instant};
+use tracing::{debug, info};
+
+pub(crate) struct ReorgTask {
+    pub(crate) block_updates:
+        Vec<(BlockWithParent, Arc<TrieUpdatesSorted>, Arc<HashedPostStateSorted>)>,
+    pub(crate) reply: Sender<Result<(), EngineError>>,
+}
+
+impl ReorgTask {
+    pub(crate) fn execute<Evm, Provider, Store>(
+        self,
+        state: &mut EngineState<Evm, Provider, Store>,
+    ) where
+        Evm: ConfigureEvm,
+        Provider: BlockHashReader
+            + StateReader
+            + DatabaseProviderFactory
+            + StateProviderFactory
+            + BlockReader<Block = BlockTy<Evm::Primitives>>
+            + Clone
+            + 'static,
+        Store: OpProofsStore + Clone + 'static,
+    {
+        let result = run(state, self.block_updates);
+        let _ = self.reply.send(result);
+    }
+}
+
+fn run<Evm, Provider, Store>(
+    state: &mut EngineState<Evm, Provider, Store>,
+    block_updates: Vec<(BlockWithParent, Arc<TrieUpdatesSorted>, Arc<HashedPostStateSorted>)>,
+) -> Result<(), EngineError>
+where
+    Evm: ConfigureEvm,
+    Provider: BlockHashReader
+        + StateReader
+        + DatabaseProviderFactory
+        + StateProviderFactory
+        + BlockReader<Block = BlockTy<Evm::Primitives>>
+        + Clone
+        + 'static,
+    Store: OpProofsStore + Clone + 'static,
+{
+    if block_updates.is_empty() {
+        return Ok(());
+    }
+
+    let first = &block_updates[0].0;
+
+    let tip = state.get_tip()?;
+    if first.block.number > tip.number {
+        // This can happen when the engine is still catching up via the sync target:
+        // the stored tip lags behind the chain head, so the reorg originates at a
+        // block we haven't indexed yet. Nothing to unwind. When the sync batch
+        // eventually fetches blocks up to the sync target, it will fetch them from
+        // the provider(that would contain post-reorg block), so the correct blocks will be indexed.
+        debug!(
+            target: "live-trie::engine",
+            first_block = first.block.number,
+            tip = tip.number,
+            "Reorg starts beyond stored tip, skipping"
+        );
+        return Ok(());
+    }
+
+    let start = Instant::now();
+    let common_ancestor_number = first.block.number.saturating_sub(1);
+
+    info!(
+        target: "live-trie::engine",
+        reorg_depth = block_updates.len(),
+        common_ancestor = common_ancestor_number,
+        "Handling reorg: unwinding and buffering new path"
+    );
+
+    let unwind_start = Instant::now();
+    state.unwind(*first)?;
+    let unwind_duration = unwind_start.elapsed();
+
+    for (block, trie_updates, hashed_state) in &block_updates {
+        state.memory.insert(
+            *block,
+            BlockStateDiff {
+                sorted_trie_updates: (**trie_updates).clone(),
+                sorted_post_state: (**hashed_state).clone(),
+            },
+        );
+    }
+
+    let total_duration = start.elapsed();
+
+    #[cfg(feature = "metrics")]
+    {
+        state.metrics.total_duration_seconds.record(total_duration);
+        state.metrics.unwind_duration_seconds.record(unwind_duration);
+    }
+
+    info!(
+        start_block_number = block_updates.first().map(|(b, _, _)| b.block.number),
+        end_block_number = block_updates.last().map(|(b, _, _)| b.block.number),
+        ?total_duration,
+        ?unwind_duration,
+        "Trie updates rewound and buffered successfully",
+    );
+
+    Ok(())
+}

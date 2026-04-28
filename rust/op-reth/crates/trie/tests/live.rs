@@ -13,8 +13,8 @@ use reth_evm_ethereum::EthEvmConfig;
 use reth_node_api::{NodePrimitives, NodeTypesWithDB};
 use reth_optimism_trie::{
     MdbxProofsStorage, MdbxProofsStorageV2, OpProofStoragePruner, OpProofsStorage,
-    OpProofsStorageError, OpProofsStore, initialize::InitializationJob,
-    live::LiveTrieCollectorHandle,
+    OpProofsStore, initialize::InitializationJob,
+    engine::{EngineHandle, EngineError},
 };
 use reth_primitives_traits::{Block as _, RecoveredBlock};
 use reth_provider::{
@@ -279,7 +279,7 @@ where
     let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;
     let pruner = OpProofStoragePruner::new(storage.clone(), blockchain_db.clone(), 1000);
     let live_trie_collector =
-        LiveTrieCollectorHandle::spawn(evm_config, blockchain_db, storage.clone(), pruner);
+        EngineHandle::spawn(evm_config, blockchain_db, storage.clone(), pruner);
 
     for (idx, block_spec) in scenario.blocks_after_initialization.iter().enumerate() {
         let block_number = last_block_number + idx as u64 + 1;
@@ -296,7 +296,7 @@ where
         let execution_output = execute_block(&mut block, &provider_factory, &chain_spec)?;
 
         // Use the live collector to execute and store trie updates
-        live_trie_collector.execute_and_store_block_updates(&block)?;
+        live_trie_collector.execute_block(&block)?;
 
         // Commit the block to the database so subsequent blocks can build on it
         commit_block_to_database(&block, &execution_output, &provider_factory)?;
@@ -305,7 +305,7 @@ where
     }
 
     // Drain any pending in-memory blocks to disk before returning.
-    live_trie_collector.wait_for_persistence();
+    live_trie_collector.flush();
 
     Ok(())
 }
@@ -377,8 +377,8 @@ where
         storage.clone(),
     )?;
 
-    // Create a block whose parent block number is missing.
-    let incorrect_block_number = 2;
+    // Create a block that is sequential but has a wrong parent hash.
+    let incorrect_block_number = 1;
     let incorrect_parent_hash = B256::repeat_byte(0x11);
 
     let mut nonce_counter = 0;
@@ -395,17 +395,17 @@ where
     #[allow(clippy::useless_conversion)]
     let storage_wrapped: OpProofsStorage<S> = storage.into();
     let pruner = OpProofStoragePruner::new(storage_wrapped.clone(), blockchain_db.clone(), 1000);
-    let collector = LiveTrieCollectorHandle::spawn(
+    let collector = EngineHandle::spawn(
         EthEvmConfig::ethereum(chain_spec.clone()),
         blockchain_db,
         storage_wrapped,
         pruner,
     );
 
-    // EXPECT: OutOfOrder (parent hash doesn't match the current tip)
-    let err = collector.execute_and_store_block_updates(&incorrect_block).unwrap_err();
+    // EXPECT: ParentHashMismatch (block is at correct number but wrong parent hash)
+    let err = collector.execute_block(&incorrect_block).unwrap_err();
 
-    assert!(matches!(err, OpProofsStorageError::OutOfOrder { .. }));
+    assert!(matches!(err, EngineError::ParentHashMismatch { .. }));
     Ok(())
 }
 
@@ -446,17 +446,18 @@ where
     #[allow(clippy::useless_conversion)]
     let storage_wrapped: OpProofsStorage<Arc<S>> = storage.into();
     let pruner = OpProofStoragePruner::new(storage_wrapped.clone(), blockchain_db.clone(), 1000);
-    let collector = LiveTrieCollectorHandle::spawn(
+    let collector = EngineHandle::spawn(
         EthEvmConfig::ethereum(chain_spec.clone()),
         blockchain_db,
         storage_wrapped,
         pruner,
     );
 
-    // Create the next block
+    // Create the next block — sequential after genesis so the parent hash check passes
+    // and execution runs, allowing us to verify the state root mismatch path.
     let mut nonce_counter = 0;
-    let last_block_hash = chain_spec.genesis_hash(); // because scenario executes 1 block
-    let next_number = 2;
+    let last_block_hash = chain_spec.genesis_hash();
+    let next_number = 1;
 
     let mut block = create_block_from_spec(
         &BlockSpec::new(vec![]),
@@ -474,9 +475,9 @@ where
     block.header_mut().state_root = B256::repeat_byte(0xAA);
 
     // EXPECT: StateRootMismatch
-    let err = collector.execute_and_store_block_updates(&block).unwrap_err();
+    let err = collector.execute_block(&block).unwrap_err();
 
-    assert!(matches!(err, OpProofsStorageError::StateRootMismatch { .. }));
+    assert!(matches!(err, EngineError::StateRootMismatch { .. }));
     Ok(())
 }
 

@@ -1,101 +1,38 @@
-//! Persistence implementation for external proof
+//! Background persistence service for the live trie engine.
 
 use crate::{
     api::{OpProofsProviderRw, WriteCounts},
     prune::OpProofStoragePruner,
-    BlockStateDiff, OpProofsStore, OpProofsStorageError,
+    BlockStateDiff, OpProofsStore,
 };
 #[cfg(feature = "metrics")]
 use crate::metrics::PersistenceMetrics;
 use alloy_eips::eip1898::BlockWithParent;
-use reth_provider::BlockHashReader;
 use crossbeam_channel::{Receiver, Sender};
-use std::{sync::Arc, thread, time::Instant};
+use reth_provider::BlockHashReader;
+use std::{sync::Arc, time::Instant};
 use tracing::{debug, error, info};
-
-/// Messages sent to the persistence service.
-#[derive(Debug)]
-pub enum LiveTriePersistenceAction {
-    /// Save a batch of trie updates to storage.
-    ///
-    /// Contains:
-    /// 1. The list of blocks and their diffs (ordered Oldest -> Newest).
-    /// 2. A response channel to return the highest block number persisted (for pruning).
-    SaveUpdates(Vec<Arc<(BlockWithParent, BlockStateDiff)>>, Sender<Option<u64>>),
-    /// Unwind history to the specified block (inclusive).
-    /// All history strictly after this block is removed.
-    Unwind(BlockWithParent, Sender<Result<(), String>>),
-}
-
-/// A handle to communicate with the Live Trie persistence service.
-#[derive(Debug, Clone)]
-pub struct LiveTriePersistenceHandle {
-    sender: Sender<LiveTriePersistenceAction>,
-}
-
-impl LiveTriePersistenceHandle {
-    /// Create a new handle.
-    pub fn new(sender: Sender<LiveTriePersistenceAction>) -> Self {
-        Self { sender }
-    }
-
-    /// Spawn the service in a new thread and return a handle.
-    pub fn spawn<H, S>(pruner: OpProofStoragePruner<S, H>, storage: S) -> Self
-    where
-        S: OpProofsStore + Clone + 'static,
-        H: BlockHashReader + Send + Sync + 'static,
-    {
-        let (tx, rx) = crossbeam_channel::bounded(2);
-        let service = LiveTriePersistenceService::new(pruner, storage, rx);
-
-        thread::Builder::new()
-            .name("Live Trie Persistence".into())
-            .spawn(move || service.run())
-            .expect("failed to spawn live trie persistence thread");
-
-        Self::new(tx)
-    }
-
-    /// Send a save request.
-    ///
-    /// Returns an error if the persistence service has stopped.
-    pub fn save_updates(
-        &self,
-        updates: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
-        response_tx: Sender<Option<u64>>,
-    ) -> Result<(), OpProofsStorageError> {
-        self.sender.send(LiveTriePersistenceAction::SaveUpdates(updates, response_tx))
-            .map_err(|_| OpProofsStorageError::Other("Persistence service disconnected".into()))
-    }
-
-    /// Send an unwind request.
-    ///
-    /// Returns an error if the persistence service has stopped.
-    pub fn unwind(
-        &self,
-        to: BlockWithParent,
-        response_tx: Sender<Result<(), String>>,
-    ) -> Result<(), OpProofsStorageError> {
-        self.sender.send(LiveTriePersistenceAction::Unwind(to, response_tx))
-            .map_err(|_| OpProofsStorageError::Other("Persistence service disconnected".into()))
-    }
-}
+use super::handle::PersistenceAction;
 
 /// Service that runs in a background thread to persist trie updates.
 #[derive(Debug)]
-pub struct LiveTriePersistenceService<H, S> {
+pub(crate) struct PersistenceService<H, S> {
     /// Pruner that also owns the storage backend and block hash reader.
     pruner: OpProofStoragePruner<S, H>,
     storage: S,
-    incoming: Receiver<LiveTriePersistenceAction>,
+    incoming: Receiver<PersistenceAction>,
 
     #[cfg(feature = "metrics")]
     metrics: PersistenceMetrics,
 }
 
-impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
+impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
     /// Create a new persistence service.
-    pub fn new(pruner: OpProofStoragePruner<S, H>, storage: S, incoming: Receiver<LiveTriePersistenceAction>) -> Self {
+    pub(crate) fn new(
+        pruner: OpProofStoragePruner<S, H>,
+        storage: S,
+        incoming: Receiver<PersistenceAction>,
+    ) -> Self {
         Self {
             pruner,
             storage,
@@ -108,15 +45,15 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
 
     /// Main loop for the service.
     /// Listens for incoming actions and processes them sequentially.
-    pub fn run(self) {
+    pub(crate) fn run(self) {
         debug!(target: "live-trie::persistence", "Service started");
 
         while let Ok(action) = self.incoming.recv() {
             match action {
-                LiveTriePersistenceAction::Unwind(to, reply_tx) => {
+                PersistenceAction::Unwind(to, reply_tx) => {
                     self.on_unwind(to, reply_tx);
                 }
-                LiveTriePersistenceAction::SaveUpdates(updates, reply_tx) => {
+                PersistenceAction::SaveUpdates(updates, reply_tx) => {
                     self.on_save_updates(updates, reply_tx);
                 }
             }
@@ -188,13 +125,14 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
             Ok((res, open_tx_duration, write_duration, prune_duration, commit_duration))
         });
 
-        let (successful_last, total_write_count, open_tx_duration, write_duration, prune_duration, commit_duration) = match result {
-            Ok((counts, otd, wd, pd, cd)) => (last, counts, Some(otd), Some(wd), Some(pd), Some(cd)),
-            Err(e) => {
-                error!(target: "live-trie::persistence", ?e, "Failed to persist batch trie updates");
-                (None, WriteCounts::default(), None, None, None, None)
-            }
-        };
+        let (successful_last, total_write_count, open_tx_duration, write_duration, prune_duration, commit_duration) =
+            match result {
+                Ok((counts, otd, wd, pd, cd)) => (last, counts, Some(otd), Some(wd), Some(pd), Some(cd)),
+                Err(e) => {
+                    error!(target: "live-trie::persistence", ?e, "Failed to persist batch trie updates");
+                    (None, WriteCounts::default(), None, None, None, None)
+                }
+            };
 
         #[cfg(feature = "metrics")]
         {
@@ -229,11 +167,7 @@ impl<H: BlockHashReader, S: OpProofsStore> LiveTriePersistenceService<H, S> {
         let _ = reply_tx.send(successful_last);
     }
 
-    fn on_unwind(
-        &self,
-        to: BlockWithParent,
-        reply_tx: Sender<Result<(), String>>,
-    ) {
+    fn on_unwind(&self, to: BlockWithParent, reply_tx: Sender<Result<(), String>>) {
         debug!(target: "live-trie::persistence", to_block = ?to.block.number, "Unwinding storage");
         let result = self.storage.provider_rw().and_then(|provider| {
             provider.unwind_history(to)?;
