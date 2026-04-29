@@ -8,6 +8,7 @@ use crate::{
 };
 use alloy_eips::BlockNumHash;
 use alloy_primitives::{B256, U256};
+use derive_more::Constructor;
 use reth_db::{
     DatabaseError,
     cursor::{DbCursorRO, DbDupCursorRO},
@@ -45,20 +46,11 @@ pub enum RethTrieStorageLayout {
 }
 
 /// Initialization job for external storage.
-#[derive(Debug)]
+#[derive(Debug, Constructor)]
 pub struct InitializationJob<Tx: DbTx, S: OpProofsStore + Send> {
     storage: S,
     tx: Tx,
     trie_layout: RethTrieStorageLayout,
-}
-
-impl<Tx: DbTx, S: OpProofsStore + Send> InitializationJob<Tx, S> {
-    /// Creates a new [`InitializationJob`].
-    ///
-    /// `trie_layout` controls which reth DB table codec is used — see [`RethTrieStorageLayout`].
-    pub const fn new(storage: S, tx: Tx, trie_layout: RethTrieStorageLayout) -> Self {
-        Self { storage, tx, trie_layout }
-    }
 }
 
 /// Macro to generate simple cursor iterators for tables
