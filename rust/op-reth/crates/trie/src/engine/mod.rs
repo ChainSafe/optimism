@@ -9,6 +9,7 @@
 //! a time, which structurally enforces the serial-call invariant.
 
 mod buffer;
+#[allow(clippy::module_inception)]
 mod engine;
 mod error;
 mod handle;

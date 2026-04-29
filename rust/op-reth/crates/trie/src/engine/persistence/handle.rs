@@ -30,7 +30,7 @@ pub(crate) struct PersistenceHandle {
 
 impl PersistenceHandle {
     /// Create a new handle.
-    pub(crate) fn new(sender: Sender<PersistenceAction>) -> Self {
+    pub(crate) const fn new(sender: Sender<PersistenceAction>) -> Self {
         Self { sender }
     }
 

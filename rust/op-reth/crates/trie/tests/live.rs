@@ -279,7 +279,7 @@ where
     let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;
     let pruner = OpProofStoragePruner::new(storage.clone(), blockchain_db.clone(), 1000);
     let live_trie_collector =
-        EngineHandle::spawn(evm_config, blockchain_db, storage.clone(), pruner);
+        EngineHandle::spawn(evm_config, blockchain_db, storage, pruner);
 
     for (idx, block_spec) in scenario.blocks_after_initialization.iter().enumerate() {
         let block_number = last_block_number + idx as u64 + 1;

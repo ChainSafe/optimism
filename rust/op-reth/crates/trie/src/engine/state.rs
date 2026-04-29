@@ -34,7 +34,7 @@ pub(crate) struct PersistenceState {
 }
 
 impl PersistenceState {
-    fn new(handle: PersistenceHandle) -> Self {
+    const fn new(handle: PersistenceHandle) -> Self {
         Self {
             threshold: DEFAULT_PERSISTENCE_THRESHOLD,
             backpressure_threshold: DEFAULT_BACKPRESSURE_THRESHOLD,
@@ -44,7 +44,7 @@ impl PersistenceState {
     }
 
     /// Non-blocking: if a save has completed, collect the result and prune `memory`.
-    pub(crate) fn poll(&mut self, memory: &mut TrieBufferState) {
+    pub(crate) fn poll(&mut self, memory: &TrieBufferState) {
         let Some(rx) = self.in_flight.take() else { return };
 
         match rx.try_recv() {
@@ -68,7 +68,7 @@ impl PersistenceState {
     }
 
     /// Blocking: wait for the in-flight save to finish and prune `memory`.
-    pub(crate) fn wait(&mut self, memory: &mut TrieBufferState) {
+    pub(crate) fn wait(&mut self, memory: &TrieBufferState) {
         let Some(rx) = self.in_flight.take() else { return };
 
         match rx.recv_timeout(Duration::from_secs(DEFAULT_PERSISTENCE_TIMEOUT_SECS)) {
@@ -95,7 +95,7 @@ impl PersistenceState {
     /// 1. Poll for any completed save (frees memory before threshold checks).
     /// 2. Block if buffer is above `backpressure_threshold` and a save is in-flight.
     /// 3. Kick off a new save if buffer is above `threshold` and nothing is in-flight.
-    pub(crate) fn advance(&mut self, memory: &mut TrieBufferState) -> Result<(), EngineError> {
+    pub(crate) fn advance(&mut self, memory: &TrieBufferState) -> Result<(), EngineError> {
         // Collect any completed save first so threshold checks use post-prune counts.
         self.poll(memory);
 
@@ -144,7 +144,7 @@ impl PersistenceState {
     pub(crate) fn unwind(
         &mut self,
         to: BlockWithParent,
-        memory: &mut TrieBufferState,
+        memory: &TrieBufferState,
     ) -> Result<(), EngineError> {
         if self.in_flight.is_some() {
             info!(target: "live-trie::engine", "Unwind waiting for in-flight persistence...");
@@ -219,12 +219,12 @@ where
         }
     }
 
-    pub(crate) fn with_persistence_threshold(mut self, threshold: u64) -> Self {
+    pub(crate) const fn with_persistence_threshold(mut self, threshold: u64) -> Self {
         self.persistence.threshold = threshold;
         self
     }
 
-    pub(crate) fn with_backpressure_threshold(mut self, threshold: u64) -> Self {
+    pub(crate) const fn with_backpressure_threshold(mut self, threshold: u64) -> Self {
         self.persistence.backpressure_threshold = threshold;
         self
     }
@@ -235,14 +235,14 @@ where
     /// Called after every action and sync step so persistence is continuously
     /// advanced without a dedicated timer.
     pub(crate) fn advance_persistence(&mut self) -> Result<(), EngineError> {
-        self.persistence.advance(&mut self.memory)
+        self.persistence.advance(&self.memory)
     }
 
     /// Block until any in-flight background save finishes and the memory buffer
     /// is pruned. Used during shutdown and before operations that require a
     /// quiesced persistence layer (e.g. unwind).
     pub(crate) fn drain_persistence(&mut self) {
-        self.persistence.wait(&mut self.memory);
+        self.persistence.wait(&self.memory);
     }
 
     /// Drain any in-flight save, unwind the persistence service to `to`, then
@@ -250,7 +250,7 @@ where
     pub(crate) fn unwind(&mut self, to: BlockWithParent) -> Result<(), EngineError> {
         #[cfg(feature = "metrics")]
         let start = Instant::now();
-        self.persistence.unwind(to, &mut self.memory)?;
+        self.persistence.unwind(to, &self.memory)?;
         self.memory.unwind(to.block.number);
         #[cfg(feature = "metrics")]
         self.metrics.unwind_duration_seconds.record(start.elapsed());

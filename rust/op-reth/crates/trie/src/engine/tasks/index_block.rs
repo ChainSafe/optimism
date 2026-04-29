@@ -33,7 +33,7 @@ impl IndexBlockTask {
             + 'static,
         Store: OpProofsStore + Clone + 'static,
     {
-        let IndexBlockTask { block, sorted_trie_updates, sorted_post_state, reply } = self;
+        let Self { block, sorted_trie_updates, sorted_post_state, reply } = self;
         let result = run(state, block, sorted_trie_updates, sorted_post_state);
         let _ = reply.send(result);
     }

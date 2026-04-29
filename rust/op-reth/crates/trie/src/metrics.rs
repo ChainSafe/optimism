@@ -10,7 +10,7 @@ use crate::{
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash};
 use alloy_primitives::{map::HashMap, B256, U256};
 use derive_more::Constructor;
-use metrics::{Counter, Gauge, Histogram};
+use metrics::{Gauge, Histogram};
 use reth_db::DatabaseError;
 use reth_metrics::Metrics;
 use reth_primitives_traits::Account;

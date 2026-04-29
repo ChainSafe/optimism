@@ -50,7 +50,7 @@ impl<S, H> OpProofStoragePruner<S, H> {
 
     /// Set the batch size for pruning operations. The pruner will prune
     /// at most this many blocks in one database transaction.
-    pub fn with_batch_size(mut self, prune_batch_size: u64) -> Self {
+    pub const fn with_batch_size(mut self, prune_batch_size: u64) -> Self {
         self.prune_batch_size = prune_batch_size;
         self
     }

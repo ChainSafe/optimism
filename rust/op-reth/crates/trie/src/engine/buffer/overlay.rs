@@ -34,7 +34,7 @@ where
     /// Create a new overlay provider.
     ///
     /// `memory` should be strictly ordered from oldest to newest.
-    pub(crate) fn new(
+    pub(crate) const fn new(
         inner: OpProofsStateProviderRef<'a, P>,
         memory: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
     ) -> Self {
@@ -76,7 +76,7 @@ where
         let hashed_address = keccak256(address);
         // Check buffer via trie_input cache
         if let Some(account) = self.trie_input().state.accounts.get(&hashed_address) {
-            return Ok(account.clone());
+            return Ok(*account);
         }
         self.inner.basic_account(address)
     }
@@ -106,10 +106,10 @@ where
         }
 
         // Check if account was destroyed in the overlay (implicit storage wipe)
-        if let Some(account) = state.accounts.get(&hashed_address) {
-            if account.is_none() {
-                return Ok(Some(StorageValue::ZERO));
-            }
+        if let Some(account) = state.accounts.get(&hashed_address)
+            && account.is_none()
+        {
+            return Ok(Some(StorageValue::ZERO));
         }
 
         self.inner.storage(address, storage_key)
