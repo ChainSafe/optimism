@@ -56,7 +56,7 @@ impl<Tx: DbTx, S: OpProofsStore + Send> InitializationJob<Tx, S> {
     /// Creates a new [`InitializationJob`].
     ///
     /// `trie_layout` controls which reth DB table codec is used — see [`RethTrieStorageLayout`].
-    pub fn new(storage: S, tx: Tx, trie_layout: RethTrieStorageLayout) -> Self {
+    pub const fn new(storage: S, tx: Tx, trie_layout: RethTrieStorageLayout) -> Self {
         Self { storage, tx, trie_layout }
     }
 }
@@ -360,7 +360,7 @@ impl<Tx: DbTx + Sync, S: OpProofsStore + Send> InitializationJob<Tx, S> {
             let mut start_cursor = self.tx.cursor_dup_read::<tables::PackedStoragesTrie>()?;
 
             if let Some(latest_key) = start_key {
-                let packed_subkey = PackedStoredNibblesSubKey::from(latest_key.path.0.clone());
+                let packed_subkey = PackedStoredNibblesSubKey::from(latest_key.path.0);
                 start_cursor
                     .seek_by_key_subkey(latest_key.hashed_address, packed_subkey)?
                     .filter(|v| v.nibbles.0 == latest_key.path.0)

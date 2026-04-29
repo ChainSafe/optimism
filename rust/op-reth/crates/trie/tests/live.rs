@@ -12,8 +12,8 @@ use reth_evm::{ConfigureEvm, execute::Executor};
 use reth_evm_ethereum::EthEvmConfig;
 use reth_node_api::{NodePrimitives, NodeTypesWithDB};
 use reth_optimism_trie::{
-    MdbxProofsStorage, OpProofsStorage, OpProofsStorageError, initialize::InitializationJob,
-    live::LiveTrieCollector,
+    MdbxProofsStorage, OpProofsStorage, OpProofsStorageError, RethTrieStorageLayout,
+    initialize::InitializationJob, live::LiveTrieCollector,
 };
 use reth_primitives_traits::{Block as _, RecoveredBlock};
 use reth_provider::{
