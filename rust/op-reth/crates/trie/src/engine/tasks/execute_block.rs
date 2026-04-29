@@ -123,7 +123,7 @@ where
 
     #[cfg(feature = "metrics")]
     {
-        state.metrics.total_duration_seconds.record(total_duration);
+        state.metrics.execute_block_duration_seconds.record(total_duration);
         state.metrics.execution_duration_seconds.record(execution_duration);
         state.metrics.state_root_duration_seconds.record(state_root_duration);
     }

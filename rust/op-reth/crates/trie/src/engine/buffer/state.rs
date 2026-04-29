@@ -2,6 +2,8 @@
 
 use crate::{provider::OpProofsStateProviderRef, BlockStateDiff, OpProofsProviderRO};
 use super::overlay::MemoryOverlayOpProofsStateProviderRef;
+#[cfg(feature = "metrics")]
+use super::metrics::BufferMetrics;
 use alloy_eips::{eip1898::BlockWithParent, NumHash};
 use alloy_primitives::{map::HashMap, B256};
 use parking_lot::RwLock;
@@ -10,12 +12,14 @@ use std::{collections::BTreeMap, sync::Arc};
 /// Buffer for holding blocks waiting to be persisted.
 ///
 /// This acts as the in-memory "tip" of the chain for the trie calculator.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct TrieBuffer {
     /// All blocks that are not on disk yet.
     blocks: RwLock<HashMap<B256, Arc<(BlockWithParent, BlockStateDiff)>>>,
     /// Mapping of block numbers to block hashes.
     numbers: RwLock<BTreeMap<u64, B256>>,
+    #[cfg(feature = "metrics")]
+    metrics: BufferMetrics,
 }
 
 impl TrieBuffer {
@@ -24,6 +28,8 @@ impl TrieBuffer {
         Self {
             blocks: RwLock::new(HashMap::default()),
             numbers: RwLock::new(BTreeMap::new()),
+            #[cfg(feature = "metrics")]
+            metrics: BufferMetrics::new_with_labels(&[] as &[(&str, &str)]),
         }
     }
 
@@ -39,6 +45,9 @@ impl TrieBuffer {
 
         blocks.insert(hash, state);
         numbers.insert(number, hash);
+
+        #[cfg(feature = "metrics")]
+        self.metrics.buffer_size.set(blocks.len() as f64);
     }
 
     /// Returns the number of buffered blocks.
@@ -66,6 +75,9 @@ impl TrieBuffer {
             numbers.remove(&num);
             blocks.remove(&hash);
         }
+
+        #[cfg(feature = "metrics")]
+        self.metrics.buffer_size.set(blocks.len() as f64);
     }
 
     /// Removes blocks starting from `from` (inclusive) through the tip.
@@ -89,13 +101,22 @@ impl TrieBuffer {
             numbers.remove(&num);
             blocks.remove(&hash);
         }
+
+        #[cfg(feature = "metrics")]
+        self.metrics.buffer_size.set(blocks.len() as f64);
     }
 }
 
 /// Manager for the in-memory state of the live trie.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct TrieBufferState {
     inner: Arc<TrieBuffer>,
+}
+
+impl Default for TrieBufferState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TrieBufferState {

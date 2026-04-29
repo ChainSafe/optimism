@@ -83,7 +83,7 @@ impl<Block: reth_primitives_traits::Block + Send + 'static> EngineHandle<Block> 
             + 'static,
         Store: OpProofsStore + Clone + 'static,
     {
-        let (tx, rx) = bounded(4);
+        let (tx, rx) = bounded(10);
         let engine = Engine::new(evm_config, provider, storage, pruner, rx)
             .with_persistence_threshold(persistence_threshold)
             .with_backpressure_threshold(backpressure_threshold);

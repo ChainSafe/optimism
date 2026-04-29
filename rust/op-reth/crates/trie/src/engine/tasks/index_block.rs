@@ -93,7 +93,7 @@ where
     let total_duration = start.elapsed();
 
     #[cfg(feature = "metrics")]
-    state.metrics.total_duration_seconds.record(total_duration);
+    state.metrics.index_block_duration_seconds.record(total_duration);
 
     info!(
         block_number = block.block.number,

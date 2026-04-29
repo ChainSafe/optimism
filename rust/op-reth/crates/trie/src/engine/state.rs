@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{OpProofStoragePruner, OpProofsProviderRO, OpProofsStorageError, OpProofsStore};
 #[cfg(feature = "metrics")]
-use crate::metrics::LiveMetrics;
+use super::metrics::EngineMetrics;
 use alloy_eips::{eip1898::BlockWithParent, NumHash};
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError};
 use reth_evm::ConfigureEvm;
@@ -17,6 +17,8 @@ use reth_provider::{
     BlockHashReader, BlockReader, DatabaseProviderFactory, StateProviderFactory, StateReader,
 };
 use std::time::Duration;
+#[cfg(feature = "metrics")]
+use std::time::Instant;
 use tracing::{error, info};
 
 /// Tracks all in-flight and threshold state for background persistence.
@@ -183,7 +185,7 @@ where
     pub(crate) persistence: PersistenceState,
 
     #[cfg(feature = "metrics")]
-    pub(crate) metrics: LiveMetrics,
+    pub(crate) metrics: EngineMetrics,
 }
 
 impl<Evm, Provider, Store> EngineState<Evm, Provider, Store>
@@ -213,7 +215,7 @@ where
             persistence: PersistenceState::new(persistence_handle),
             sync_target: 0,
             #[cfg(feature = "metrics")]
-            metrics: LiveMetrics::new_with_labels(&[] as &[(&str, &str)]),
+            metrics: EngineMetrics::new_with_labels(&[] as &[(&str, &str)]),
         }
     }
 
@@ -246,8 +248,12 @@ where
     /// Drain any in-flight save, unwind the persistence service to `to`, then
     /// unwind the in-memory buffer to match.
     pub(crate) fn unwind(&mut self, to: BlockWithParent) -> Result<(), EngineError> {
+        #[cfg(feature = "metrics")]
+        let start = Instant::now();
         self.persistence.unwind(to, &mut self.memory)?;
         self.memory.unwind(to.block.number);
+        #[cfg(feature = "metrics")]
+        self.metrics.unwind_duration_seconds.record(start.elapsed());
         Ok(())
     }
 

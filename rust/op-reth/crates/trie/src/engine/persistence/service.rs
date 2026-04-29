@@ -6,7 +6,7 @@ use crate::{
     BlockStateDiff, OpProofsStore,
 };
 #[cfg(feature = "metrics")]
-use crate::metrics::PersistenceMetrics;
+use super::metrics::PersistenceMetrics;
 use alloy_eips::eip1898::BlockWithParent;
 use crossbeam_channel::{Receiver, Sender};
 use reth_provider::BlockHashReader;

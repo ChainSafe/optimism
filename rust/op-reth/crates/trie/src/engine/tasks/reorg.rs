@@ -84,9 +84,7 @@ where
         "Handling reorg: unwinding and buffering new path"
     );
 
-    let unwind_start = Instant::now();
     state.unwind(*first)?;
-    let unwind_duration = unwind_start.elapsed();
 
     for (block, trie_updates, hashed_state) in &block_updates {
         state.memory.insert(
@@ -101,16 +99,12 @@ where
     let total_duration = start.elapsed();
 
     #[cfg(feature = "metrics")]
-    {
-        state.metrics.total_duration_seconds.record(total_duration);
-        state.metrics.unwind_duration_seconds.record(unwind_duration);
-    }
+    state.metrics.reorg_duration_seconds.record(total_duration);
 
     info!(
         start_block_number = block_updates.first().map(|(b, _, _)| b.block.number),
         end_block_number = block_updates.last().map(|(b, _, _)| b.block.number),
         ?total_duration,
-        ?unwind_duration,
         "Trie updates rewound and buffered successfully",
     );
 

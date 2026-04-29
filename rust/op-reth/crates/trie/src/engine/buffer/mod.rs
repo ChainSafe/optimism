@@ -4,6 +4,9 @@
 //! `MemoryOverlayOpProofsStateProviderRef` layers that buffer on top of persistent
 //! storage so that block execution can read from the full chain view.
 
+
+#[cfg(feature = "metrics")]
+mod metrics;
 mod overlay;
 mod state;
 

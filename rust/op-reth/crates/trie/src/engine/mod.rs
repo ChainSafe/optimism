@@ -12,6 +12,8 @@ mod buffer;
 mod engine;
 mod error;
 mod handle;
+#[cfg(feature = "metrics")]
+mod metrics;
 mod persistence;
 mod state;
 mod tasks;
@@ -28,10 +30,6 @@ pub const DEFAULT_BACKPRESSURE_THRESHOLD: u64 = 10;
 
 /// Default timeout for waiting on a persistence save/unwind operation (in seconds).
 pub const DEFAULT_PERSISTENCE_TIMEOUT_SECS: u64 = 60;
-
-// ---------------------------------------------------------------------------
-// EngineAction – messages sent from the handle to the engine
-// ---------------------------------------------------------------------------
 
 /// Messages sent from [`EngineHandle`] to the engine thread.
 enum EngineAction<Block: reth_primitives_traits::Block> {

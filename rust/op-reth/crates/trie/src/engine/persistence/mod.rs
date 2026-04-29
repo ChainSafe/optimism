@@ -5,6 +5,8 @@
 //! worker that executes those requests sequentially on its own thread.
 
 mod handle;
+#[cfg(feature = "metrics")]
+mod metrics;
 mod service;
 
 pub(crate) use handle::PersistenceHandle;
