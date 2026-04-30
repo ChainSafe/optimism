@@ -86,7 +86,7 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> InitCommand<C> {
     /// If the storage is already initialized this is a no-op.
     fn run_init<F>(provider_factory: &F, storage: impl OpProofsStore) -> eyre::Result<()>
     where
-        F: DatabaseProviderFactory + BlockNumReader,
+        F: DatabaseProviderFactory + BlockNumReader + StorageSettingsCache,
         F::Provider: DBProvider,
     {
         // Check if already initialized
