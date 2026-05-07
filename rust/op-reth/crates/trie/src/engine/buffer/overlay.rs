@@ -1,22 +1,25 @@
 //! Overlay Provider for external proofs storage
 
-use crate::{api::OpProofsProviderRO, provider::OpProofsStateProviderRef, BlockStateDiff};
+use crate::{BlockStateDiff, api::OpProofsProviderRO, provider::OpProofsStateProviderRef};
 use alloy_eips::eip1898::BlockWithParent;
-use alloy_primitives::{keccak256, Address, BlockNumber, Bytes, StorageValue, B256};
+use alloy_primitives::{Address, B256, BlockNumber, Bytes, StorageValue, keccak256};
 use reth_primitives_traits::{Account, Bytecode};
 use reth_provider::{
-    AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
-    StateProvider, StateRootProvider, StorageRootProvider, ProviderResult
+    AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, ProviderResult,
+    StateProofProvider, StateProvider, StateRootProvider, StorageRootProvider,
 };
 use reth_revm::db::BundleState;
 use reth_trie::{
-    ExecutionWitnessMode,
-    updates::TrieUpdates, AccountProof, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, TrieInput,
+    AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
+    MultiProofTargets, StorageMultiProof, TrieInput, updates::TrieUpdates,
 };
-use std::{fmt::Debug, sync::{Arc, OnceLock}};
+use std::{
+    fmt::Debug,
+    sync::{Arc, OnceLock},
+};
 
-/// A state provider that overlays in-memory buffered blocks on top of the persistent proofs storage.
+/// A state provider that overlays in-memory buffered blocks on top of the persistent proofs
+/// storage.
 #[derive(Debug)]
 pub struct MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
@@ -107,8 +110,8 @@ where
         }
 
         // Check if account was destroyed in the overlay (implicit storage wipe)
-        if let Some(account) = state.accounts.get(&hashed_address)
-            && account.is_none()
+        if let Some(account) = state.accounts.get(&hashed_address) &&
+            account.is_none()
         {
             return Ok(Some(StorageValue::ZERO));
         }
@@ -249,16 +252,22 @@ where
     ) -> ProviderResult<Vec<B256>> {
         let mut hashes = self.inner.canonical_hashes_range(start, end)?;
 
-        // Overlay with in-memory blocks
-        for state in &self.memory {
-            let num = state.0.block.number;
-            if num >= start && num < end {
-                let idx = (num - start) as usize;
-                if idx < hashes.len() {
-                    hashes[idx] = state.0.block.hash;
-                } else if idx == hashes.len() {
-                    hashes.push(state.0.block.hash);
-                }
+        // Overlay with in-memory blocks in [start, end).
+        let blocks_in_range = self
+            .memory
+            .iter()
+            .map(|state| (state.0.block.number, state.0.block.hash))
+            .filter(|(num, _)| *num >= start && *num < end);
+
+        for (num, block_hash) in blocks_in_range {
+            let idx = (num - start) as usize;
+            match idx.cmp(&hashes.len()) {
+                std::cmp::Ordering::Less => hashes[idx] = block_hash,
+                std::cmp::Ordering::Equal => hashes.push(block_hash),
+                // Gap in the requested range: disk + in-memory view is not yet contiguous.
+                // This can happen transiently due to background persistence/eventual consistency.
+                // Ignore to avoid returning a misaligned vector.
+                std::cmp::Ordering::Greater => {}
             }
         }
         Ok(hashes)

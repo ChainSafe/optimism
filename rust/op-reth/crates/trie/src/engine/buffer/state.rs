@@ -1,11 +1,11 @@
 //! State management for the live trie collector.
 
-use crate::{provider::OpProofsStateProviderRef, BlockStateDiff, OpProofsProviderRO};
-use super::overlay::MemoryOverlayOpProofsStateProviderRef;
 #[cfg(feature = "metrics")]
 use super::metrics::BufferMetrics;
-use alloy_eips::{eip1898::BlockWithParent, NumHash};
-use alloy_primitives::{map::HashMap, B256};
+use super::overlay::MemoryOverlayOpProofsStateProviderRef;
+use crate::{BlockStateDiff, OpProofsProviderRO, provider::OpProofsStateProviderRef};
+use alloy_eips::{NumHash, eip1898::BlockWithParent};
+use alloy_primitives::{B256, map::HashMap};
 use parking_lot::RwLock;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -60,21 +60,13 @@ impl TrieBuffer {
         let mut blocks = self.blocks.write();
         let mut numbers = self.numbers.write();
 
-        // Identify block numbers to remove
-        let mut to_remove = Vec::new();
-        // Use BTreeMap's ordered nature
-        for (&num, &hash) in numbers.iter() {
-            if num < number {
-                to_remove.push((num, hash));
-            } else {
-                break;
-            }
+        // Split off the entries we want to keep (number >= threshold).
+        // The original map now contains only entries to prune (num < number).
+        let to_keep = numbers.split_off(&number);
+        for hash in numbers.values() {
+            blocks.remove(hash);
         }
-
-        for (num, hash) in to_remove {
-            numbers.remove(&num);
-            blocks.remove(&hash);
-        }
+        *numbers = to_keep;
 
         #[cfg(feature = "metrics")]
         self.metrics.buffer_size.set(blocks.len() as f64);
@@ -88,18 +80,10 @@ impl TrieBuffer {
         let mut blocks = self.blocks.write();
         let mut numbers = self.numbers.write();
 
-        let mut to_remove = Vec::new();
-        for (&num, &hash) in numbers.iter().rev() {
-            if num >= from {
-                to_remove.push((num, hash));
-            } else {
-                break;
-            }
-        }
-
-        for (num, hash) in to_remove {
-            numbers.remove(&num);
-            blocks.remove(&hash);
+        // Split off all entries with num >= from; those are the ones to remove.
+        let to_remove = numbers.split_off(&from);
+        for hash in to_remove.values() {
+            blocks.remove(hash);
         }
 
         #[cfg(feature = "metrics")]
@@ -122,9 +106,7 @@ impl Default for TrieBufferState {
 impl TrieBufferState {
     /// Create a new live trie state manager.
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(TrieBuffer::new()),
-        }
+        Self { inner: Arc::new(TrieBuffer::new()) }
     }
 
     /// Insert a block into the buffer.
@@ -164,9 +146,10 @@ impl TrieBufferState {
         let blocks = self.inner.blocks.read();
         let mut out = Vec::with_capacity(numbers.len());
         for hash in numbers.values() {
-            if let Some(state) = blocks.get(hash) {
-                out.push(Arc::clone(state));
-            }
+            let state = blocks.get(hash).unwrap_or_else(|| {
+                panic!("trie buffer invariant violated: missing block state for hash referenced in number index: {hash:?}")
+            });
+            out.push(Arc::clone(state));
         }
         out
     }
@@ -211,7 +194,11 @@ mod tests {
     /// Build a `(BlockWithParent, BlockStateDiff)` pair with predictable hashes.
     ///
     /// `hash_byte` uniquely identifies the block; `parent_byte` identifies its parent.
-    fn make_block(number: u64, hash_byte: u8, parent_byte: u8) -> (BlockWithParent, BlockStateDiff) {
+    fn make_block(
+        number: u64,
+        hash_byte: u8,
+        parent_byte: u8,
+    ) -> (BlockWithParent, BlockStateDiff) {
         let block = BlockWithParent::new(
             B256::repeat_byte(parent_byte),
             NumHash::new(number, B256::repeat_byte(hash_byte)),
