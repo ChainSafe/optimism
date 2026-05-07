@@ -36,4 +36,20 @@ impl PersistenceMetrics {
         self.hashed_accounts_written_total.increment(counts.hashed_accounts_written_total);
         self.hashed_storages_written_total.increment(counts.hashed_storages_written_total);
     }
+
+    /// Record timing metrics for a persistence operation.
+    pub fn record_metrics(
+        &self,
+        write_counts: &WriteCounts,
+        open_tx_duration: std::time::Duration,
+        write_duration: std::time::Duration,
+        prune_duration: std::time::Duration,
+        commit_duration: std::time::Duration,
+    ) {
+        self.increment_write_counts(write_counts);
+        self.open_tx_duration_seconds.record(open_tx_duration);
+        self.write_duration_seconds.record(write_duration);
+        self.prune_duration_seconds.record(prune_duration);
+        self.commit_duration_seconds.record(commit_duration);
+    }
 }
