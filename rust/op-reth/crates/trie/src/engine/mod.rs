@@ -1,3 +1,3 @@
 //! Live trie engine.
 
-pub(super) mod buffer;
+mod buffer;

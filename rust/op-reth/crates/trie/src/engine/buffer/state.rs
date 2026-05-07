@@ -110,38 +110,38 @@ impl TrieBufferState {
     }
 
     /// Insert a block into the buffer.
-    pub(crate) fn insert(&self, block: BlockWithParent, diff: BlockStateDiff) {
+    pub(in crate::engine) fn insert(&self, block: BlockWithParent, diff: BlockStateDiff) {
         self.inner.insert(block, diff);
     }
 
     /// Returns the number of buffered blocks.
-    pub(crate) fn len(&self) -> usize {
+    pub(in crate::engine) fn len(&self) -> usize {
         self.inner.len()
     }
 
     /// Returns `true` if the buffer contains no blocks.
-    pub(crate) fn is_empty(&self) -> bool {
+    pub(in crate::engine) fn is_empty(&self) -> bool {
         self.inner.len() == 0
     }
 
     /// Prunes blocks from the buffer that are strictly before the given block number.
-    pub(crate) fn prune(&self, number: u64) {
+    pub(in crate::engine) fn prune(&self, number: u64) {
         self.inner.prune(number);
     }
 
     /// Removes blocks starting from `from` (inclusive) through the tip.
-    pub(crate) fn unwind(&self, from: u64) {
+    pub(in crate::engine) fn unwind(&self, from: u64) {
         self.inner.unwind(from);
     }
 
     /// Returns the highest buffered block as a [`NumHash`], or `None` if the buffer is empty.
-    pub(crate) fn tip(&self) -> Option<NumHash> {
+    pub(in crate::engine) fn tip(&self) -> Option<NumHash> {
         let numbers = self.inner.numbers.read();
         numbers.iter().next_back().map(|(&num, &hash)| NumHash::new(num, hash))
     }
 
     /// Returns all buffered blocks ordered oldest to newest.
-    pub(crate) fn blocks_ordered(&self) -> Vec<Arc<(BlockWithParent, BlockStateDiff)>> {
+    pub(in crate::engine) fn blocks_ordered(&self) -> Vec<Arc<(BlockWithParent, BlockStateDiff)>> {
         let numbers = self.inner.numbers.read();
         let blocks = self.inner.blocks.read();
         let mut out = Vec::with_capacity(numbers.len());
