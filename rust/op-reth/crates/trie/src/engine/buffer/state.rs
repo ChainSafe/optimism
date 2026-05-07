@@ -93,7 +93,7 @@ impl TrieBuffer {
 
 /// Manager for the in-memory state of the live trie.
 #[derive(Debug, Clone)]
-pub struct TrieBufferState {
+pub(crate) struct TrieBufferState {
     inner: Arc<TrieBuffer>,
 }
 
@@ -105,43 +105,43 @@ impl Default for TrieBufferState {
 
 impl TrieBufferState {
     /// Create a new live trie state manager.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { inner: Arc::new(TrieBuffer::new()) }
     }
 
     /// Insert a block into the buffer.
-    pub fn insert(&self, block: BlockWithParent, diff: BlockStateDiff) {
+    pub(crate) fn insert(&self, block: BlockWithParent, diff: BlockStateDiff) {
         self.inner.insert(block, diff);
     }
 
     /// Returns the number of buffered blocks.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.inner.len()
     }
 
     /// Returns `true` if the buffer contains no blocks.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.inner.len() == 0
     }
 
     /// Prunes blocks from the buffer that are strictly before the given block number.
-    pub fn prune(&self, number: u64) {
+    pub(crate) fn prune(&self, number: u64) {
         self.inner.prune(number);
     }
 
     /// Removes blocks starting from `from` (inclusive) through the tip.
-    pub fn unwind(&self, from: u64) {
+    pub(crate) fn unwind(&self, from: u64) {
         self.inner.unwind(from);
     }
 
     /// Returns the highest buffered block as a [`NumHash`], or `None` if the buffer is empty.
-    pub fn tip(&self) -> Option<NumHash> {
+    pub(crate) fn tip(&self) -> Option<NumHash> {
         let numbers = self.inner.numbers.read();
         numbers.iter().next_back().map(|(&num, &hash)| NumHash::new(num, hash))
     }
 
     /// Returns all buffered blocks ordered oldest to newest.
-    pub fn blocks_ordered(&self) -> Vec<Arc<(BlockWithParent, BlockStateDiff)>> {
+    pub(crate) fn blocks_ordered(&self) -> Vec<Arc<(BlockWithParent, BlockStateDiff)>> {
         let numbers = self.inner.numbers.read();
         let blocks = self.inner.blocks.read();
         let mut out = Vec::with_capacity(numbers.len());
@@ -158,7 +158,7 @@ impl TrieBufferState {
     ///
     /// This retrieves the chain of blocks ending at `hash` from the in-memory buffer,
     /// providing a view that includes both the buffered changes and the underlying disk state.
-    pub fn state_provider<'a, P>(
+    pub(crate) fn state_provider<'a, P>(
         &self,
         hash: B256,
         inner: OpProofsStateProviderRef<'a, P>,
