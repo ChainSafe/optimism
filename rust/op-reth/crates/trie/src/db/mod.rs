@@ -11,10 +11,20 @@ pub use models::*;
 mod store;
 pub use store::{MdbxProofsProvider, MdbxProofsStorage};
 
-/// Placeholder alias for V2 storage format (full implementation deferred to a later PR).
-pub type MdbxProofsStorageV2 = MdbxProofsStorage;
-
 mod cursor;
 pub use cursor::{
     BlockNumberVersionedCursor, MdbxAccountCursor, MdbxStorageCursor, MdbxTrieCursor,
 };
+
+mod store_v2;
+pub use store_v2::{
+    MdbxProofsProviderV2, MdbxProofsStorageV2, V2AccountCursor, V2AccountTrieCursor,
+    V2StorageCursor, V2StorageTrieCursor,
+};
+
+use alloy_eips::NumHash;
+
+pub(crate) struct ProofWindowValue {
+    pub earliest: NumHash,
+    pub latest: NumHash,
+}
