@@ -1,4 +1,4 @@
 //! Live trie engine.
 
-pub mod buffer;
+mod buffer;
 pub mod persistence;
