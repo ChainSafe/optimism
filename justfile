@@ -273,8 +273,7 @@ _go-tests-ci-internal go_test_flags="":
   export ENABLE_ANVIL=true
   export PARALLEL=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
   export OP_TESTLOG_FILE_LOGGER_OUTDIR=$(realpath ./tmp/testlogs)
-  export SEPOLIA_RPC_URL="https://ci-sepolia-l1-archive.optimism.io"
-  export MAINNET_RPC_URL="https://ci-mainnet-l1-archive.optimism.io"
+  source ./ops/scripts/source-ci-archive-rpcs.sh
   export NAT_INTEROP_LOADTEST_TARGET=10
   export NAT_INTEROP_LOADTEST_TIMEOUT=30s
   ALL_PACKAGES="{{ALL_TEST_PACKAGES}}"
@@ -313,10 +312,6 @@ go-tests-short-ci:
 go-tests-ci:
   just _go-tests-ci-internal ""
 
-# Runs action tests for kona with gotestsum for CI.
-go-tests-ci-kona-action:
-  just _go-tests-ci-internal "-count=1 -timeout 60m -run Test_ProgramAction"
-
 # Runs fraud proofs Go tests with gotestsum for CI.
 [script('bash')]
 go-tests-fraud-proofs-ci:
@@ -330,8 +325,7 @@ go-tests-fraud-proofs-ci:
   export ENABLE_ANVIL=true
   export PARALLEL=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
   export OP_TESTLOG_FILE_LOGGER_OUTDIR=$(realpath ./tmp/testlogs)
-  export SEPOLIA_RPC_URL="https://ci-sepolia-l1-archive.optimism.io"
-  export MAINNET_RPC_URL="https://ci-mainnet-l1-archive.optimism.io"
+  source ./ops/scripts/source-ci-archive-rpcs.sh
   export NAT_INTEROP_LOADTEST_TARGET=10
   export NAT_INTEROP_LOADTEST_TIMEOUT=30s
   ./ops/scripts/gotestsum-split.sh --format=testname \
