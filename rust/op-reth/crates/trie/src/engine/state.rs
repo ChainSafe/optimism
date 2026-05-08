@@ -4,7 +4,7 @@
 use super::metrics::EngineMetrics;
 use super::{
     DEFAULT_PERSISTENCE_TIMEOUT_SECS,
-    buffer::TrieBufferState,
+    buffer::state::TrieBufferState,
     error::EngineError,
     persistence::{PersistenceHandle, error::PersistenceError},
 };

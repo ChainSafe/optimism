@@ -9,7 +9,7 @@ use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
 use reth_provider::BlockHashReader;
 use std::cmp;
 use tokio::time::Instant;
-use tracing::{error, info, trace};
+use tracing::{debug, error, info, trace};
 
 /// Default batch size for pruning operations.
 const DEFAULT_PRUNE_BATCH_SIZE: u64 = 50;
@@ -108,6 +108,7 @@ where
         let Some((earliest_block, target_earliest_block, mut prune_output)) =
             self.resolve_prune_range(provider_rw)?
         else {
+            debug!(target: "trie::pruner", "Nothing to prune in the given range");
             return Ok(PrunerOutput::default());
         };
 
@@ -282,9 +283,7 @@ mod tests {
     async fn run_inner_and_and_verify_updated_state() {
         // --- env/store ---
         let dir = TempDir::new().unwrap();
-        #[allow(clippy::useless_conversion)]
-        let store: OpProofsStorage<Arc<MdbxProofsStorage>> =
-            Arc::new(MdbxProofsStorage::new(dir.path()).expect("env")).into();
+        let store = Arc::new(MdbxProofsStorage::new(dir.path()).expect("env"));
 
         {
             let provider = store.provider_rw().expect("provider_rw");

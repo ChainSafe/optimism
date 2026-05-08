@@ -8,19 +8,20 @@
 //! handle, in-flight tracking) and processes [`EngineAction`] messages one at
 //! a time, which structurally enforces the serial-call invariant.
 
-pub mod buffer;
-#[allow(clippy::module_inception)]
-mod engine;
-mod error;
-mod handle;
-#[cfg(feature = "metrics")]
-pub mod metrics;
+mod buffer;
 pub mod persistence;
-mod state;
 mod tasks;
 
+mod error;
 pub use error::EngineError;
+
+mod handle;
 pub use handle::EngineHandle;
+
+#[cfg(feature = "metrics")]
+mod metrics;
+mod runner;
+mod state;
 
 /// Default number of blocks to keep in memory before persisting.
 const DEFAULT_PERSISTENCE_THRESHOLD: u64 = 5;

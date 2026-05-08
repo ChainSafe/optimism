@@ -21,7 +21,7 @@ use std::{
 /// A state provider that overlays in-memory buffered blocks on top of the persistent proofs
 /// storage.
 #[derive(Debug)]
-pub struct MemoryOverlayOpProofsStateProviderRef<'a, P>
+pub(crate) struct MemoryOverlayOpProofsStateProviderRef<'a, P>
 where
     P: OpProofsProviderRO,
 {
@@ -38,7 +38,7 @@ where
     /// Create a new overlay provider.
     ///
     /// `memory` should be strictly ordered from oldest to newest.
-    pub const fn new(
+    pub(crate) const fn new(
         inner: OpProofsStateProviderRef<'a, P>,
         memory: Vec<Arc<(BlockWithParent, BlockStateDiff)>>,
     ) -> Self {
@@ -252,16 +252,25 @@ where
     ) -> ProviderResult<Vec<B256>> {
         let mut hashes = self.inner.canonical_hashes_range(start, end)?;
 
-        // Overlay with in-memory blocks
-        for state in &self.memory {
-            let num = state.0.block.number;
-            if num >= start && num < end {
-                let idx = (num - start) as usize;
-                if idx < hashes.len() {
-                    hashes[idx] = state.0.block.hash;
-                } else if idx == hashes.len() {
-                    hashes.push(state.0.block.hash);
-                }
+        // Overlay with in-memory blocks in [start, end).
+        let blocks_in_range = self
+            .memory
+            .iter()
+            .map(|state| (state.0.block.number, state.0.block.hash))
+            .filter(|(num, _)| *num >= start && *num < end);
+
+        for (num, block_hash) in blocks_in_range {
+            let idx = (num - start) as usize;
+            match idx.cmp(&hashes.len()) {
+                std::cmp::Ordering::Less => hashes[idx] = block_hash,
+                std::cmp::Ordering::Equal => hashes.push(block_hash),
+                // Gap in the requested range: disk + in-memory view is not contiguous.
+                // This should never happen: the buffer must be contiguous with disk.
+                std::cmp::Ordering::Greater => panic!(
+                    "canonical_hashes_range: gap detected at block {num} (index {idx}, \
+                     current len {}); disk and in-memory buffer are not contiguous",
+                    hashes.len()
+                ),
             }
         }
         Ok(hashes)

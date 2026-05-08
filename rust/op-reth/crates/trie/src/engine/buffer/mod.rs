@@ -4,9 +4,9 @@
 //! `MemoryOverlayOpProofsStateProviderRef` layers that buffer on top of persistent
 //! storage so that block execution can read from the full chain view.
 
+#![allow(dead_code)]
+
 #[cfg(feature = "metrics")]
 mod metrics;
-pub mod overlay;
-pub mod state;
-
-pub use state::TrieBufferState;
+pub(super) mod overlay;
+pub(super) mod state;
