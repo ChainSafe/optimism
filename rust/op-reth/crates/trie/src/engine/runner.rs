@@ -19,7 +19,7 @@ use std::{
 use tracing::{debug, error};
 
 /// The engine that runs on a dedicated thread, dispatching [`EngineAction`]
-/// messages to self-contained task structs that operate on [`EngineState`].
+/// messages to self-contained task structs that operate on the engine state.
 #[allow(missing_debug_implementations)]
 pub(super) struct Engine<Evm, Provider, Store>
 where

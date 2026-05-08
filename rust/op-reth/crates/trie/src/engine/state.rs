@@ -201,7 +201,7 @@ where
 
     /// Start a background save if no save is already running.
     ///
-    /// The caller ([`Engine`]) is responsible for checking the persistence threshold before
+    /// The caller is responsible for checking the persistence threshold before
     /// calling this.
     pub(crate) fn advance_persistence(&mut self) -> Result<(), EngineError> {
         self.persistence.advance_persistence(&self.memory)
