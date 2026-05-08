@@ -1,4 +1,4 @@
-//! [`EngineHandle`] — the public, clonable, Send + Sync interface.
+//! [`EngineHandle`] — the public, cloneable, Send + Sync interface.
 
 use super::{
     DEFAULT_BACKPRESSURE_THRESHOLD, DEFAULT_PERSISTENCE_THRESHOLD, EngineAction,
@@ -18,9 +18,9 @@ use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
 use std::{panic, sync::Arc, thread};
 use tracing::error;
 
-/// A thin, clonable handle used to communicate with the collector engine.
+/// A thin, cloneable handle used to communicate with the collector engine.
 ///
-/// Every public method (except [`sync_to`]) sends an [`EngineAction`] to the
+/// Every public method (except [`Self::sync_to`]) sends an engine action to the
 /// engine thread and blocks on a one-shot reply channel.
 #[derive(Debug)]
 pub struct EngineHandle<Block: reth_primitives_traits::Block> {
