@@ -6,7 +6,7 @@ use reth_metrics::Metrics;
 /// High-level engine metrics.
 #[derive(Metrics, Clone)]
 #[metrics(scope = "optimism_trie.engine")]
-pub struct EngineMetrics {
+pub(super) struct EngineMetrics {
     /// Time to execute a block end-to-end (EVM + state root) in seconds.
     pub execute_block_duration_seconds: Histogram,
     /// Time spent executing the block (EVM only) in seconds.

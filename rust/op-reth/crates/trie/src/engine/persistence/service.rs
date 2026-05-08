@@ -8,7 +8,7 @@ use alloy_eips::eip1898::BlockWithParent;
 use crossbeam_channel::{Receiver, Sender};
 use reth_provider::BlockHashReader;
 use std::{sync::Arc, time::Instant};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Service that runs in a background thread to persist trie updates.
 #[derive(Debug)]
@@ -44,17 +44,22 @@ impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
     pub fn run(self) {
         debug!(target: "trie::engine::persistence", "Service started");
 
-        while let Ok(action) = self.incoming.recv() {
-            match action {
-                PersistenceAction::Unwind(to, reply_tx) => {
-                    self.on_unwind(to, reply_tx);
-                }
-                PersistenceAction::SaveUpdates(updates, reply_tx) => {
-                    self.on_save_updates(updates, reply_tx);
+        loop {
+            match self.incoming.recv() {
+                Ok(action) => match action {
+                    PersistenceAction::Unwind(to, reply_tx) => {
+                        self.on_unwind(to, reply_tx);
+                    }
+                    PersistenceAction::SaveUpdates(updates, reply_tx) => {
+                        self.on_save_updates(updates, reply_tx);
+                    }
+                },
+                Err(e) => {
+                    debug!(target: "trie::engine::persistence", ?e, "Service shutting down, channel closed");
+                    return;
                 }
             }
         }
-        debug!(target: "trie::engine::persistence", "Service shutting down");
     }
 
     fn on_save_updates(
@@ -63,16 +68,18 @@ impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
         reply_tx: Sender<Result<Option<u64>, PersistenceError>>,
     ) {
         if arc_updates.is_empty() {
-            let _ = reply_tx.send(Ok(None));
+            if let Err(e) = reply_tx.send(Ok(None)) {
+                warn!(target: "trie::engine::persistence", ?e, "Failed to send empty batch result, receiver dropped");
+            }
             return;
         }
 
-        let updates: Vec<(BlockWithParent, BlockStateDiff)> = arc_updates
-            .into_iter()
-            .map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
-            .collect();
+        let updates: Vec<(BlockWithParent, BlockStateDiff)> =
+            arc_updates.into_iter().map(Arc::unwrap_or_clone).collect();
 
-        let _ = reply_tx.send(self.try_save_updates(updates));
+        if let Err(e) = reply_tx.send(self.try_save_updates(updates)) {
+            warn!(target: "trie::engine::persistence", ?e, "Failed to send batch result, receiver dropped");
+        }
     }
 
     fn try_save_updates(
@@ -85,33 +92,26 @@ impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
         let last = updates.last().map(|u| u.0.block.number);
         debug!(target: "trie::engine::persistence", ?count, ?first, ?last, "Writing batch to storage");
 
-        let provider_rw_start = Instant::now();
-        let provider = self.storage.provider_rw()?;
-        let open_tx_duration = provider_rw_start.elapsed();
-
-        let write_start = Instant::now();
-        let write_counts = provider.store_trie_updates_batch(updates)?;
-        let write_duration = write_start.elapsed();
-
-        let prune_start = Instant::now();
-        self.pruner.prune_with_provider(&provider)
-            .inspect_err(|e| error!(target: "trie::engine::persistence", ?e, "Pruning failed during save, aborting transaction"))?;
-        let prune_duration = prune_start.elapsed();
-
-        let commit_start = Instant::now();
-        provider.commit()?;
-        let commit_duration = commit_start.elapsed();
-
-        #[cfg(feature = "metrics")]
-        {
-            self.metrics.increment_write_counts(&write_counts);
-            self.metrics.open_tx_duration_seconds.record(open_tx_duration);
-            self.metrics.write_duration_seconds.record(write_duration);
-            self.metrics.prune_duration_seconds.record(prune_duration);
-            self.metrics.commit_duration_seconds.record(commit_duration);
-        }
+        let (provider, open_tx_duration) = Self::timed(|| self.storage.provider_rw())?;
+        let (write_counts, write_duration) =
+            Self::timed(|| provider.store_trie_updates_batch(updates))?;
+        let (_, prune_duration) = Self::timed(|| {
+            self.pruner.prune_with_provider(&provider)
+                .inspect_err(|e| error!(target: "trie::engine::persistence", ?e, "Pruning failed during save, aborting transaction"))
+        })?;
+        let (_, commit_duration) = Self::timed(|| provider.commit())?;
 
         let duration = start.elapsed();
+
+        #[cfg(feature = "metrics")]
+        self.metrics.record_metrics(
+            &write_counts,
+            open_tx_duration,
+            write_duration,
+            prune_duration,
+            commit_duration,
+        );
+
         info!(
             target: "trie::engine::persistence",
             ?last,
@@ -129,7 +129,9 @@ impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
     }
 
     fn on_unwind(&self, to: BlockWithParent, reply_tx: Sender<Result<(), PersistenceError>>) {
-        let _ = reply_tx.send(self.try_unwind(to));
+        if let Err(e) = reply_tx.send(self.try_unwind(to)) {
+            warn!(target: "trie::engine::persistence", ?e, "Failed to send unwind result, receiver dropped");
+        }
     }
 
     fn try_unwind(&self, to: BlockWithParent) -> Result<(), PersistenceError> {
@@ -139,5 +141,12 @@ impl<H: BlockHashReader, S: OpProofsStore> PersistenceService<H, S> {
         provider.commit()?;
         debug!(target: "trie::engine::persistence", "Unwind successful");
         Ok(())
+    }
+
+    /// Execute a closure and return its result along with the time elapsed.
+    fn timed<T, E, F: FnOnce() -> Result<T, E>>(f: F) -> Result<(T, std::time::Duration), E> {
+        let start = Instant::now();
+        let result = f()?;
+        Ok((result, start.elapsed()))
     }
 }
