@@ -1,9 +1,12 @@
 //! [`BackfillJob`] implementation.
 
-use super::{changesets::compute_block_backfill_diff, error::BackfillError};
+use super::{
+    changesets::{ComputeTimings, compute_block_backfill_diff},
+    error::BackfillError,
+};
 use crate::{
-    BlockStateDiff, OpProofsBackfillProvider, OpProofsProviderRO, OpProofsStorageError,
-    OpProofsStore, proof::DatabaseStateRoot,
+    OpProofsBackfillProvider, OpProofsProviderRO, OpProofsStorageError, OpProofsStore,
+    proof::DatabaseStateRoot,
 };
 use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
 use alloy_primitives::BlockNumber;
@@ -24,17 +27,25 @@ const LOG_EVERY: u64 = 1_000;
 
 /// Cumulative time spent in each phase of [`BackfillJob::backfill_block`].
 /// Reported alongside the progress line so operators can see which phase
-/// dominates a slow backfill.
+/// dominates a slow backfill. The compute phase is split into its two
+/// sub-steps (per-block leaf revert from reth, then proofs-storage trie
+/// walk) because they have very different cost characteristics.
 #[derive(Debug, Default, Clone, Copy)]
 struct PhaseTimings {
-    compute: Duration,
+    /// `from_reverts_auto(N..=N)` against reth.
+    reverts: Duration,
+    /// `overlay_root_from_nodes_with_updates` against op-reth's proofs storage.
+    trie_changesets: Duration,
+    /// `MdbxProofsProviderV2::prepend_block` storage write.
     prepend: Duration,
+    /// In-job `StateRoot::overlay_root` validation at block_number - 1.
     validate: Duration,
 }
 
 impl PhaseTimings {
     fn add(&mut self, other: Self) {
-        self.compute += other.compute;
+        self.reverts += other.reverts;
+        self.trie_changesets += other.trie_changesets;
         self.prepend += other.prepend;
         self.validate += other.validate;
     }
@@ -43,7 +54,8 @@ impl PhaseTimings {
     fn averages(&self, done: u64) -> Self {
         let n = done as u32;
         Self {
-            compute: self.compute / n,
+            reverts: self.reverts / n,
+            trie_changesets: self.trie_changesets / n,
             prepend: self.prepend / n,
             validate: self.validate / n,
         }
@@ -119,7 +131,8 @@ where
                     target: "reth::op-proofs::backfill",
                     done,
                     total,
-                    avg_compute = ?avg.compute,
+                    avg_reverts = ?avg.reverts,
+                    avg_trie_changesets = ?avg.trie_changesets,
                     avg_prepend = ?avg.prepend,
                     avg_validate = ?avg.validate,
                     "progress: {progress_pct:.2}% ({blocks_per_sec:.1} blk/s, ETA {eta_secs:.0}s)"
@@ -132,7 +145,8 @@ where
             target: "reth::op-proofs::backfill",
             blocks = total,
             elapsed = ?start.elapsed(),
-            avg_compute = ?final_avg.compute,
+            avg_reverts = ?final_avg.reverts,
+            avg_trie_changesets = ?final_avg.trie_changesets,
             avg_prepend = ?final_avg.prepend,
             avg_validate = ?final_avg.validate,
             "Proofs backfill complete"
@@ -161,23 +175,21 @@ where
         // committed by the previous `prepend_block`, so its cursor at max=N
         // already reflects state@N. Dropped before opening the RW backfill
         // provider below to avoid holding two transactions on the same env.
-        let trie_updates;
-        let post_state;
-        let compute;
+        let diff;
+        let compute_t: ComputeTimings;
         {
-            let compute_start = Instant::now();
             let proofs_ro = self.storage.provider_ro()?;
-            (trie_updates, post_state) =
+            (diff, compute_t) =
                 compute_block_backfill_diff(&self.provider, &proofs_ro, block_number)?;
-            compute = compute_start.elapsed();
             debug!(
                 target: "reth::op-proofs::backfill",
                 block_number,
-                elapsed = ?compute,
-                accounts = post_state.accounts.len(),
-                storages = post_state.storages.len(),
-                account_trie_nodes = trie_updates.account_nodes_ref().len(),
-                storage_tries = trie_updates.storage_tries_ref().len(),
+                reverts_elapsed = ?compute_t.reverts,
+                trie_changesets_elapsed = ?compute_t.trie_changesets,
+                accounts = diff.sorted_post_state.accounts.len(),
+                storages = diff.sorted_post_state.storages.len(),
+                account_trie_nodes = diff.sorted_trie_updates.account_nodes_ref().len(),
+                storage_tries = diff.sorted_trie_updates.storage_tries_ref().len(),
                 "computed backfill diff"
             );
         }
@@ -189,10 +201,7 @@ where
 
         let prepend_start = Instant::now();
         let bp = self.storage.backfill_provider()?;
-        let counts = bp.prepend_block(
-            block_ref,
-            BlockStateDiff { sorted_trie_updates: trie_updates, sorted_post_state: post_state },
-        )?;
+        let counts = bp.prepend_block(block_ref, diff)?;
         let prepend = prepend_start.elapsed();
         debug!(
             target: "reth::op-proofs::backfill",
@@ -230,6 +239,11 @@ where
 
         bp.commit()?;
 
-        Ok(PhaseTimings { compute, prepend, validate })
+        Ok(PhaseTimings {
+            reverts: compute_t.reverts,
+            trie_changesets: compute_t.trie_changesets,
+            prepend,
+            validate,
+        })
     }
 }

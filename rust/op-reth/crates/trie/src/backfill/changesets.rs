@@ -30,7 +30,9 @@
 //! - branch destroyed at N (existed at N-1, gone at N) → `(path, Some(value_at_N-1))`
 //! - branch created at N (existed at N, gone at N-1) → `(path, None)` via `removed_nodes`
 
-use crate::{OpProofsProviderRO, backfill::error::BackfillError, proof::DatabaseStateRoot};
+use crate::{
+    BlockStateDiff, OpProofsProviderRO, backfill::error::BackfillError, proof::DatabaseStateRoot,
+};
 use alloy_primitives::BlockNumber;
 use reth_provider::{
     BlockNumReader, ChangeSetReader, DBProvider, ProviderError, StorageChangeSetReader,
@@ -39,10 +41,26 @@ use reth_provider::{
 use reth_trie::{StateRoot, TrieInput};
 use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
 use reth_trie_db::from_reverts_auto;
+use std::time::{Duration, Instant};
 
-/// Compute the backfill diff for `block_number`: the trie-node before-values
-/// for the changeset table, and the per-block leaf revert reused as
-/// `BlockStateDiff::sorted_post_state`.
+/// Wall-clock breakdown of [`compute_block_backfill_diff`]. Exposed so the
+/// caller (`BackfillJob`) can aggregate sub-phase averages into its progress
+/// log without instrumenting the internals separately.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct ComputeTimings {
+    /// Time spent in `from_reverts_auto(N..=N)` — reading reth's per-block
+    /// account and storage changesets to build the leaf revert.
+    pub(super) reverts: Duration,
+    /// Time spent in [`compute_trie_changesets_against_proofs`] — the
+    /// proofs-storage `overlay_root_from_nodes_with_updates` walk.
+    pub(super) trie_changesets: Duration,
+}
+
+/// Compute the [`BlockStateDiff`] for `block_number` — exactly what
+/// [`crate::OpProofsBackfillProvider::prepend_block`] expects:
+/// - `sorted_trie_updates`: trie-node before-values for paths block N touched.
+/// - `sorted_post_state`: per-block leaf revert (account & storage values
+///   before block N ran).
 ///
 /// `proofs_provider` must reflect the proofs-storage state *at the start of
 /// this iteration* — i.e. `earliest == block_number`. Callers should open a
@@ -52,7 +70,7 @@ pub(super) fn compute_block_backfill_diff<P, R>(
     reth_provider: &P,
     proofs_provider: R,
     block_number: BlockNumber,
-) -> Result<(TrieUpdatesSorted, HashedPostStateSorted), BackfillError>
+) -> Result<(BlockStateDiff, ComputeTimings), BackfillError>
 where
     P: ChangeSetReader
         + StorageChangeSetReader
@@ -63,13 +81,22 @@ where
 {
     // Per-block leaf revert: doubles as `post_state` for `prepend_block` and
     // as the state overlay for the trie@N-1 reconstruction below.
-    let individual_state_revert = from_reverts_auto(reth_provider, block_number..=block_number)?;
-    let trie_changesets = compute_trie_changesets_against_proofs(
+    let reverts_start = Instant::now();
+    let sorted_post_state = from_reverts_auto(reth_provider, block_number..=block_number)?;
+    let reverts = reverts_start.elapsed();
+
+    let trie_changesets_start = Instant::now();
+    let sorted_trie_updates = compute_trie_changesets_against_proofs(
         proofs_provider,
         block_number,
-        &individual_state_revert,
+        &sorted_post_state,
     )?;
-    Ok((trie_changesets, individual_state_revert))
+    let trie_changesets_elapsed = trie_changesets_start.elapsed();
+
+    Ok((
+        BlockStateDiff { sorted_trie_updates, sorted_post_state },
+        ComputeTimings { reverts, trie_changesets: trie_changesets_elapsed },
+    ))
 }
 
 fn compute_trie_changesets_against_proofs<R>(
