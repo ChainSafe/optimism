@@ -108,7 +108,8 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> BackfillCommand<C> {
 
         let provider = provider_factory
             .database_provider_ro()
-            .map_err(|e| eyre::eyre!("Failed to open reth DB provider: {e}"))?;
+            .map_err(|e| eyre::eyre!("Failed to open reth DB provider: {e}"))?
+            .disable_long_read_transaction_safety();
 
         BackfillJob::new(provider, storage).run(target_earliest_block)?;
         Ok(())
