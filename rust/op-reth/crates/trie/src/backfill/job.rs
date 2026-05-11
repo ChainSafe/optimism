@@ -15,12 +15,40 @@ use reth_provider::{
 };
 use reth_trie::StateRoot;
 use reth_trie_common::HashedPostState;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
 /// How often to emit a progress line during a long backfill, measured in
 /// blocks committed.
 const LOG_EVERY: u64 = 1_000;
+
+/// Cumulative time spent in each phase of [`BackfillJob::backfill_block`].
+/// Reported alongside the progress line so operators can see which phase
+/// dominates a slow backfill.
+#[derive(Debug, Default, Clone, Copy)]
+struct PhaseTimings {
+    compute: Duration,
+    prepend: Duration,
+    validate: Duration,
+}
+
+impl PhaseTimings {
+    fn add(&mut self, other: Self) {
+        self.compute += other.compute;
+        self.prepend += other.prepend;
+        self.validate += other.validate;
+    }
+
+    /// Per-block average. `done` must be > 0.
+    fn averages(&self, done: u64) -> Self {
+        let n = done as u32;
+        Self {
+            compute: self.compute / n,
+            prepend: self.prepend / n,
+            validate: self.validate / n,
+        }
+    }
+}
 
 /// Backfill job for proofs storage.
 #[derive(Debug, Constructor)]
@@ -62,6 +90,7 @@ where
 
         let total = current_earliest - target_earliest_block;
         let start = Instant::now();
+        let mut phase_totals = PhaseTimings::default();
         info!(
             target: "reth::op-proofs::backfill",
             from = current_earliest,
@@ -71,7 +100,7 @@ where
         );
 
         for block_number in (target_earliest_block + 1..=current_earliest).rev() {
-            self.backfill_block(block_number)?;
+            phase_totals.add(self.backfill_block(block_number)?);
 
             let done = current_earliest - block_number + 1;
             let is_final = block_number == target_earliest_block + 1;
@@ -85,19 +114,27 @@ where
                     0.0
                 };
                 let progress_pct = (done as f64 / total as f64) * 100.0;
+                let avg = phase_totals.averages(done);
                 info!(
                     target: "reth::op-proofs::backfill",
                     done,
                     total,
+                    avg_compute = ?avg.compute,
+                    avg_prepend = ?avg.prepend,
+                    avg_validate = ?avg.validate,
                     "progress: {progress_pct:.2}% ({blocks_per_sec:.1} blk/s, ETA {eta_secs:.0}s)"
                 );
             }
         }
 
+        let final_avg = phase_totals.averages(total);
         info!(
             target: "reth::op-proofs::backfill",
             blocks = total,
             elapsed = ?start.elapsed(),
+            avg_compute = ?final_avg.compute,
+            avg_prepend = ?final_avg.prepend,
+            avg_validate = ?final_avg.validate,
             "Proofs backfill complete"
         );
 
@@ -105,7 +142,10 @@ where
     }
 
     /// Backfill a single block `E`: write its historical records and advance `earliest` to `E-1`.
-    fn backfill_block(&self, block_number: BlockNumber) -> Result<(), BackfillError> {
+    ///
+    /// Returns the wall-clock time spent in each phase, accumulated by
+    /// [`Self::run`] into the running averages it reports.
+    fn backfill_block(&self, block_number: BlockNumber) -> Result<PhaseTimings, BackfillError> {
         debug!(target: "reth::op-proofs::backfill", block_number, "backfilling block");
 
         let block_hash = self
@@ -123,15 +163,17 @@ where
         // provider below to avoid holding two transactions on the same env.
         let trie_updates;
         let post_state;
+        let compute;
         {
             let compute_start = Instant::now();
             let proofs_ro = self.storage.provider_ro()?;
             (trie_updates, post_state) =
                 compute_block_backfill_diff(&self.provider, &proofs_ro, block_number)?;
+            compute = compute_start.elapsed();
             debug!(
                 target: "reth::op-proofs::backfill",
                 block_number,
-                elapsed = ?compute_start.elapsed(),
+                elapsed = ?compute,
                 accounts = post_state.accounts.len(),
                 storages = post_state.storages.len(),
                 account_trie_nodes = trie_updates.account_nodes_ref().len(),
@@ -151,10 +193,11 @@ where
             block_ref,
             BlockStateDiff { sorted_trie_updates: trie_updates, sorted_post_state: post_state },
         )?;
+        let prepend = prepend_start.elapsed();
         debug!(
             target: "reth::op-proofs::backfill",
             block_number,
-            elapsed = ?prepend_start.elapsed(),
+            elapsed = ?prepend,
             ?counts,
             "prepend_block done"
         );
@@ -170,10 +213,11 @@ where
             .state_root();
         let computed_root =
             StateRoot::overlay_root(&bp, block_number - 1, HashedPostState::default())?;
+        let validate = validate_start.elapsed();
         debug!(
             target: "reth::op-proofs::backfill",
             block_number,
-            elapsed = ?validate_start.elapsed(),
+            elapsed = ?validate,
             "state root validation done"
         );
         if computed_root != expected_root {
@@ -186,6 +230,6 @@ where
 
         bp.commit()?;
 
-        Ok(())
+        Ok(PhaseTimings { compute, prepend, validate })
     }
 }
