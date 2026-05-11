@@ -147,6 +147,27 @@ where
     }
 }
 
+fn check_order_account_trie(
+    op: &'static str,
+    max_block_number: u64,
+    prev: &Option<StoredNibbles>,
+    result: &Option<(Nibbles, BranchNodeCompact)>,
+) {
+    if let (Some(prev), Some((new_nibbles, _))) = (prev.as_ref(), result.as_ref()) {
+        let new_stored = StoredNibbles(*new_nibbles);
+        if &new_stored <= prev {
+            tracing::error!(
+                target: "reth::op-proofs::backfill",
+                op,
+                max_block_number,
+                prev = ?prev,
+                yielded = ?new_stored,
+                "V2AccountTrieCursor yielded out-of-order key"
+            );
+        }
+    }
+}
+
 impl<C, HC, CC> TrieCursor for V2AccountTrieCursor<C, HC, CC>
 where
     C: DbCursorRO<V2AccountsTrie> + Send,
@@ -157,57 +178,68 @@ where
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        let prev = self.state.last_key.clone();
         self.state.seeked = true;
 
-        if self.is_latest {
+        let result = if self.is_latest {
             // Fast path: direct current-state lookup.
-            let result = self.cursor.seek_exact(StoredNibbles(key))?;
-            if result.is_some() {
+            let r = self.cursor.seek_exact(StoredNibbles(key))?;
+            if r.is_some() {
                 self.state.last_key = Some(StoredNibbles(key));
             }
-            return Ok(result.map(|(_, node)| (key, node)));
-        }
+            r.map(|(_, node)| (key, node))
+        } else {
+            let path = StoredNibbles(key);
+            let node = self.resolve_node_standalone(&path)?;
 
-        let path = StoredNibbles(key);
-        let node = self.resolve_node_standalone(&path)?;
+            // Re-sync the walk state so a subsequent next() starts after `path`.
+            let cs_at_key = self.cursor.seek(path.clone())?;
+            self.state.cs_next = match cs_at_key {
+                Some((k, _)) if k == path => self.cursor.next()?,
+                other => other,
+            };
+            self.state.hist_next_key =
+                Self::advance_history_past(&mut self.history_walk_cursor, &path)?;
 
-        // Re-sync the walk state so a subsequent next() starts after `path`.
-        let cs_at_key = self.cursor.seek(path.clone())?;
-        self.state.cs_next = match cs_at_key {
-            Some((k, _)) if k == path => self.cursor.next()?,
-            other => other,
+            if node.is_some() {
+                self.state.last_key = Some(path);
+            }
+            node.map(|n| (key, n))
         };
-        self.state.hist_next_key =
-            Self::advance_history_past(&mut self.history_walk_cursor, &path)?;
-
-        if node.is_some() {
-            self.state.last_key = Some(path);
-        }
-        Ok(node.map(|n| (key, n)))
+        check_order_account_trie(
+            "seek_exact",
+            self.max_block_number,
+            &prev,
+            &result,
+        );
+        Ok(result)
     }
 
     fn seek(
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        let prev = self.state.last_key.clone();
         self.state.seeked = true;
 
-        if self.is_latest {
+        let result = if self.is_latest {
             // Fast path: direct current-state walk.
-            let result = self.cursor.seek(StoredNibbles(key))?;
-            if let Some((ref k, _)) = result {
+            let r = self.cursor.seek(StoredNibbles(key))?;
+            if let Some((ref k, _)) = r {
                 self.state.last_key = Some(k.clone());
             }
-            return Ok(result.map(|(k, node)| (k.0, node)));
-        }
-
-        // Initialize both merge cursors at the target key.
-        self.state.cs_next = self.cursor.seek(StoredNibbles(key))?;
-        self.state.hist_next_key = self
-            .history_walk_cursor
-            .seek(AccountTrieShardedKey::new(StoredNibbles(key), 0))?
-            .map(|(k, _)| k.key);
-        self.find_next_live()
+            r.map(|(k, node)| (k.0, node))
+        } else {
+            // Initialize both merge cursors at the target key.
+            self.state.cs_next = self.cursor.seek(StoredNibbles(key))?;
+            self.state.hist_next_key = self
+                .history_walk_cursor
+                .seek(AccountTrieShardedKey::new(StoredNibbles(key), 0))?
+                .map(|(k, _)| k.key);
+            self.find_next_live()?
+        };
+        check_order_account_trie("seek", self.max_block_number, &prev, &result);
+        Ok(result)
     }
 
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
@@ -215,28 +247,17 @@ where
             return self.seek(Nibbles::default());
         }
 
-        if self.is_latest {
-            let result = self.cursor.next()?;
-            if let Some((ref k, _)) = result {
+        let prev = self.state.last_key.clone();
+        let result = if self.is_latest {
+            let r = self.cursor.next()?;
+            if let Some((ref k, _)) = r {
                 self.state.last_key = Some(k.clone());
             }
-            return Ok(result.map(|(k, node)| (k.0, node)));
-        }
-
-        let prev = self.state.last_key.clone();
-        let result = self.find_next_live()?;
-        if let (Some(prev), Some((new_nibbles, _))) = (prev.as_ref(), result.as_ref()) {
-            let new_stored = StoredNibbles(*new_nibbles);
-            if &new_stored <= prev {
-                tracing::error!(
-                    target: "reth::op-proofs::backfill",
-                    max_block_number = self.max_block_number,
-                    prev = ?prev,
-                    yielded = ?new_stored,
-                    "V2AccountTrieCursor yielded out-of-order key"
-                );
-            }
-        }
+            r.map(|(k, node)| (k.0, node))
+        } else {
+            self.find_next_live()?
+        };
+        check_order_account_trie("next", self.max_block_number, &prev, &result);
         Ok(result)
     }
 

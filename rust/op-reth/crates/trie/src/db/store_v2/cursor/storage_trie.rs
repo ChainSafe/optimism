@@ -168,6 +168,29 @@ where
     }
 }
 
+fn check_order_storage_trie(
+    op: &'static str,
+    max_block_number: u64,
+    hashed_address: alloy_primitives::B256,
+    prev: &Option<StoredNibbles>,
+    result: &Option<(Nibbles, BranchNodeCompact)>,
+) {
+    if let (Some(prev), Some((new_nibbles, _))) = (prev.as_ref(), result.as_ref()) {
+        let new_stored = StoredNibbles(*new_nibbles);
+        if &new_stored <= prev {
+            tracing::error!(
+                target: "reth::op-proofs::backfill",
+                op,
+                max_block_number,
+                hashed_address = ?hashed_address,
+                prev = ?prev,
+                yielded = ?new_stored,
+                "V2StorageTrieCursor yielded out-of-order key"
+            );
+        }
+    }
+}
+
 impl<C, HC, CC> TrieCursor for V2StorageTrieCursor<C, HC, CC>
 where
     C: DbCursorRO<V2StoragesTrie> + DbDupCursorRO<V2StoragesTrie> + Send,
@@ -178,9 +201,10 @@ where
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        let prev = self.state.last_key.clone();
         self.state.seeked = true;
 
-        if self.is_latest {
+        let result = if self.is_latest {
             // Fast path: direct DupSort lookup.
             let entry = self
                 .cursor
@@ -189,59 +213,79 @@ where
             if entry.is_some() {
                 self.state.last_key = Some(StoredNibbles(key));
             }
-            return Ok(entry.map(|e| (key, e.node)));
-        }
+            entry.map(|e| (key, e.node))
+        } else {
+            let node = self.resolve_node_standalone(key)?;
 
-        let node = self.resolve_node_standalone(key)?;
+            // Re-sync walk state so a subsequent next() starts after `key`.
+            let cs_at_key =
+                self.cursor.seek_by_key_subkey(self.hashed_address, StoredNibblesSubKey(key))?;
+            self.state.cs_next = match cs_at_key {
+                Some(e) if e.nibbles == StoredNibblesSubKey(key) => {
+                    self.cursor.next_dup()?.map(|(_, v)| (StoredNibbles(v.nibbles.0), v.node))
+                }
+                Some(e) => Some((StoredNibbles(e.nibbles.0), e.node)),
+                None => None,
+            };
+            let path = StoredNibbles(key);
+            self.state.hist_next_key = Self::advance_history_past(
+                &mut self.history_walk_cursor,
+                self.hashed_address,
+                &path,
+            )?;
 
-        // Re-sync walk state so a subsequent next() starts after `key`.
-        let cs_at_key =
-            self.cursor.seek_by_key_subkey(self.hashed_address, StoredNibblesSubKey(key))?;
-        self.state.cs_next = match cs_at_key {
-            Some(e) if e.nibbles == StoredNibblesSubKey(key) => {
-                self.cursor.next_dup()?.map(|(_, v)| (StoredNibbles(v.nibbles.0), v.node))
+            if node.is_some() {
+                self.state.last_key = Some(path);
             }
-            Some(e) => Some((StoredNibbles(e.nibbles.0), e.node)),
-            None => None,
+            node.map(|n| (key, n))
         };
-        let path = StoredNibbles(key);
-        self.state.hist_next_key =
-            Self::advance_history_past(&mut self.history_walk_cursor, self.hashed_address, &path)?;
-
-        if node.is_some() {
-            self.state.last_key = Some(path);
-        }
-        Ok(node.map(|n| (key, n)))
+        check_order_storage_trie(
+            "seek_exact",
+            self.max_block_number,
+            self.hashed_address,
+            &prev,
+            &result,
+        );
+        Ok(result)
     }
 
     fn seek(
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        let prev = self.state.last_key.clone();
         self.state.seeked = true;
 
-        if self.is_latest {
+        let result = if self.is_latest {
             // Fast path: direct DupSort walk.
             let entry =
                 self.cursor.seek_by_key_subkey(self.hashed_address, StoredNibblesSubKey(key))?;
             if let Some(ref e) = entry {
                 self.state.last_key = Some(StoredNibbles(e.nibbles.0));
             }
-            return Ok(entry.map(|e| (e.nibbles.0, e.node)));
-        }
-
-        // Initialize both merge cursors at the target key.
-        self.state.cs_next = self
-            .cursor
-            .seek_by_key_subkey(self.hashed_address, StoredNibblesSubKey(key))?
-            .map(|e| (StoredNibbles(e.nibbles.0), e.node));
-        let hist_seek = StorageTrieShardedKey::new(self.hashed_address, StoredNibbles(key), 0);
-        self.state.hist_next_key = self
-            .history_walk_cursor
-            .seek(hist_seek)?
-            .filter(|(k, _)| k.hashed_address == self.hashed_address)
-            .map(|(k, _)| k.key);
-        self.find_next_live()
+            entry.map(|e| (e.nibbles.0, e.node))
+        } else {
+            // Initialize both merge cursors at the target key.
+            self.state.cs_next = self
+                .cursor
+                .seek_by_key_subkey(self.hashed_address, StoredNibblesSubKey(key))?
+                .map(|e| (StoredNibbles(e.nibbles.0), e.node));
+            let hist_seek = StorageTrieShardedKey::new(self.hashed_address, StoredNibbles(key), 0);
+            self.state.hist_next_key = self
+                .history_walk_cursor
+                .seek(hist_seek)?
+                .filter(|(k, _)| k.hashed_address == self.hashed_address)
+                .map(|(k, _)| k.key);
+            self.find_next_live()?
+        };
+        check_order_storage_trie(
+            "seek",
+            self.max_block_number,
+            self.hashed_address,
+            &prev,
+            &result,
+        );
+        Ok(result)
     }
 
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
@@ -249,29 +293,23 @@ where
             return self.seek(Nibbles::default());
         }
 
-        if self.is_latest {
+        let prev = self.state.last_key.clone();
+        let result = if self.is_latest {
             let entry = self.cursor.next_dup()?.map(|(_, v)| v);
             if let Some(ref e) = entry {
                 self.state.last_key = Some(StoredNibbles(e.nibbles.0));
             }
-            return Ok(entry.map(|e| (e.nibbles.0, e.node)));
-        }
-
-        let prev = self.state.last_key.clone();
-        let result = self.find_next_live()?;
-        if let (Some(prev), Some((new_nibbles, _))) = (prev.as_ref(), result.as_ref()) {
-            let new_stored = StoredNibbles(*new_nibbles);
-            if &new_stored <= prev {
-                tracing::error!(
-                    target: "reth::op-proofs::backfill",
-                    max_block_number = self.max_block_number,
-                    hashed_address = ?self.hashed_address,
-                    prev = ?prev,
-                    yielded = ?new_stored,
-                    "V2StorageTrieCursor yielded out-of-order key"
-                );
-            }
-        }
+            entry.map(|e| (e.nibbles.0, e.node))
+        } else {
+            self.find_next_live()?
+        };
+        check_order_storage_trie(
+            "next",
+            self.max_block_number,
+            self.hashed_address,
+            &prev,
+            &result,
+        );
         Ok(result)
     }
 

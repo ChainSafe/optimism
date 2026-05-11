@@ -108,6 +108,26 @@ where
     }
 }
 
+fn check_order_account(
+    op: &'static str,
+    max_block_number: u64,
+    prev: &Option<B256>,
+    result: &Option<(B256, Account)>,
+) {
+    if let (Some(prev), Some((new_key, _))) = (prev.as_ref(), result.as_ref()) {
+        if new_key <= prev {
+            tracing::error!(
+                target: "reth::op-proofs::backfill",
+                op,
+                max_block_number,
+                prev = ?prev,
+                yielded = ?new_key,
+                "V2AccountCursor yielded out-of-order key"
+            );
+        }
+    }
+}
+
 impl<C, HC, CC> HashedCursor for V2AccountCursor<C, HC, CC>
 where
     C: DbCursorRO<V2HashedAccounts> + Send,
@@ -117,20 +137,23 @@ where
     type Value = Account;
 
     fn seek(&mut self, key: B256) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
+        let prev = self.state.last_key;
         self.state.seeked = true;
 
-        if self.is_latest {
+        let result = if self.is_latest {
             // Fast path: current state is authoritative, no history needed.
-            return self.cursor.seek(key);
-        }
-
-        // Initialize both merge cursors at the target key.
-        self.state.cs_next = self.cursor.seek(key)?;
-        self.state.hist_next_key = self
-            .history_walk_cursor
-            .seek(HashedAccountShardedKey::new(key, 0))?
-            .map(|(k, _)| k.0.key);
-        self.find_next_live()
+            self.cursor.seek(key)?
+        } else {
+            // Initialize both merge cursors at the target key.
+            self.state.cs_next = self.cursor.seek(key)?;
+            self.state.hist_next_key = self
+                .history_walk_cursor
+                .seek(HashedAccountShardedKey::new(key, 0))?
+                .map(|(k, _)| k.0.key);
+            self.find_next_live()?
+        };
+        check_order_account("V2AccountCursor::seek", self.max_block_number, &prev, &result);
+        Ok(result)
     }
 
     fn next(&mut self) -> Result<Option<(B256, Self::Value)>, DatabaseError> {
@@ -138,11 +161,14 @@ where
             return self.seek(B256::ZERO);
         }
 
-        if self.is_latest {
-            return self.cursor.next();
-        }
-
-        self.find_next_live()
+        let prev = self.state.last_key;
+        let result = if self.is_latest {
+            self.cursor.next()?
+        } else {
+            self.find_next_live()?
+        };
+        check_order_account("V2AccountCursor::next", self.max_block_number, &prev, &result);
+        Ok(result)
     }
 
     fn reset(&mut self) {
