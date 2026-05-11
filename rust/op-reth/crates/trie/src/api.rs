@@ -180,8 +180,8 @@ pub trait OpProofsBackfillProvider: OpProofsProviderRO {
     /// `earliest` marker to `block_ref.parent`.
     ///
     /// `diff` contains:
-    /// - `sorted_trie_updates`: trie node **before-values** for `block_ref.block.number`
-    ///   (i.e. what each changed node looked like *before* the block executed).
+    /// - `sorted_trie_updates`: trie node **before-values** for `block_ref.block.number` (i.e. what
+    ///   each changed node looked like *before* the block executed).
     /// - `sorted_post_state`: account / storage **before-values** for the same block.
     ///
     /// The implementation must **not** update the `latest` marker and must **not**

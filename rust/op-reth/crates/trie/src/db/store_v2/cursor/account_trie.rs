@@ -208,13 +208,7 @@ where
             }
             node.map(|n| (key, n))
         };
-        check_order_account_trie(
-            "seek_exact",
-            self.max_block_number,
-            Some(key),
-            &prev,
-            &result,
-        );
+        check_order_account_trie("seek_exact", self.max_block_number, Some(key), &prev, &result);
         Ok(result)
     }
 

@@ -164,11 +164,7 @@ where
         }
 
         let prev = self.state.last_key;
-        let result = if self.is_latest {
-            self.cursor.next()?
-        } else {
-            self.find_next_live()?
-        };
+        let result = if self.is_latest { self.cursor.next()? } else { self.find_next_live()? };
         check_order_account("next", self.max_block_number, None, &prev, &result);
         Ok(result)
     }

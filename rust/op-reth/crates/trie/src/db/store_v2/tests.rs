@@ -1934,10 +1934,7 @@ fn prepend_block_basic_advances_earliest_and_writes_changeset() {
     // earliest advanced to (4, block4_hash).
     {
         let provider = MdbxProofsProviderV2::new(db.tx().expect("ro"));
-        assert_eq!(
-            provider.get_earliest_block_number().expect("get"),
-            Some((4, block4_hash))
-        );
+        assert_eq!(provider.get_earliest_block_number().expect("get"), Some((4, block4_hash)));
     }
 
     // Changeset entry for block 5 carries the supplied before-value.
@@ -2014,10 +2011,7 @@ fn prepend_block_idempotent_when_changeset_exists() {
     assert_eq!(counts, WriteCounts::default());
     {
         let provider = MdbxProofsProviderV2::new(db.tx().expect("ro"));
-        assert_eq!(
-            provider.get_earliest_block_number().expect("get"),
-            Some((1, block1_hash))
-        );
+        assert_eq!(provider.get_earliest_block_number().expect("get"), Some((1, block1_hash)));
     }
 
     // Changeset retains the ORIGINAL forward-write value (nonce: 0), not the
@@ -2049,24 +2043,16 @@ fn prepend_block_descending_chain_accumulates_history() {
 
     for block_num in (1u64..=3).rev() {
         let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw"));
-        let block_ref = make_block_ref(
-            block_num,
-            hashes[block_num as usize],
-            hashes[(block_num - 1) as usize],
-        );
-        provider
-            .prepend_block(block_ref, make_nonce_diff(addr, block_num))
-            .expect("prepend");
+        let block_ref =
+            make_block_ref(block_num, hashes[block_num as usize], hashes[(block_num - 1) as usize]);
+        provider.prepend_block(block_ref, make_nonce_diff(addr, block_num)).expect("prepend");
         OpProofsBackfillProvider::commit(provider).expect("commit");
     }
 
     // earliest now at (0, hash_0).
     {
         let provider = MdbxProofsProviderV2::new(db.tx().expect("ro"));
-        assert_eq!(
-            provider.get_earliest_block_number().expect("get"),
-            Some((0, hashes[0]))
-        );
+        assert_eq!(provider.get_earliest_block_number().expect("get"), Some((0, hashes[0])));
     }
 
     // History bitmap accumulated all three prepended blocks in ascending order.
