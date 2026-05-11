@@ -16,6 +16,12 @@ use reth_provider::{
 };
 use reth_trie::StateRoot;
 use reth_trie_common::HashedPostState;
+use std::time::Instant;
+use tracing::info;
+
+/// How often to emit a progress line during a long backfill, measured in
+/// blocks committed.
+const LOG_EVERY: u64 = 1_000;
 
 /// Backfill job for proofs storage.
 #[derive(Debug, Constructor)]
@@ -55,9 +61,49 @@ where
             return Ok(());
         }
 
+        let total = current_earliest - target_earliest_block;
+        let start = Instant::now();
+        info!(
+            target: "reth::op-proofs::backfill",
+            from = current_earliest,
+            to = target_earliest_block,
+            total,
+            "Starting proofs backfill"
+        );
+
         for block_number in (target_earliest_block + 1..=current_earliest).rev() {
             self.backfill_block(block_number)?;
+
+            let done = current_earliest - block_number + 1;
+            let is_final = block_number == target_earliest_block + 1;
+            if done.is_multiple_of(LOG_EVERY) || is_final {
+                let elapsed_secs = start.elapsed().as_secs_f64();
+                let blocks_per_sec = if elapsed_secs.is_normal() {
+                    done as f64 / elapsed_secs
+                } else {
+                    0.0
+                };
+                let eta_secs = if blocks_per_sec.is_normal() && blocks_per_sec > 0.0 {
+                    (total - done) as f64 / blocks_per_sec
+                } else {
+                    0.0
+                };
+                let progress_pct = (done as f64 / total as f64) * 100.0;
+                info!(
+                    target: "reth::op-proofs::backfill",
+                    done,
+                    total,
+                    "progress: {progress_pct:.2}% ({blocks_per_sec:.1} blk/s, ETA {eta_secs:.0}s)"
+                );
+            }
         }
+
+        info!(
+            target: "reth::op-proofs::backfill",
+            blocks = total,
+            elapsed = ?start.elapsed(),
+            "Proofs backfill complete"
+        );
 
         Ok(())
     }
