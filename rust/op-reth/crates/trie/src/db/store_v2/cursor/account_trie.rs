@@ -150,6 +150,7 @@ where
 fn check_order_account_trie(
     op: &'static str,
     max_block_number: u64,
+    input_key: Option<Nibbles>,
     prev: &Option<StoredNibbles>,
     result: &Option<(Nibbles, BranchNodeCompact)>,
 ) {
@@ -160,6 +161,7 @@ fn check_order_account_trie(
                 target: "reth::op-proofs::backfill",
                 op,
                 max_block_number,
+                input = ?input_key,
                 prev = ?prev,
                 yielded = ?new_stored,
                 "V2AccountTrieCursor yielded out-of-order key"
@@ -209,6 +211,7 @@ where
         check_order_account_trie(
             "seek_exact",
             self.max_block_number,
+            Some(key),
             &prev,
             &result,
         );
@@ -238,7 +241,7 @@ where
                 .map(|(k, _)| k.key);
             self.find_next_live()?
         };
-        check_order_account_trie("seek", self.max_block_number, &prev, &result);
+        check_order_account_trie("seek", self.max_block_number, Some(key), &prev, &result);
         Ok(result)
     }
 
@@ -257,7 +260,7 @@ where
         } else {
             self.find_next_live()?
         };
-        check_order_account_trie("next", self.max_block_number, &prev, &result);
+        check_order_account_trie("next", self.max_block_number, None, &prev, &result);
         Ok(result)
     }
 

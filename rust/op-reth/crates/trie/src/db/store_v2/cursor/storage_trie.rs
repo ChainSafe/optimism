@@ -172,17 +172,22 @@ fn check_order_storage_trie(
     op: &'static str,
     max_block_number: u64,
     hashed_address: alloy_primitives::B256,
+    input_key: Option<Nibbles>,
     prev: &Option<StoredNibbles>,
     result: &Option<(Nibbles, BranchNodeCompact)>,
 ) {
     if let (Some(prev), Some((new_nibbles, _))) = (prev.as_ref(), result.as_ref()) {
         let new_stored = StoredNibbles(*new_nibbles);
         if &new_stored <= prev {
+            // For seek/seek_exact: input_key tells us if the walker is requesting a
+            // backward jump (input < prev, correct cursor response) vs. the cursor
+            // returning something less than the input (cursor bug).
             tracing::error!(
                 target: "reth::op-proofs::backfill",
                 op,
                 max_block_number,
                 hashed_address = ?hashed_address,
+                input = ?input_key,
                 prev = ?prev,
                 yielded = ?new_stored,
                 "V2StorageTrieCursor yielded out-of-order key"
@@ -243,6 +248,7 @@ where
             "seek_exact",
             self.max_block_number,
             self.hashed_address,
+            Some(key),
             &prev,
             &result,
         );
@@ -282,6 +288,7 @@ where
             "seek",
             self.max_block_number,
             self.hashed_address,
+            Some(key),
             &prev,
             &result,
         );
@@ -307,6 +314,7 @@ where
             "next",
             self.max_block_number,
             self.hashed_address,
+            None,
             &prev,
             &result,
         );

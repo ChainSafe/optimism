@@ -111,6 +111,7 @@ where
 fn check_order_account(
     op: &'static str,
     max_block_number: u64,
+    input_key: Option<B256>,
     prev: &Option<B256>,
     result: &Option<(B256, Account)>,
 ) {
@@ -120,6 +121,7 @@ fn check_order_account(
                 target: "reth::op-proofs::backfill",
                 op,
                 max_block_number,
+                input = ?input_key,
                 prev = ?prev,
                 yielded = ?new_key,
                 "V2AccountCursor yielded out-of-order key"
@@ -152,7 +154,7 @@ where
                 .map(|(k, _)| k.0.key);
             self.find_next_live()?
         };
-        check_order_account("V2AccountCursor::seek", self.max_block_number, &prev, &result);
+        check_order_account("seek", self.max_block_number, Some(key), &prev, &result);
         Ok(result)
     }
 
@@ -167,7 +169,7 @@ where
         } else {
             self.find_next_live()?
         };
-        check_order_account("V2AccountCursor::next", self.max_block_number, &prev, &result);
+        check_order_account("next", self.max_block_number, None, &prev, &result);
         Ok(result)
     }
 
