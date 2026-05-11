@@ -257,7 +257,22 @@ where
             return Ok(entry.map(|e| (e.nibbles.0, e.node)));
         }
 
-        self.find_next_live()
+        let prev = self.state.last_key.clone();
+        let result = self.find_next_live()?;
+        if let (Some(prev), Some((new_nibbles, _))) = (prev.as_ref(), result.as_ref()) {
+            let new_stored = StoredNibbles(*new_nibbles);
+            if &new_stored <= prev {
+                tracing::error!(
+                    target: "reth::op-proofs::backfill",
+                    max_block_number = self.max_block_number,
+                    hashed_address = ?self.hashed_address,
+                    prev = ?prev,
+                    yielded = ?new_stored,
+                    "V2StorageTrieCursor yielded out-of-order key"
+                );
+            }
+        }
+        Ok(result)
     }
 
     fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {

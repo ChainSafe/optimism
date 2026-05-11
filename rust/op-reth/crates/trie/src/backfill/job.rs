@@ -17,7 +17,7 @@ use reth_provider::{
 use reth_trie::StateRoot;
 use reth_trie_common::HashedPostState;
 use std::time::Instant;
-use tracing::info;
+use tracing::{debug, info};
 
 /// How often to emit a progress line during a long backfill, measured in
 /// blocks committed.
@@ -110,6 +110,8 @@ where
 
     /// Backfill a single block `E`: write its historical records and advance `earliest` to `E-1`.
     fn backfill_block(&self, block_number: BlockNumber) -> Result<(), BackfillError> {
+        debug!(target: "reth::op-proofs::backfill", block_number, "backfilling block");
+
         let block_hash = self
             .provider
             .block_hash(block_number)?
@@ -126,9 +128,20 @@ where
         let trie_updates;
         let post_state;
         {
+            let compute_start = Instant::now();
             let proofs_ro = self.storage.provider_ro()?;
             (trie_updates, post_state) =
                 compute_block_backfill_diff(&self.provider, &proofs_ro, block_number)?;
+            debug!(
+                target: "reth::op-proofs::backfill",
+                block_number,
+                elapsed = ?compute_start.elapsed(),
+                accounts = post_state.accounts.len(),
+                storages = post_state.storages.len(),
+                account_trie_nodes = trie_updates.account_nodes_ref().len(),
+                storage_tries = trie_updates.storage_tries_ref().len(),
+                "computed backfill diff"
+            );
         }
 
         let block_ref = BlockWithParent {
@@ -136,18 +149,27 @@ where
             parent: parent_hash,
         };
 
+        let prepend_start = Instant::now();
         let bp = self.storage.backfill_provider()?;
-        bp.prepend_block(
+        let counts = bp.prepend_block(
             block_ref,
             BlockStateDiff {
                 sorted_trie_updates: trie_updates,
                 sorted_post_state: post_state,
             },
         )?;
+        debug!(
+            target: "reth::op-proofs::backfill",
+            block_number,
+            elapsed = ?prepend_start.elapsed(),
+            ?counts,
+            "prepend_block done"
+        );
 
         // Validate the written before-values by computing a full state root at block_number - 1
         // using the backfill provider (which now includes the prepended data in its transaction).
         // `&bp` implements `OpProofsProviderRO`, so it reads its own uncommitted writes.
+        let validate_start = Instant::now();
         let expected_root = self
             .provider
             .header_by_number(block_number - 1)?
@@ -155,6 +177,12 @@ where
             .state_root();
         let computed_root =
             StateRoot::overlay_root(&bp, block_number - 1, HashedPostState::default())?;
+        debug!(
+            target: "reth::op-proofs::backfill",
+            block_number,
+            elapsed = ?validate_start.elapsed(),
+            "state root validation done"
+        );
         if computed_root != expected_root {
             return Err(BackfillError::StateRootMismatch {
                 block_number,
