@@ -33,6 +33,14 @@ const DEFAULT_BACKPRESSURE_THRESHOLD: u64 = 10;
 /// Default timeout for waiting on a persistence save/unwind operation (in seconds).
 const DEFAULT_PERSISTENCE_TIMEOUT_SECS: u64 = 60;
 
+/// How long the engine waits with a non-empty memory buffer before flushing it even if the
+/// persistence threshold has not been reached.
+///
+/// Without this, a paused chain (e.g. fault-proof tests that freeze the sequencer) would leave
+/// buffered blocks unpersisted indefinitely, breaking the proofs RPC's strict "is this block
+/// persisted?" check.
+const IDLE_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Messages sent from [`EngineHandle`] to the engine thread.
 enum EngineAction<Block: reth_primitives_traits::Block> {
     /// Execute a block via the EVM and index the resulting trie diff.
