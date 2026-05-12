@@ -164,7 +164,11 @@ impl<Block: reth_primitives_traits::Block + Send + 'static> EngineHandle<Block> 
     }
 
     /// Block until any in-progress background persistence completes (test/utility only).
+<<<<<<< HEAD
     #[cfg(any(test, feature = "test-utils"))]
+=======
+    #[cfg(test)]
+>>>>>>> origin/develop
     pub fn flush(&self) {
         use super::tasks::FlushTask;
         let (reply_tx, reply_rx) = bounded(1);
