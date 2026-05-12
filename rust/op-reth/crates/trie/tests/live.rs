@@ -32,13 +32,13 @@ use tempfile::TempDir;
 use test_case::test_case;
 
 fn create_mdbx_proofs_storage() -> Arc<MdbxProofsStorage> {
-    let path = TempDir::new().unwrap();
-    Arc::new(MdbxProofsStorage::new(path.path()).unwrap())
+    let path = TempDir::new().unwrap().keep();
+    Arc::new(MdbxProofsStorage::new(&path).unwrap())
 }
 
 fn create_mdbx_proofs_storage_v2() -> Arc<MdbxProofsStorageV2> {
-    let path = TempDir::new().unwrap();
-    Arc::new(MdbxProofsStorageV2::new(path.path()).unwrap())
+    let path = TempDir::new().unwrap().keep();
+    Arc::new(MdbxProofsStorageV2::new(&path).unwrap())
 }
 
 /// Converts a secp256k1 public key to an Ethereum address.
