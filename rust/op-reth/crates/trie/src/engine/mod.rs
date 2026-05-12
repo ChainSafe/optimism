@@ -5,7 +5,7 @@
 //! handle whose methods mirror the old `LiveTrieCollector` API.
 //!
 //! Internally the engine owns *all* mutable state (memory buffer, persistence
-//! handle, in-flight tracking) and processes [`EngineAction`] messages one at
+//! handle, in-flight tracking) and processes engine action messages one at
 //! a time, which structurally enforces the serial-call invariant.
 
 mod buffer;
