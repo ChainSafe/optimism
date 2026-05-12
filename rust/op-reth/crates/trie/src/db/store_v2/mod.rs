@@ -17,10 +17,14 @@ mod metrics;
 mod provider_ro;
 mod provider_rw;
 mod read;
+mod snapshot_init;
+mod snapshot_read;
+mod snapshot_write;
 mod write;
 
 pub use cursor::{
-    V2AccountCursor, V2AccountTrieCursor, V2StorageCursor, V2StorageTrieCursor, find_source_stats,
+    V2AccountCursor, V2AccountTrieCursor, V2AccountTrieSnapshotCursor, V2StorageCursor,
+    V2StorageTrieCursor, V2StorageTrieSnapshotCursor, find_source_stats,
 };
 
 #[cfg(test)]
@@ -53,6 +57,13 @@ impl MdbxProofsStorageV2 {
         let env = init_db_for::<_, Tables>(path, DatabaseArguments::default())
             .map_err(|e| DatabaseError::Other(format!("Failed to open database: {e}")))?;
         Ok(Self { env })
+    }
+
+    /// Borrow the underlying [`DatabaseEnv`] for in-crate diagnostics (e.g.
+    /// equivalence tests that walk raw tables).
+    #[cfg(test)]
+    pub(crate) fn env(&self) -> &DatabaseEnv {
+        &self.env
     }
 }
 

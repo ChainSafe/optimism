@@ -10,6 +10,8 @@ use std::sync::Arc;
 pub mod backfill;
 pub mod init;
 pub mod prune;
+pub mod snapshot_drop;
+pub mod snapshot_init;
 pub mod unwind;
 
 /// `op-reth op-proofs` command
@@ -30,6 +32,8 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> Command<C> {
             Subcommands::Backfill(cmd) => cmd.execute::<N>(runtime).await,
             Subcommands::Prune(cmd) => cmd.execute::<N>(runtime).await,
             Subcommands::Unwind(cmd) => cmd.execute::<N>(runtime).await,
+            Subcommands::SnapshotInit(cmd) => cmd.execute::<N>(runtime).await,
+            Subcommands::SnapshotDrop(cmd) => cmd.execute::<N>(runtime).await,
         }
     }
 }
@@ -42,6 +46,8 @@ impl<C: ChainSpecParser> Command<C> {
             Subcommands::Backfill(cmd) => cmd.chain_spec(),
             Subcommands::Prune(cmd) => cmd.chain_spec(),
             Subcommands::Unwind(cmd) => cmd.chain_spec(),
+            Subcommands::SnapshotInit(cmd) => cmd.chain_spec(),
+            Subcommands::SnapshotDrop(cmd) => cmd.chain_spec(),
         }
     }
 }
@@ -61,4 +67,10 @@ pub enum Subcommands<C: ChainSpecParser> {
     /// Unwind the proofs storage to a specific block
     #[command(name = "unwind")]
     Unwind(unwind::UnwindCommand<C>),
+    /// Build the V2 trie-state snapshot (used to accelerate backfill)
+    #[command(name = "snapshot-init")]
+    SnapshotInit(snapshot_init::SnapshotInitCommand<C>),
+    /// Drop the V2 trie-state snapshot (clears tables and meta)
+    #[command(name = "snapshot-drop")]
+    SnapshotDrop(snapshot_drop::SnapshotDropCommand<C>),
 }

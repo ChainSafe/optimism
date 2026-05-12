@@ -19,6 +19,8 @@ mod key;
 pub use key::*;
 mod value;
 pub use value::*;
+mod snapshot;
+pub use snapshot::*;
 
 use alloy_primitives::{B256, BlockNumber};
 use reth_db::{
@@ -234,5 +236,41 @@ tables! {
         type Key = B256;
         type Value = StorageTrieEntry;
         type SubKey = StoredNibblesSubKey;
+    }
+
+    // -------------------- Backfill Snapshot --------------------
+    //
+    // Optional accelerator tables for deep backfills. When populated, the
+    // backfill job reads trie state from these tables instead of doing a
+    // merge walk over `V2*Trie` + `V2*TrieHistory` for every block.
+    // See `crate::backfill::SnapshotInitJob` for build semantics and
+    // `crate::backfill` module docs for the rationale.
+
+    /// Snapshot of [`V2AccountsTrie`] reflecting trie state at the current
+    /// backfill `earliest` boundary.
+    ///
+    /// Same schema as [`V2AccountsTrie`]. Populated by `SnapshotInitJob`,
+    /// updated incrementally by each `prepend_block` so the snapshot tracks
+    /// `earliest` as it moves backward.
+    table V2AccountsTrieSnapshot {
+        type Key = StoredNibbles;
+        type Value = BranchNodeCompact;
+    }
+
+    /// Snapshot of [`V2StoragesTrie`] reflecting trie state at the current
+    /// backfill `earliest` boundary.
+    ///
+    /// Same schema as [`V2StoragesTrie`].
+    table V2StoragesTrieSnapshot {
+        type Key = B256;
+        type Value = StorageTrieEntry;
+        type SubKey = StoredNibblesSubKey;
+    }
+
+    /// Single-row metadata for the snapshot: which block its trie state
+    /// reflects, and whether it's [`SnapshotStatus::Ready`] for reads.
+    table V2TrieSnapshotMeta {
+        type Key = SnapshotMetaKey;
+        type Value = SnapshotMeta;
     }
 }

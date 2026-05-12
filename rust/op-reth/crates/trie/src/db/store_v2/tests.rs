@@ -19,22 +19,31 @@ use crate::{
     BlockStateDiff, OpProofsStorageError,
     api::{
         OpProofsBackfillProvider, OpProofsInitProvider, OpProofsProviderRO, OpProofsProviderRw,
+        OpProofsSnapshotInitProvider, OpProofsSnapshotProvider, OpProofsSnapshotReader,
         WriteCounts,
     },
     db::{
-        ProofWindowKey, V2ProofWindow,
+        ProofWindowKey, SnapshotMeta, SnapshotMetaKey, SnapshotStatus, V2ProofWindow,
         models::{
             BlockNumberHashedAddress, HashedAccountShardedKey, V2AccountTrieChangeSets,
-            V2AccountsTrie, V2HashedAccountChangeSets, V2HashedAccounts, V2HashedAccountsHistory,
-            V2HashedStorageChangeSets, V2HashedStorages, V2StorageTrieChangeSets, V2StoragesTrie,
+            V2AccountsTrie, V2AccountsTrieSnapshot, V2HashedAccountChangeSets, V2HashedAccounts,
+            V2HashedAccountsHistory, V2HashedStorageChangeSets, V2HashedStorages,
+            V2StorageTrieChangeSets, V2StoragesTrie, V2StoragesTrieSnapshot, V2TrieSnapshotMeta,
         },
     },
 };
 use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
 use alloy_primitives::{B256, U256};
-use reth_db::cursor::DbCursorRO;
+use reth_db::{
+    cursor::{DbCursorRO, DbCursorRW},
+    transaction::DbTxMut,
+};
 use reth_primitives_traits::Account;
-use reth_trie::{BranchNodeCompact, HashedPostState, Nibbles, StoredNibbles, StoredNibblesSubKey};
+use reth_trie::{
+    BranchNodeCompact, HashedPostState, Nibbles, StorageTrieEntry, StoredNibbles,
+    StoredNibblesSubKey,
+    trie_cursor::{TrieCursor, TrieStorageCursor},
+};
 
 fn setup_db() -> DatabaseEnv {
     let tmp = TempDir::new().expect("create tmpdir");
@@ -2061,4 +2070,355 @@ fn prepend_block_descending_chain_accumulates_history() {
     let shard_key = HashedAccountShardedKey::new(addr, u64::MAX);
     let (_, bitmap) = cur.seek_exact(shard_key).expect("seek").expect("exists");
     assert_eq!(bitmap.iter().collect::<Vec<_>>(), vec![1, 2, 3]);
+}
+
+// ========================== Snapshot reader tests ==========================
+
+/// Helper: write a single entry into [`V2AccountsTrieSnapshot`].
+fn write_account_snapshot_entry(db: &DatabaseEnv, path: Nibbles, node: BranchNodeCompact) {
+    let tx = db.tx_mut().expect("rw tx");
+    let mut cur = tx.cursor_write::<V2AccountsTrieSnapshot>().expect("cursor");
+    cur.upsert(StoredNibbles(path), &node).expect("upsert");
+    tx.commit().expect("commit");
+}
+
+/// Helper: write a single entry into [`V2StoragesTrieSnapshot`].
+fn write_storage_snapshot_entry(
+    db: &DatabaseEnv,
+    hashed_address: B256,
+    path: Nibbles,
+    node: BranchNodeCompact,
+) {
+    let tx = db.tx_mut().expect("rw tx");
+    let mut cur = tx.cursor_dup_write::<V2StoragesTrieSnapshot>().expect("cursor");
+    cur.upsert(hashed_address, &StorageTrieEntry { nibbles: StoredNibblesSubKey(path), node })
+        .expect("upsert");
+    tx.commit().expect("commit");
+}
+
+/// Helper: write [`SnapshotMeta`] into [`V2TrieSnapshotMeta`].
+fn write_snapshot_meta(db: &DatabaseEnv, meta: SnapshotMeta) {
+    let tx = db.tx_mut().expect("rw tx");
+    let mut cur = tx.cursor_write::<V2TrieSnapshotMeta>().expect("cursor");
+    cur.upsert(SnapshotMetaKey::Singleton, &meta).expect("upsert");
+    tx.commit().expect("commit");
+}
+
+#[test]
+fn snapshot_meta_returns_none_when_unset() {
+    let db = setup_db();
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    assert_eq!(provider.snapshot_meta().expect("meta"), None);
+}
+
+#[test]
+fn snapshot_meta_roundtrip() {
+    let db = setup_db();
+    let meta = SnapshotMeta::new(
+        BlockNumHash::new(42, B256::repeat_byte(0xCD)),
+        SnapshotStatus::Ready,
+    );
+    write_snapshot_meta(&db, meta);
+
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    assert_eq!(provider.snapshot_meta().expect("meta"), Some(meta));
+}
+
+#[test]
+fn snapshot_account_trie_cursor_reads_plain_snapshot_table() {
+    let db = setup_db();
+    let path_a = Nibbles::from_nibbles_unchecked([0x0, 0x1]);
+    let path_b = Nibbles::from_nibbles_unchecked([0x0, 0x2]);
+    let node_a = sample_node();
+    let node_b = BranchNodeCompact::new(0b10, 0, 0, vec![], Some(B256::repeat_byte(0x77)));
+    write_account_snapshot_entry(&db, path_a, node_a.clone());
+    write_account_snapshot_entry(&db, path_b, node_b.clone());
+
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    let mut cur = provider.snapshot_account_trie_cursor().expect("cursor");
+
+    let (k1, v1) = cur.seek(Nibbles::default()).expect("seek").expect("entry");
+    assert_eq!(k1, path_a);
+    assert_eq!(v1, node_a);
+
+    let (k2, v2) = cur.next().expect("next").expect("entry");
+    assert_eq!(k2, path_b);
+    assert_eq!(v2, node_b);
+
+    assert!(cur.next().expect("next").is_none());
+
+    // seek_exact misses cleanly.
+    assert!(cur.seek_exact(Nibbles::from_nibbles_unchecked([0xFF])).expect("se").is_none());
+}
+
+// ========================== Snapshot writer tests ==========================
+
+#[test]
+fn snapshot_set_meta_writes_singleton() {
+    let db = setup_db();
+    let meta = SnapshotMeta::new(
+        BlockNumHash::new(7, B256::repeat_byte(0xEE)),
+        SnapshotStatus::Building,
+    );
+    {
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+        OpProofsSnapshotProvider::set_snapshot_meta(&provider, meta).expect("set meta");
+        OpProofsSnapshotProvider::commit(provider).expect("commit");
+    }
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    assert_eq!(provider.snapshot_meta().expect("meta"), Some(meta));
+}
+
+#[test]
+fn snapshot_clear_wipes_tables_and_meta() {
+    let db = setup_db();
+    write_account_snapshot_entry(&db, Nibbles::from_nibbles_unchecked([0x0]), sample_node());
+    write_storage_snapshot_entry(
+        &db,
+        B256::repeat_byte(0x1),
+        Nibbles::from_nibbles_unchecked([0x0]),
+        sample_node(),
+    );
+    write_snapshot_meta(
+        &db,
+        SnapshotMeta::new(BlockNumHash::new(1, B256::ZERO), SnapshotStatus::Ready),
+    );
+
+    {
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+        provider.clear_snapshot().expect("clear");
+        OpProofsSnapshotInitProvider::commit(provider).expect("commit");
+    }
+
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    assert_eq!(provider.snapshot_meta().expect("meta"), None);
+    let mut acc = provider.snapshot_account_trie_cursor().expect("acc cursor");
+    assert!(acc.seek(Nibbles::default()).expect("seek").is_none());
+    let mut stor = provider.snapshot_storage_trie_cursor(B256::repeat_byte(0x1)).expect("stor");
+    assert!(stor.seek(Nibbles::default()).expect("seek").is_none());
+}
+
+#[test]
+fn snapshot_store_account_trie_branches_appends_in_order() {
+    let db = setup_db();
+    let node = sample_node();
+    let path_a = Nibbles::from_nibbles_unchecked([0x0]);
+    let path_b = Nibbles::from_nibbles_unchecked([0x1]);
+
+    {
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+        provider
+            .store_account_trie_snapshot_branches(vec![
+                (StoredNibbles(path_a), node.clone()),
+                (StoredNibbles(path_b), node.clone()),
+            ])
+            .expect("store");
+        OpProofsSnapshotInitProvider::commit(provider).expect("commit");
+    }
+
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    let mut acc = provider.snapshot_account_trie_cursor().expect("cursor");
+    assert_eq!(acc.seek(Nibbles::default()).expect("seek"), Some((path_a, node.clone())));
+    assert_eq!(acc.next().expect("next"), Some((path_b, node)));
+    assert!(acc.next().expect("next").is_none());
+}
+
+#[test]
+fn snapshot_store_storage_trie_branches_appends_in_dup_order() {
+    let db = setup_db();
+    let node = sample_node();
+    let addr_a = B256::repeat_byte(0x11);
+    let addr_b = B256::repeat_byte(0x22);
+    let path = Nibbles::from_nibbles_unchecked([0x3]);
+
+    {
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+        provider
+            .store_storage_trie_snapshot_branches(vec![
+                (addr_a, StoredNibblesSubKey(path), node.clone()),
+                (addr_b, StoredNibblesSubKey(path), node.clone()),
+            ])
+            .expect("store");
+        OpProofsSnapshotInitProvider::commit(provider).expect("commit");
+    }
+
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    let mut cur_a = provider.snapshot_storage_trie_cursor(addr_a).expect("cursor a");
+    assert_eq!(cur_a.seek(path).expect("seek"), Some((path, node.clone())));
+    let mut cur_b = provider.snapshot_storage_trie_cursor(addr_b).expect("cursor b");
+    assert_eq!(cur_b.seek(path).expect("seek"), Some((path, node)));
+}
+
+#[test]
+fn snapshot_last_keys_and_source_chunks_drive_resume() {
+    // Tests both halves of the resumable-init machinery in one place:
+    //   - source chunk readers return rows strictly > resume_after, in order
+    //   - destination last-key readers expose the snapshot's frontier
+    //
+    // We seed the *source* tables, drive two manual chunks, and verify that
+    // the snapshot tables get exactly what the chunks asked for, in the
+    // expected order, with last-key reads tracking the frontier.
+    let db = setup_db();
+    let node = sample_node();
+
+    // Seed V2AccountsTrie + V2StoragesTrie with a small set of source rows.
+    let paths_acc = [
+        Nibbles::from_nibbles_unchecked([0x0]),
+        Nibbles::from_nibbles_unchecked([0x1]),
+        Nibbles::from_nibbles_unchecked([0x2]),
+    ];
+    let addr = B256::repeat_byte(0x42);
+    let paths_stor = [
+        Nibbles::from_nibbles_unchecked([0x0]),
+        Nibbles::from_nibbles_unchecked([0x1]),
+    ];
+    {
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+        provider
+            .store_account_branches(paths_acc.iter().map(|p| (*p, Some(node.clone()))).collect())
+            .expect("seed accounts");
+        provider
+            .store_storage_branches(
+                addr,
+                paths_stor.iter().map(|p| (*p, Some(node.clone()))).collect(),
+            )
+            .expect("seed storages");
+        OpProofsInitProvider::commit(provider).expect("commit");
+    }
+
+    // The init-provider trait is writer-only (matches `OpProofsInitProvider`),
+    // so even read-style methods (`last_*_key`, `*_source_chunk`) require a
+    // mutable tx. Tests stand up one rw provider for the whole test.
+    let ro = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+
+    // Initial last-keys: snapshot is empty.
+    assert_eq!(
+        OpProofsSnapshotInitProvider::snapshot_init_anchor(&ro).unwrap().last_account_trie_key,
+        None
+    );
+    assert_eq!(
+        OpProofsSnapshotInitProvider::snapshot_init_anchor(&ro).unwrap().last_storage_trie_key,
+        None
+    );
+
+    // First account chunk: 2 rows, no resume key.
+    let chunk1 = ro.account_trie_source_chunk(None, 2).unwrap();
+    assert_eq!(chunk1.len(), 2);
+    assert_eq!(chunk1[0].0, StoredNibbles(paths_acc[0]));
+    assert_eq!(chunk1[1].0, StoredNibbles(paths_acc[1]));
+
+    // Second account chunk: continue strictly after the first chunk's last.
+    let chunk2 = ro.account_trie_source_chunk(Some(chunk1.last().unwrap().0.clone()), 100).unwrap();
+    assert_eq!(chunk2.len(), 1);
+    assert_eq!(chunk2[0].0, StoredNibbles(paths_acc[2]));
+
+    // Past-the-end resume yields an empty chunk (signals "phase exhausted").
+    let chunk3 = ro.account_trie_source_chunk(Some(chunk2[0].0.clone()), 100).unwrap();
+    assert!(chunk3.is_empty());
+
+    // Storage source chunks: same pattern with composite keys.
+    let s_chunk1 = ro.storage_trie_source_chunk(None, 1).unwrap();
+    assert_eq!(s_chunk1.len(), 1);
+    assert_eq!(s_chunk1[0].0, addr);
+    assert_eq!(s_chunk1[0].1, StoredNibblesSubKey(paths_stor[0]));
+
+    let last = s_chunk1.last().unwrap();
+    let s_chunk2 = ro
+        .storage_trie_source_chunk(Some((last.0, last.1.clone())), 100)
+        .unwrap();
+    assert_eq!(s_chunk2.len(), 1);
+    assert_eq!(s_chunk2[0].1, StoredNibblesSubKey(paths_stor[1]));
+
+    let exhausted =
+        ro.storage_trie_source_chunk(Some((s_chunk2[0].0, s_chunk2[0].1.clone())), 100).unwrap();
+    assert!(exhausted.is_empty());
+}
+
+#[test]
+fn snapshot_apply_revert_restores_and_removes_account_nodes() {
+    let db = setup_db();
+    let path_keep = Nibbles::from_nibbles_unchecked([0x0]);
+    let path_remove = Nibbles::from_nibbles_unchecked([0x1]);
+    let old_node = sample_node();
+    let new_node = BranchNodeCompact::new(0b11, 0, 0, vec![], Some(B256::repeat_byte(0xFF)));
+
+    // Snapshot reflects the *post-block* state: path_keep has new_node, path_remove was created.
+    write_account_snapshot_entry(&db, path_keep, new_node.clone());
+    write_account_snapshot_entry(&db, path_remove, new_node);
+
+    // Diff is the **before-values**: path_keep had old_node, path_remove didn't exist.
+    let mut updates = TrieUpdates::default();
+    updates.account_nodes.insert(path_keep, old_node.clone());
+    updates.removed_nodes.insert(path_remove);
+    let sorted = updates.into_sorted();
+
+    let revert_count = {
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+        let n = provider.apply_snapshot_revert(&sorted).expect("apply");
+        OpProofsSnapshotProvider::commit(provider).expect("commit");
+        n
+    };
+    assert_eq!(revert_count, 2);
+
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    let mut acc = provider.snapshot_account_trie_cursor().expect("cursor");
+    assert_eq!(acc.seek_exact(path_keep).expect("seek"), Some((path_keep, old_node)));
+    assert!(acc.seek_exact(path_remove).expect("seek").is_none());
+}
+
+#[test]
+fn snapshot_apply_revert_restores_and_removes_storage_nodes() {
+    let db = setup_db();
+    let addr = B256::repeat_byte(0x11);
+    let path_keep = Nibbles::from_nibbles_unchecked([0x0]);
+    let path_remove = Nibbles::from_nibbles_unchecked([0x1]);
+    let old_node = sample_node();
+    let new_node = BranchNodeCompact::new(0b11, 0, 0, vec![], Some(B256::repeat_byte(0xFF)));
+
+    write_storage_snapshot_entry(&db, addr, path_keep, new_node.clone());
+    write_storage_snapshot_entry(&db, addr, path_remove, new_node);
+
+    let mut storage_updates = StorageTrieUpdates::default();
+    storage_updates.storage_nodes.insert(path_keep, old_node.clone());
+    storage_updates.removed_nodes.insert(path_remove);
+
+    let mut updates = TrieUpdates::default();
+    updates.storage_tries.insert(addr, storage_updates);
+    let sorted = updates.into_sorted();
+
+    {
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+        let n = provider.apply_snapshot_revert(&sorted).expect("apply");
+        assert_eq!(n, 2);
+        OpProofsSnapshotProvider::commit(provider).expect("commit");
+    }
+
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    let mut stor = provider.snapshot_storage_trie_cursor(addr).expect("cursor");
+    assert_eq!(stor.seek_exact(path_keep).expect("seek"), Some((path_keep, old_node)));
+    assert!(stor.seek_exact(path_remove).expect("seek").is_none());
+}
+
+#[test]
+fn snapshot_storage_trie_cursor_reads_and_set_hashed_address_switches() {
+    let db = setup_db();
+    let addr_a = B256::repeat_byte(0x01);
+    let addr_b = B256::repeat_byte(0x02);
+    let path = Nibbles::from_nibbles_unchecked([0x3]);
+    let node_a = sample_node();
+    let node_b = BranchNodeCompact::new(0b11, 0, 0, vec![], Some(B256::repeat_byte(0x88)));
+    write_storage_snapshot_entry(&db, addr_a, path, node_a.clone());
+    write_storage_snapshot_entry(&db, addr_b, path, node_b.clone());
+
+    let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
+    let mut cur = provider.snapshot_storage_trie_cursor(addr_a).expect("cursor");
+
+    let (k, v) = cur.seek(path).expect("seek").expect("entry");
+    assert_eq!(k, path);
+    assert_eq!(v, node_a);
+
+    cur.set_hashed_address(addr_b);
+    let (k, v) = cur.seek(path).expect("seek").expect("entry");
+    assert_eq!(k, path);
+    assert_eq!(v, node_b);
 }

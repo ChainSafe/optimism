@@ -8,8 +8,9 @@ use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_node::args::ProofsStorageVersion;
 use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_trie::{
-    BackfillJob, OpProofsProviderRO, OpProofsStore,
-    db::{MdbxProofsStorage, MdbxProofsStorageV2},
+    BackfillJob, OpProofsProviderRO, OpProofsSnapshotInitProvider, OpProofsSnapshotProvider,
+    OpProofsSnapshotReader, OpProofsStore,
+    db::MdbxProofsStorageV2,
 };
 use reth_provider::{
     BlockHashReader, BlockNumReader, ChangeSetReader, DBProvider, DatabaseProviderFactory,
@@ -43,6 +44,17 @@ pub struct BackfillCommand<C: ChainSpecParser> {
         default_value = "v1"
     )]
     pub storage_version: ProofsStorageVersion,
+
+    /// Use the trie-snapshot fast path.
+    ///
+    /// When set, the backfill auto-manages a [`SnapshotStatus::Ready`] snapshot
+    /// and uses it for the per-block compute phase, eliminating the V2 merge-walk's
+    /// per-key `find_source` work. If no snapshot exists and the proofs window
+    /// is anchored at `latest`, one is built on the fly.
+    ///
+    /// [`SnapshotStatus::Ready`]: reth_optimism_trie::db::SnapshotStatus::Ready
+    #[arg(long = "proofs-history.snapshot", default_value_t = false)]
+    pub snapshot: bool,
 }
 
 impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> BackfillCommand<C> {
@@ -58,25 +70,67 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> BackfillCommand<C> {
 
         match self.storage_version {
             ProofsStorageVersion::V1 => {
-                let storage: Arc<MdbxProofsStorage> = Arc::new(
-                    MdbxProofsStorage::new(&self.storage_path)
-                        .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorage: {e}"))?,
-                );
-                Self::run_backfill(&provider_factory, storage, self.target_earliest_block)?;
+                return Err(eyre::eyre!(
+                    "Backfill is not supported for V1 proofs storage. \
+                     Re-run with --proofs-history.storage-version v2."
+                ));
             }
             ProofsStorageVersion::V2 => {
                 let storage: Arc<MdbxProofsStorageV2> = Arc::new(
                     MdbxProofsStorageV2::new(&self.storage_path)
                         .map_err(|e| eyre::eyre!("Failed to create MdbxProofsStorageV2: {e}"))?,
                 );
-                Self::run_backfill(&provider_factory, storage, self.target_earliest_block)?;
+                if self.snapshot {
+                    Self::run_backfill_snapshot(
+                        &provider_factory,
+                        storage,
+                        self.target_earliest_block,
+                    )?;
+                } else {
+                    Self::run_backfill_merge_walk(
+                        &provider_factory,
+                        storage,
+                        self.target_earliest_block,
+                    )?;
+                }
             }
         }
 
         Ok(())
     }
 
-    fn run_backfill<F, S>(
+    /// Open a long-read-safe reth RO provider for the backfill run, logging
+    /// the proofs-window state and target as a side effect.
+    fn prepare_backfill_provider<F, S>(
+        provider_factory: &F,
+        storage: &S,
+        target_earliest_block: u64,
+        strategy: &'static str,
+    ) -> eyre::Result<<F as DatabaseProviderFactory>::Provider>
+    where
+        F: DatabaseProviderFactory,
+        S: OpProofsStore + Send,
+    {
+        let ro = storage.provider_ro()?;
+        let earliest = ro.get_earliest_block_number()?;
+        let latest = ro.get_latest_block_number()?;
+        drop(ro);
+        info!(
+            target: "reth::cli",
+            strategy,
+            ?earliest,
+            ?latest,
+            target_earliest_block,
+            "Starting backfill job"
+        );
+
+        Ok(provider_factory
+            .database_provider_ro()
+            .map_err(|e| eyre::eyre!("Failed to open reth DB provider: {e}"))?
+            .disable_long_read_transaction_safety())
+    }
+
+    fn run_backfill_merge_walk<F, S>(
         provider_factory: &F,
         storage: S,
         target_earliest_block: u64,
@@ -94,24 +148,44 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> BackfillCommand<C> {
             + Send,
         S: OpProofsStore + Send,
     {
-        let ro = storage.provider_ro()?;
-        let earliest = ro.get_earliest_block_number()?;
-        let latest = ro.get_latest_block_number()?;
-        drop(ro);
-        info!(
-            target: "reth::cli",
-            ?earliest,
-            ?latest,
+        let provider = Self::prepare_backfill_provider(
+            provider_factory,
+            &storage,
             target_earliest_block,
-            "Starting backfill job"
-        );
-
-        let provider = provider_factory
-            .database_provider_ro()
-            .map_err(|e| eyre::eyre!("Failed to open reth DB provider: {e}"))?
-            .disable_long_read_transaction_safety();
-
+            "merge-walk",
+        )?;
         BackfillJob::new(provider, storage).run(target_earliest_block)?;
+        Ok(())
+    }
+
+    fn run_backfill_snapshot<F, S>(
+        provider_factory: &F,
+        storage: S,
+        target_earliest_block: u64,
+    ) -> eyre::Result<()>
+    where
+        F: DatabaseProviderFactory,
+        F::Provider: DBProvider
+            + StageCheckpointReader
+            + ChangeSetReader
+            + StorageChangeSetReader
+            + BlockNumReader
+            + BlockHashReader
+            + HeaderProvider
+            + StorageSettingsCache
+            + Send,
+        S: OpProofsStore + Send,
+        for<'a> S::ProviderRO<'a>: OpProofsSnapshotReader,
+        for<'a> S::BackfillProvider<'a>:
+            OpProofsSnapshotProvider + OpProofsSnapshotInitProvider,
+    {
+        let provider = Self::prepare_backfill_provider(
+            provider_factory,
+            &storage,
+            target_earliest_block,
+            "snapshot",
+        )?;
+        BackfillJob::new(provider, storage).run_auto(target_earliest_block)?;
         Ok(())
     }
 }

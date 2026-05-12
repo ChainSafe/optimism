@@ -31,14 +31,18 @@
 //! - branch created at N (existed at N, gone at N-1) → `(path, None)` via `removed_nodes`
 
 use crate::{
-    BlockStateDiff, OpProofsProviderRO, backfill::error::BackfillError, proof::DatabaseStateRoot,
+    BlockStateDiff, OpProofsHashedAccountCursorFactory, OpProofsProviderRO, OpProofsSnapshotReader,
+    SnapshotTrieCursorFactory, backfill::error::BackfillError, proof::DatabaseStateRoot,
 };
 use alloy_primitives::BlockNumber;
 use reth_provider::{
     BlockNumReader, ChangeSetReader, DBProvider, ProviderError, StorageChangeSetReader,
     StorageSettingsCache,
 };
-use reth_trie::{StateRoot, TrieInput};
+use reth_trie::{
+    StateRoot, TrieInput, hashed_cursor::HashedPostStateCursorFactory,
+    trie_cursor::InMemoryTrieCursorFactory,
+};
 use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
 use reth_trie_db::from_reverts_auto;
 use std::time::{Duration, Instant};
@@ -122,5 +126,83 @@ where
     let (_, trie_updates) =
         StateRoot::overlay_root_from_nodes_with_updates(proofs_provider, block_number, input)
             .map_err(ProviderError::other)?;
+    Ok(trie_updates.into_sorted())
+}
+
+/// Snapshot-backed analog of [`compute_block_backfill_diff`].
+///
+/// Equivalent to [`compute_block_backfill_diff`] except the trie-changeset
+/// computation reads from [`SnapshotTrieCursorFactory`] (a direct read of the
+/// snapshot tables) instead of [`crate::OpProofsTrieCursorFactory`] (the
+/// history-aware merge walk over `V2*Trie` + `V2*TrieHistory` +
+/// `V2*TrieChangeSets`).
+///
+/// # Preconditions
+///
+/// The caller must guarantee that the snapshot reflects trie state at
+/// `block_number` — i.e. [`crate::db::SnapshotMeta::earliest`] equals
+/// `BlockNumHash::new(block_number, _)` and the status is `Ready`. The
+/// `BackfillJob` checks this before dispatching to the snapshot path.
+pub(super) fn compute_block_backfill_diff_with_snapshot<P, R>(
+    reth_provider: &P,
+    proofs_provider: R,
+    block_number: BlockNumber,
+) -> Result<(BlockStateDiff, ComputeTimings), BackfillError>
+where
+    P: ChangeSetReader
+        + StorageChangeSetReader
+        + BlockNumReader
+        + DBProvider
+        + StorageSettingsCache,
+    R: OpProofsProviderRO + OpProofsSnapshotReader + Clone,
+{
+    let reverts_start = Instant::now();
+    let sorted_post_state = from_reverts_auto(reth_provider, block_number..=block_number)?;
+    let reverts = reverts_start.elapsed();
+
+    let trie_changesets_start = Instant::now();
+    let sorted_trie_updates = compute_trie_changesets_against_snapshot(
+        proofs_provider,
+        block_number,
+        &sorted_post_state,
+    )?;
+    let trie_changesets_elapsed = trie_changesets_start.elapsed();
+
+    Ok((
+        BlockStateDiff { sorted_trie_updates, sorted_post_state },
+        ComputeTimings { reverts, trie_changesets: trie_changesets_elapsed },
+    ))
+}
+
+fn compute_trie_changesets_against_snapshot<R>(
+    proofs_provider: R,
+    block_number: BlockNumber,
+    individual_state_revert: &HashedPostStateSorted,
+) -> Result<TrieUpdatesSorted, BackfillError>
+where
+    R: OpProofsProviderRO + OpProofsSnapshotReader + Clone,
+{
+    // Same algorithm as `compute_trie_changesets_against_proofs`, but with the
+    // trie cursor swapped for the snapshot reader. The snapshot already reflects
+    // trie state at `block_number`, so no per-node `find_source` work is needed.
+    //
+    // The hashed-leaf cursors still come from `proofs_provider` at max=N. The
+    // leaf walk is sparse here (only paths in the prefix set are visited), so
+    // its cost stays bounded by the per-block diff size.
+    let nodes_sorted = TrieInput::default().nodes.into_sorted();
+    let prefix_sets = individual_state_revert.construct_prefix_sets().freeze();
+    let (_, trie_updates) = StateRoot::new(
+        InMemoryTrieCursorFactory::new(
+            SnapshotTrieCursorFactory::new(proofs_provider.clone()),
+            &nodes_sorted,
+        ),
+        HashedPostStateCursorFactory::new(
+            OpProofsHashedAccountCursorFactory::new(proofs_provider, block_number),
+            individual_state_revert,
+        ),
+    )
+    .with_prefix_sets(prefix_sets)
+    .root_with_updates()
+    .map_err(ProviderError::other)?;
     Ok(trie_updates.into_sorted())
 }
