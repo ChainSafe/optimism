@@ -21,6 +21,7 @@ pub use handle::EngineHandle;
 #[cfg(feature = "metrics")]
 mod metrics;
 mod runner;
+mod service_guard;
 mod state;
 
 /// Default number of blocks to keep in memory before persisting.
