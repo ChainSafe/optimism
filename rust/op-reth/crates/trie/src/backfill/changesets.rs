@@ -38,8 +38,8 @@ use reth_provider::{
     BlockNumReader, ChangeSetReader, DBProvider, ProviderError, StorageChangeSetReader,
     StorageSettingsCache,
 };
-use reth_trie::StateRoot;
-use reth_trie_common::{HashedPostState, HashedPostStateSorted, updates::TrieUpdatesSorted};
+use reth_trie::{StateRoot, TrieInput};
+use reth_trie_common::{HashedPostStateSorted, updates::TrieUpdatesSorted};
 use reth_trie_db::from_reverts_auto;
 use std::time::{Duration, Instant};
 
@@ -114,16 +114,13 @@ where
     //   - modified branch  → (path, Some(value_at_N-1))
     //   - destroyed at N   → (path, Some(value_at_N-1))
     //   - created at N     → (path, None)   (via `removed_nodes`)
-    //
-    // We use `overlay_root_with_updates` (not `*_from_nodes_with_updates`)
-    // because we have no trie-node overlay — only a leaf-state overlay. The
-    // `*_from_nodes_*` variant wraps the trie cursor in
-    // `InMemoryTrieCursorFactory` to merge an in-memory node overlay; with
-    // an empty overlay that wrapper is dead weight on every cursor call
-    // inside the state-root walk's hot path.
-    let post_state: HashedPostState = individual_state_revert.clone().into();
+    let input = TrieInput {
+        nodes: Default::default(),
+        state: individual_state_revert.clone().into(),
+        prefix_sets: individual_state_revert.construct_prefix_sets(),
+    };
     let (_, trie_updates) =
-        StateRoot::overlay_root_with_updates(proofs_provider, block_number, post_state)
+        StateRoot::overlay_root_from_nodes_with_updates(proofs_provider, block_number, input)
             .map_err(ProviderError::other)?;
     Ok(trie_updates.into_sorted())
 }
