@@ -103,6 +103,9 @@ where
         let total = current_earliest - target_earliest_block;
         let start = Instant::now();
         let mut phase_totals = PhaseTimings::default();
+        // Reset the find_source counters so the first progress window reflects
+        // only this backfill run (not any prior reader activity on this thread).
+        let _ = crate::db::find_source_stats::snapshot_and_reset();
         info!(
             target: "reth::op-proofs::backfill",
             from = current_earliest,
@@ -127,6 +130,18 @@ where
                 };
                 let progress_pct = (done as f64 / total as f64) * 100.0;
                 let avg = phase_totals.averages(done);
+                // Window-local find_source stats: counters reset every progress
+                // log, so this reports the FromCurrentState ratio over the last
+                // LOG_EVERY blocks — i.e. the "wasted MDBX seek" fraction that
+                // a bloom-filter fast-path could eliminate.
+                let (from_changeset, from_current_state) =
+                    crate::db::find_source_stats::snapshot_and_reset();
+                let find_source_total = from_changeset + from_current_state;
+                let from_current_state_pct = if find_source_total > 0 {
+                    from_current_state as f64 / find_source_total as f64 * 100.0
+                } else {
+                    0.0
+                };
                 info!(
                     target: "reth::op-proofs::backfill",
                     done,
@@ -135,6 +150,8 @@ where
                     avg_trie_changesets = ?avg.trie_changesets,
                     avg_prepend = ?avg.prepend,
                     avg_validate = ?avg.validate,
+                    find_source_total,
+                    from_current_state_pct = format_args!("{from_current_state_pct:.2}"),
                     "progress: {progress_pct:.2}% ({blocks_per_sec:.1} blk/s, ETA {eta_secs:.0}s)"
                 );
             }

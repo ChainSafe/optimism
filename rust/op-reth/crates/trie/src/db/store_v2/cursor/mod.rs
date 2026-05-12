@@ -151,15 +151,62 @@ where
     let seek_key = seek_key_fn(max_block_number.saturating_add(1));
     let shard = cursor.seek(seek_key)?.filter(|(k, _)| key_filter(k));
     let Some((_, chunk)) = shard else {
+        find_source_stats::record_current_state();
         return Ok(ResolvedSource::FromCurrentState);
     };
 
     // 2. rank(n) = count of entries ≤ n. select(rank) = first entry > n.
     let rank = chunk.rank(max_block_number);
-    Ok(chunk
+    let result = chunk
         .select(rank)
         .map(ResolvedSource::FromChangeset)
-        .unwrap_or(ResolvedSource::FromCurrentState))
+        .unwrap_or(ResolvedSource::FromCurrentState);
+    match &result {
+        ResolvedSource::FromChangeset(_) => find_source_stats::record_changeset(),
+        ResolvedSource::FromCurrentState => find_source_stats::record_current_state(),
+    }
+    Ok(result)
+}
+
+/// Thread-local counter for [`find_source`] outcomes. Used by `BackfillJob`
+/// to log the `FromCurrentState : FromChangeset` ratio alongside its progress
+/// line — that ratio bounds the speedup we could get from a bloom-filter
+/// fast-path that skips the bitmap seek when a key has no entries above
+/// `max_block_number` at all.
+///
+/// Always-on because the per-call overhead is one `Cell::get`+`Cell::set` on a
+/// thread-local — measured at no detectable cost in benchmarks of the hot path.
+pub mod find_source_stats {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FROM_CHANGESET: Cell<u64> = const { Cell::new(0) };
+        static FROM_CURRENT_STATE: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn record_changeset() {
+        FROM_CHANGESET.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(super) fn record_current_state() {
+        FROM_CURRENT_STATE.with(|c| c.set(c.get() + 1));
+    }
+
+    /// Read the current counters and reset both to zero. Returns
+    /// `(from_changeset, from_current_state)`.
+    pub fn snapshot_and_reset() -> (u64, u64) {
+        let cs = FROM_CHANGESET.with(|c| {
+            let v = c.get();
+            c.set(0);
+            v
+        });
+        let curr = FROM_CURRENT_STATE.with(|c| {
+            let v = c.get();
+            c.set(0);
+            v
+        });
+        (cs, curr)
+    }
 }
 
 /// Resolve a historical key's value at `max_block_number` using the history

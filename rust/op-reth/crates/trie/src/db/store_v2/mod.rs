@@ -19,7 +19,9 @@ mod provider_rw;
 mod read;
 mod write;
 
-pub use cursor::{V2AccountCursor, V2AccountTrieCursor, V2StorageCursor, V2StorageTrieCursor};
+pub use cursor::{
+    V2AccountCursor, V2AccountTrieCursor, V2StorageCursor, V2StorageTrieCursor, find_source_stats,
+};
 
 #[cfg(test)]
 mod tests;
