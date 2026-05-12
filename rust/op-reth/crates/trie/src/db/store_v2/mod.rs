@@ -31,7 +31,10 @@ pub use cursor::{
 mod tests;
 
 use super::Tables;
-use crate::{OpProofsStorageError, OpProofsStorageResult, api::OpProofsStore};
+use crate::{
+    OpProofsStorageError, OpProofsStorageResult,
+    api::{OpProofsSnapshotStore, OpProofsStore},
+};
 use reth_db::{
     Database, DatabaseEnv, DatabaseError,
     mdbx::{DatabaseArguments, init_db_for},
@@ -86,6 +89,14 @@ impl OpProofsStore for MdbxProofsStorageV2 {
     }
 
     fn backfill_provider<'a>(&'a self) -> OpProofsStorageResult<Self::BackfillProvider<'a>> {
+        Ok(MdbxProofsProviderV2::new(self.env.tx_mut()?))
+    }
+}
+
+impl OpProofsSnapshotStore for MdbxProofsStorageV2 {
+    type SnapshotProvider<'a> = MdbxProofsProviderV2<<DatabaseEnv as Database>::TXMut>;
+
+    fn snapshot_provider<'a>(&'a self) -> OpProofsStorageResult<Self::SnapshotProvider<'a>> {
         Ok(MdbxProofsProviderV2::new(self.env.tx_mut()?))
     }
 }

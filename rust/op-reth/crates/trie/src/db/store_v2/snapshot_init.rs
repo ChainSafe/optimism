@@ -7,19 +7,18 @@
 
 use super::MdbxProofsProviderV2;
 use crate::{
-    OpProofsStorageResult,
+    OpProofsStorageError, OpProofsStorageResult,
     api::{OpProofsSnapshotInitProvider, SnapshotInitAnchor},
     db::{
-        SnapshotMeta, SnapshotMetaKey,
-        models::{
-            V2AccountsTrie, V2AccountsTrieSnapshot, V2StoragesTrie, V2StoragesTrieSnapshot,
-            V2TrieSnapshotMeta,
-        },
+        SnapshotMeta, SnapshotMetaKey, SnapshotStatus,
+        models::{V2AccountsTrieSnapshot, V2StoragesTrieSnapshot, V2TrieSnapshotMeta},
     },
 };
+use alloy_eips::BlockNumHash;
 use alloy_primitives::B256;
 use reth_db::{
-    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
+    DatabaseError,
+    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
     transaction::{DbTx, DbTxMut},
 };
 use reth_trie::{BranchNodeCompact, StorageTrieEntry, StoredNibbles, StoredNibblesSubKey};
@@ -47,9 +46,14 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         Ok(SnapshotInitAnchor { meta, last_account_trie_key, last_storage_trie_key })
     }
 
-    fn set_snapshot_meta(&self, meta: SnapshotMeta) -> OpProofsStorageResult<()> {
+    fn set_snapshot_init_anchor(&self, anchor: BlockNumHash) -> OpProofsStorageResult<()> {
         let mut cur = self.tx.cursor_write::<V2TrieSnapshotMeta>()?;
-        cur.upsert(SnapshotMetaKey::Singleton, &meta)?;
+        // `insert` errors if a row is already present at this key — caller
+        // must `clear_snapshot` first if they intend to rebuild.
+        cur.insert(
+            SnapshotMetaKey::Singleton,
+            &SnapshotMeta::new(anchor, SnapshotStatus::Building),
+        )?;
         Ok(())
     }
 
@@ -88,68 +92,22 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotInitPro
         Ok(())
     }
 
-    fn account_trie_source_chunk(
-        &self,
-        resume_after: Option<StoredNibbles>,
-        max_entries: usize,
-    ) -> OpProofsStorageResult<Vec<(StoredNibbles, BranchNodeCompact)>> {
-        if max_entries == 0 {
-            return Ok(Vec::new());
-        }
-        let mut cur = self.tx.cursor_read::<V2AccountsTrie>()?;
-        let mut next = match resume_after {
-            None => cur.first()?,
-            Some(after) => {
-                // `seek` returns the first key >= `after`. If it matches
-                // exactly we want the next one; otherwise we're already past.
-                match cur.seek(after.clone())? {
-                    Some((k, _)) if k == after => cur.next()?,
-                    other => other,
-                }
+    fn commit_snapshot(&self) -> OpProofsStorageResult<()> {
+        let mut cur = self.tx.cursor_write::<V2TrieSnapshotMeta>()?;
+        let existing = cur.seek_exact(SnapshotMetaKey::Singleton)?.map(|(_, m)| m);
+        let meta = match existing {
+            Some(m) if m.status == SnapshotStatus::Building => m,
+            _ => {
+                return Err(OpProofsStorageError::DatabaseError(DatabaseError::Other(
+                    "commit_snapshot called without a Building meta row".to_string(),
+                )));
             }
         };
-        let mut out = Vec::with_capacity(max_entries);
-        while let Some((k, v)) = next {
-            if out.len() >= max_entries {
-                break;
-            }
-            out.push((k, v));
-            next = cur.next()?;
-        }
-        Ok(out)
-    }
-
-    fn storage_trie_source_chunk(
-        &self,
-        resume_after: Option<(B256, StoredNibblesSubKey)>,
-        max_entries: usize,
-    ) -> OpProofsStorageResult<Vec<(B256, StoredNibblesSubKey, BranchNodeCompact)>> {
-        if max_entries == 0 {
-            return Ok(Vec::new());
-        }
-        let mut cur = self.tx.cursor_dup_read::<V2StoragesTrie>()?;
-        let mut next = match resume_after {
-            None => cur.first()?,
-            Some((addr, subkey)) => {
-                let positioned = cur
-                    .seek_by_key_subkey(addr, subkey.clone())?
-                    .map(|entry| (addr, entry));
-                match positioned {
-                    Some((a, e)) if a == addr && e.nibbles == subkey => cur.next()?,
-                    Some((a, e)) => Some((a, e)),
-                    None => None,
-                }
-            }
-        };
-        let mut out = Vec::with_capacity(max_entries);
-        while let Some((addr, entry)) = next {
-            if out.len() >= max_entries {
-                break;
-            }
-            out.push((addr, entry.nibbles, entry.node));
-            next = cur.next()?;
-        }
-        Ok(out)
+        cur.upsert(
+            SnapshotMetaKey::Singleton,
+            &SnapshotMeta::new(meta.earliest, SnapshotStatus::Ready),
+        )?;
+        Ok(())
     }
 
     fn commit(self) -> OpProofsStorageResult<()> {

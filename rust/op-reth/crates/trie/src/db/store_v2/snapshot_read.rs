@@ -1,9 +1,9 @@
-//! [`OpProofsSnapshotReader`] implementation for [`MdbxProofsProviderV2`].
+//! [`OpProofsSnapshotProviderRO`] implementation for [`MdbxProofsProviderV2`].
 
 use super::{MdbxProofsProviderV2, cursor::{V2AccountTrieSnapshotCursor, V2StorageTrieSnapshotCursor}};
 use crate::{
     OpProofsStorageResult,
-    api::OpProofsSnapshotReader,
+    api::OpProofsSnapshotProviderRO,
     db::{
         SnapshotMeta, SnapshotMetaKey,
         models::{V2AccountsTrieSnapshot, V2StoragesTrieSnapshot, V2TrieSnapshotMeta},
@@ -13,7 +13,7 @@ use alloy_primitives::B256;
 use reth_db::{cursor::DbCursorRO, transaction::DbTx};
 use std::fmt::Debug;
 
-impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotReader for MdbxProofsProviderV2<TX> {
+impl<TX: DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotProviderRO for MdbxProofsProviderV2<TX> {
     type SnapshotAccountTrieCursor<'tx>
         = V2AccountTrieSnapshotCursor<TX::Cursor<V2AccountsTrieSnapshot>>
     where

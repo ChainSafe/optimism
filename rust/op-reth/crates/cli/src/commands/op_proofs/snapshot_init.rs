@@ -7,7 +7,7 @@ use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_trie::{
-    SnapshotInitJob,
+    OpProofsProviderRO, OpProofsStore, SnapshotInitJob,
     db::MdbxProofsStorageV2,
 };
 use reth_provider::{DBProvider, DatabaseProviderFactory};
@@ -31,6 +31,12 @@ pub struct SnapshotInitCommand<C: ChainSpecParser> {
         required = true
     )]
     pub storage_path: PathBuf,
+
+    /// Block at which to anchor the snapshot. Defaults to the proofs window's
+    /// current `earliest` block (the typical case for accelerating subsequent
+    /// backfills). Must fall inside `[earliest, latest]`.
+    #[arg(long = "proofs-history.target-block", value_name = "TARGET_BLOCK")]
+    pub target_block: Option<u64>,
 }
 
 impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> SnapshotInitCommand<C> {
@@ -53,12 +59,25 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> SnapshotInitCommand<C> {
                 .map_err(|e| eyre::eyre!("Failed to open V2 proofs storage: {e}"))?,
         );
 
+        // Resolve target block: caller-provided or the proofs-window earliest.
+        let target_block = match self.target_block {
+            Some(b) => b,
+            None => storage
+                .provider_ro()
+                .map_err(|e| eyre::eyre!("Failed to open proofs provider: {e}"))?
+                .get_earliest_block_number()?
+                .map(|(n, _)| n)
+                .ok_or_else(|| {
+                    eyre::eyre!("Proofs storage has no earliest block — initialize it first")
+                })?,
+        };
+
         let provider = provider_factory
             .database_provider_ro()
             .map_err(|e| eyre::eyre!("Failed to open reth DB provider: {e}"))?
             .disable_long_read_transaction_safety();
 
-        let outcome = SnapshotInitJob::new(provider, storage).run()?;
+        let outcome = SnapshotInitJob::new(provider, storage).run(target_block)?;
         info!(
             target: "reth::cli",
             earliest = outcome.meta.earliest.number,

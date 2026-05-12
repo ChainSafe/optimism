@@ -8,8 +8,8 @@ use super::{
 };
 use crate::{
     OpProofsBackfillProvider, OpProofsProviderRO, OpProofsSnapshotInitProvider,
-    OpProofsSnapshotProvider, OpProofsSnapshotReader, OpProofsStorageError, OpProofsStore,
-    db::{SnapshotMeta, SnapshotStatus},
+    OpProofsSnapshotProviderRW, OpProofsSnapshotProviderRO, OpProofsStorageError, OpProofsStore,
+    db::SnapshotStatus,
     proof::DatabaseStateRoot,
 };
 use alloy_eips::{BlockNumHash, eip1898::BlockWithParent};
@@ -285,10 +285,11 @@ where
         + BlockHashReader
         + HeaderProvider
         + StorageSettingsCache
-        + Send,
-    S: OpProofsStore + Send,
-    for<'a> S::ProviderRO<'a>: OpProofsSnapshotReader,
-    for<'a> S::BackfillProvider<'a>: OpProofsSnapshotProvider + OpProofsSnapshotInitProvider,
+        + Send
+        + Sync,
+    S: crate::OpProofsSnapshotStore + Send,
+    for<'a> S::ProviderRO<'a>: OpProofsSnapshotProviderRO,
+    for<'a> S::BackfillProvider<'a>: OpProofsSnapshotProviderRW,
 {
     /// Backfill with auto-managed snapshot lifecycle. The recommended entry
     /// point for snapshot-capable storage.
@@ -297,34 +298,25 @@ where
     /// - If a [`SnapshotStatus::Ready`] snapshot aligned with the current
     ///   proofs-window `earliest` exists, [`Self::run_with_snapshot`] is
     ///   called directly.
-    /// - If no snapshot exists *and* `earliest == latest` (fresh init), one is
-    ///   built via [`super::snapshot_init::build_snapshot_at_latest`] and the
-    ///   backfill proceeds.
-    /// - If an existing snapshot is misaligned, partial ([`SnapshotStatus::Building`]),
-    ///   or [`SnapshotStatus::Stale`] *and* `earliest == latest`, the existing
-    ///   snapshot is wiped and rebuilt.
-    /// - Otherwise (snapshot missing/misaligned but `earliest < latest`, so a
-    ///   fresh `SnapshotInitJob` at `latest` would not match the proofs
-    ///   window) the call errors with [`BackfillError::SnapshotNotAligned`]
-    ///   — the operator must drop the snapshot manually and either advance
-    ///   `earliest` back to `latest` or run the merge-walk [`Self::run`].
+    /// - If no snapshot exists, or one exists but is stale / partial / pointing
+    ///   at a different anchor, any existing snapshot is cleared and a fresh
+    ///   one is built at the current `earliest` via
+    ///   [`crate::snapshot::build_snapshot_at_earliest`]. The init reuses the
+    ///   merge-walk cursors so it works regardless of where the proofs window
+    ///   is anchored.
     pub fn run_auto(&self, target_earliest_block: u64) -> Result<(), BackfillError> {
-        let (current_earliest, current_latest, snapshot_meta) = {
+        let (current_earliest, snapshot_meta) = {
             let ro = self.storage.provider_ro()?;
             let earliest = ro
                 .get_earliest_block_number()?
                 .ok_or(BackfillError::Storage(OpProofsStorageError::NoBlocksFound))?;
-            let latest = ro
-                .get_latest_block_number()?
-                .ok_or(BackfillError::Storage(OpProofsStorageError::NoBlocksFound))?;
-            (earliest.0, latest.0, ro.snapshot_meta()?)
+            (earliest.0, ro.snapshot_meta()?)
         };
 
         if target_earliest_block >= current_earliest {
             return Ok(());
         }
 
-        // Classify the snapshot state.
         let aligned = matches!(
             snapshot_meta,
             Some(m) if m.status == SnapshotStatus::Ready
@@ -332,18 +324,10 @@ where
         );
 
         if !aligned {
-            // Can we rebuild? Only when the proofs window is anchored at
-            // `latest` (fresh init), since `build_snapshot_at_latest` always
-            // builds at `latest`.
-            if current_earliest != current_latest {
-                return Err(BackfillError::SnapshotNotAligned {
-                    expected_earliest: current_earliest,
-                    actual_status: snapshot_meta.map(|m| m.status),
-                    actual_earliest: snapshot_meta.map(|m| m.earliest.number),
-                });
-            }
-
-            // Wipe any stale/partial snapshot so the rebuild path is clean.
+            // Wipe any stale / misaligned / partial snapshot so the rebuild
+            // path is clean. The new init walks the merge cursors at
+            // `current_earliest`, so it works regardless of where the
+            // proofs window is anchored.
             if let Some(existing) = snapshot_meta {
                 info!(
                     target: "reth::op-proofs::backfill",
@@ -351,17 +335,17 @@ where
                     existing_earliest = existing.earliest.number,
                     "Snapshot misaligned/partial — dropping before rebuild"
                 );
-                let bp = self.storage.backfill_provider()?;
-                bp.clear_snapshot()?;
-                OpProofsSnapshotInitProvider::commit(bp)?;
+                let sp = self.storage.snapshot_provider()?;
+                sp.clear_snapshot()?;
+                OpProofsSnapshotInitProvider::commit(sp)?;
             }
 
             info!(
                 target: "reth::op-proofs::backfill",
-                anchor = current_latest,
+                anchor = current_earliest,
                 "Auto-building snapshot before backfill"
             );
-            crate::snapshot::build_snapshot_at_latest(&self.provider, &self.storage)?;
+            crate::SnapshotInitJob::new(&self.provider, &self.storage).run(current_earliest)?;
         }
 
         self.run_with_snapshot(target_earliest_block)
@@ -521,16 +505,12 @@ where
         let prepend_start = Instant::now();
         let bp = self.storage.backfill_provider()?;
 
-        // Apply snapshot revert + advance meta BEFORE prepend_block so we can
-        // pass `diff` by value to `prepend_block` without cloning. All three
+        // Move the snapshot to `(N-1, parent_hash)` BEFORE prepend_block so we
+        // can pass `diff` by value to `prepend_block` without cloning. Both
         // operations land in the same rw-tx and commit atomically.
-        bp.apply_snapshot_revert(&diff.sorted_trie_updates)?;
-        OpProofsSnapshotProvider::set_snapshot_meta(
-            &bp,
-            SnapshotMeta::new(
-                BlockNumHash::new(block_number - 1, parent_hash),
-                SnapshotStatus::Ready,
-            ),
+        bp.update_snapshot(
+            BlockNumHash::new(block_number - 1, parent_hash),
+            &diff.sorted_trie_updates,
         )?;
 
         let counts = bp.prepend_block(block_ref, diff)?;

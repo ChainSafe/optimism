@@ -2,6 +2,7 @@
 
 use crate::OpProofsStorageError;
 use alloy_primitives::B256;
+use reth_db::DatabaseError;
 use reth_execution_errors::StateRootError;
 use reth_provider::ProviderError;
 
@@ -29,10 +30,24 @@ pub enum BackfillError {
         /// Expected root from reth's block header.
         expected: B256,
     },
-    /// The snapshot init job ran but reads from the proofs window returned no
-    /// `latest` block — there's nothing to anchor the snapshot to.
-    #[error("snapshot init: proofs window has no latest block")]
-    SnapshotInitNoLatest,
+    /// The snapshot init job ran but the proofs window has no earliest /
+    /// latest pair — there's nothing to anchor the snapshot to.
+    #[error("snapshot init: proofs window has no earliest block")]
+    SnapshotInitNoEarliest,
+    /// The caller passed a target block that's outside the proofs window
+    /// `[earliest, latest]`. The merge-walk cursors used during init only
+    /// have history coverage inside that range.
+    #[error(
+        "snapshot init: target block {target_block} is outside proofs window [{earliest}, {latest}]"
+    )]
+    SnapshotInitTargetOutsideWindow {
+        /// Caller-supplied target block.
+        target_block: u64,
+        /// Proofs-window earliest at the time of the call.
+        earliest: u64,
+        /// Proofs-window latest at the time of the call.
+        latest: u64,
+    },
     /// The snapshot init job found an existing snapshot. The caller must drop
     /// it explicitly before rebuilding to avoid silently discarding state.
     #[error(
@@ -60,8 +75,8 @@ pub enum BackfillError {
         reason: &'static str,
     },
     /// `run_with_snapshot` was called but the snapshot is missing or not
-    /// aligned with the proofs-window `earliest`. The caller must build /
-    /// refresh the snapshot first.
+    /// aligned with the proofs-window `earliest`. Callers that want
+    /// auto-managed lifecycle should use `run_auto` instead.
     #[error(
         "snapshot not aligned with proofs window: expected Ready snapshot at block {expected_earliest}, got status {actual_status:?} at block {actual_earliest:?}"
     )]
@@ -73,4 +88,10 @@ pub enum BackfillError {
         /// Snapshot meta's `earliest.number`, or `None` if no snapshot exists.
         actual_earliest: Option<u64>,
     },
+}
+
+impl From<DatabaseError> for BackfillError {
+    fn from(err: DatabaseError) -> Self {
+        Self::Storage(OpProofsStorageError::from(err))
+    }
 }

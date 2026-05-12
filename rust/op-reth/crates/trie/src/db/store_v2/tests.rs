@@ -11,7 +11,7 @@ use reth_db::{
 };
 use reth_trie::{
     HashedStorage,
-    updates::{StorageTrieUpdates, TrieUpdates},
+    updates::{StorageTrieUpdates, TrieUpdates, TrieUpdatesSorted},
 };
 use tempfile::TempDir;
 
@@ -19,7 +19,7 @@ use crate::{
     BlockStateDiff, OpProofsStorageError,
     api::{
         OpProofsBackfillProvider, OpProofsInitProvider, OpProofsProviderRO, OpProofsProviderRw,
-        OpProofsSnapshotInitProvider, OpProofsSnapshotProvider, OpProofsSnapshotReader,
+        OpProofsSnapshotInitProvider, OpProofsSnapshotProviderRW, OpProofsSnapshotProviderRO,
         WriteCounts,
     },
     db::{
@@ -2154,19 +2154,32 @@ fn snapshot_account_trie_cursor_reads_plain_snapshot_table() {
 // ========================== Snapshot writer tests ==========================
 
 #[test]
-fn snapshot_set_meta_writes_singleton() {
+fn snapshot_set_init_anchor_plants_building_meta() {
     let db = setup_db();
-    let meta = SnapshotMeta::new(
-        BlockNumHash::new(7, B256::repeat_byte(0xEE)),
-        SnapshotStatus::Building,
-    );
+    let anchor = BlockNumHash::new(7, B256::repeat_byte(0xEE));
     {
         let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
-        OpProofsSnapshotProvider::set_snapshot_meta(&provider, meta).expect("set meta");
-        OpProofsSnapshotProvider::commit(provider).expect("commit");
+        provider.set_snapshot_init_anchor(anchor).expect("set anchor");
+        OpProofsSnapshotInitProvider::commit(provider).expect("commit");
     }
     let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
-    assert_eq!(provider.snapshot_meta().expect("meta"), Some(meta));
+    assert_eq!(
+        provider.snapshot_meta().expect("meta"),
+        Some(SnapshotMeta::new(anchor, SnapshotStatus::Building))
+    );
+}
+
+#[test]
+fn snapshot_set_init_anchor_errors_when_meta_already_exists() {
+    let db = setup_db();
+    let anchor = BlockNumHash::new(7, B256::repeat_byte(0xEE));
+    {
+        let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+        provider.set_snapshot_init_anchor(anchor).expect("first plant");
+        OpProofsSnapshotInitProvider::commit(provider).expect("commit");
+    }
+    let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+    assert!(provider.set_snapshot_init_anchor(anchor).is_err());
 }
 
 #[test]
@@ -2250,92 +2263,43 @@ fn snapshot_store_storage_trie_branches_appends_in_dup_order() {
 }
 
 #[test]
-fn snapshot_last_keys_and_source_chunks_drive_resume() {
-    // Tests both halves of the resumable-init machinery in one place:
-    //   - source chunk readers return rows strictly > resume_after, in order
-    //   - destination last-key readers expose the snapshot's frontier
-    //
-    // We seed the *source* tables, drive two manual chunks, and verify that
-    // the snapshot tables get exactly what the chunks asked for, in the
-    // expected order, with last-key reads tracking the frontier.
+fn snapshot_init_anchor_reports_destination_frontier() {
+    // After a chunked init writes some rows into the destination snapshot
+    // tables, `snapshot_init_anchor()` must return the last-written keys so
+    // a re-run can resume from there.
     let db = setup_db();
     let node = sample_node();
 
-    // Seed V2AccountsTrie + V2StoragesTrie with a small set of source rows.
-    let paths_acc = [
-        Nibbles::from_nibbles_unchecked([0x0]),
-        Nibbles::from_nibbles_unchecked([0x1]),
-        Nibbles::from_nibbles_unchecked([0x2]),
-    ];
     let addr = B256::repeat_byte(0x42);
-    let paths_stor = [
-        Nibbles::from_nibbles_unchecked([0x0]),
-        Nibbles::from_nibbles_unchecked([0x1]),
-    ];
+    let path_a = Nibbles::from_nibbles_unchecked([0x0]);
+    let path_b = Nibbles::from_nibbles_unchecked([0x1]);
+
     {
         let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
         provider
-            .store_account_branches(paths_acc.iter().map(|p| (*p, Some(node.clone()))).collect())
-            .expect("seed accounts");
+            .store_account_trie_snapshot_branches(vec![
+                (StoredNibbles(path_a), node.clone()),
+                (StoredNibbles(path_b), node.clone()),
+            ])
+            .expect("store accounts");
         provider
-            .store_storage_branches(
+            .store_storage_trie_snapshot_branches(vec![(
                 addr,
-                paths_stor.iter().map(|p| (*p, Some(node.clone()))).collect(),
-            )
-            .expect("seed storages");
-        OpProofsInitProvider::commit(provider).expect("commit");
+                StoredNibblesSubKey(path_a),
+                node.clone(),
+            )])
+            .expect("store storages");
+        OpProofsSnapshotInitProvider::commit(provider).expect("commit");
     }
 
-    // The init-provider trait is writer-only (matches `OpProofsInitProvider`),
-    // so even read-style methods (`last_*_key`, `*_source_chunk`) require a
-    // mutable tx. Tests stand up one rw provider for the whole test.
-    let ro = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
-
-    // Initial last-keys: snapshot is empty.
-    assert_eq!(
-        OpProofsSnapshotInitProvider::snapshot_init_anchor(&ro).unwrap().last_account_trie_key,
-        None
-    );
-    assert_eq!(
-        OpProofsSnapshotInitProvider::snapshot_init_anchor(&ro).unwrap().last_storage_trie_key,
-        None
-    );
-
-    // First account chunk: 2 rows, no resume key.
-    let chunk1 = ro.account_trie_source_chunk(None, 2).unwrap();
-    assert_eq!(chunk1.len(), 2);
-    assert_eq!(chunk1[0].0, StoredNibbles(paths_acc[0]));
-    assert_eq!(chunk1[1].0, StoredNibbles(paths_acc[1]));
-
-    // Second account chunk: continue strictly after the first chunk's last.
-    let chunk2 = ro.account_trie_source_chunk(Some(chunk1.last().unwrap().0.clone()), 100).unwrap();
-    assert_eq!(chunk2.len(), 1);
-    assert_eq!(chunk2[0].0, StoredNibbles(paths_acc[2]));
-
-    // Past-the-end resume yields an empty chunk (signals "phase exhausted").
-    let chunk3 = ro.account_trie_source_chunk(Some(chunk2[0].0.clone()), 100).unwrap();
-    assert!(chunk3.is_empty());
-
-    // Storage source chunks: same pattern with composite keys.
-    let s_chunk1 = ro.storage_trie_source_chunk(None, 1).unwrap();
-    assert_eq!(s_chunk1.len(), 1);
-    assert_eq!(s_chunk1[0].0, addr);
-    assert_eq!(s_chunk1[0].1, StoredNibblesSubKey(paths_stor[0]));
-
-    let last = s_chunk1.last().unwrap();
-    let s_chunk2 = ro
-        .storage_trie_source_chunk(Some((last.0, last.1.clone())), 100)
-        .unwrap();
-    assert_eq!(s_chunk2.len(), 1);
-    assert_eq!(s_chunk2[0].1, StoredNibblesSubKey(paths_stor[1]));
-
-    let exhausted =
-        ro.storage_trie_source_chunk(Some((s_chunk2[0].0, s_chunk2[0].1.clone())), 100).unwrap();
-    assert!(exhausted.is_empty());
+    let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+    let anchor = provider.snapshot_init_anchor().expect("anchor");
+    assert_eq!(anchor.last_account_trie_key, Some(StoredNibbles(path_b)));
+    assert_eq!(anchor.last_storage_trie_key, Some((addr, StoredNibblesSubKey(path_a))));
 }
 
 #[test]
-fn snapshot_apply_revert_restores_and_removes_account_nodes() {
+fn snapshot_update_restores_and_removes_account_nodes_and_advances_anchor() {
     let db = setup_db();
     let path_keep = Nibbles::from_nibbles_unchecked([0x0]);
     let path_remove = Nibbles::from_nibbles_unchecked([0x1]);
@@ -2352,22 +2316,27 @@ fn snapshot_apply_revert_restores_and_removes_account_nodes() {
     updates.removed_nodes.insert(path_remove);
     let sorted = updates.into_sorted();
 
-    let revert_count = {
+    let new_anchor = BlockNumHash::new(99, B256::repeat_byte(0x99));
+    let count = {
         let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
-        let n = provider.apply_snapshot_revert(&sorted).expect("apply");
-        OpProofsSnapshotProvider::commit(provider).expect("commit");
+        let n = provider.update_snapshot(new_anchor, &sorted).expect("update");
+        OpProofsSnapshotProviderRW::commit(provider).expect("commit");
         n
     };
-    assert_eq!(revert_count, 2);
+    assert_eq!(count, 2);
 
     let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
     let mut acc = provider.snapshot_account_trie_cursor().expect("cursor");
     assert_eq!(acc.seek_exact(path_keep).expect("seek"), Some((path_keep, old_node)));
     assert!(acc.seek_exact(path_remove).expect("seek").is_none());
+    // Anchor advanced to the supplied (Ready, new_anchor).
+    let meta = provider.snapshot_meta().expect("meta").expect("present");
+    assert_eq!(meta.earliest, new_anchor);
+    assert_eq!(meta.status, SnapshotStatus::Ready);
 }
 
 #[test]
-fn snapshot_apply_revert_restores_and_removes_storage_nodes() {
+fn snapshot_update_restores_and_removes_storage_nodes() {
     let db = setup_db();
     let addr = B256::repeat_byte(0x11);
     let path_keep = Nibbles::from_nibbles_unchecked([0x0]);
@@ -2386,17 +2355,37 @@ fn snapshot_apply_revert_restores_and_removes_storage_nodes() {
     updates.storage_tries.insert(addr, storage_updates);
     let sorted = updates.into_sorted();
 
+    let new_anchor = BlockNumHash::new(42, B256::repeat_byte(0x42));
     {
         let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
-        let n = provider.apply_snapshot_revert(&sorted).expect("apply");
+        let n = provider.update_snapshot(new_anchor, &sorted).expect("update");
         assert_eq!(n, 2);
-        OpProofsSnapshotProvider::commit(provider).expect("commit");
+        OpProofsSnapshotProviderRW::commit(provider).expect("commit");
     }
 
     let provider = MdbxProofsProviderV2::new(db.tx().expect("ro tx"));
     let mut stor = provider.snapshot_storage_trie_cursor(addr).expect("cursor");
     assert_eq!(stor.seek_exact(path_keep).expect("seek"), Some((path_keep, old_node)));
     assert!(stor.seek_exact(path_remove).expect("seek").is_none());
+    let meta = provider.snapshot_meta().expect("meta").expect("present");
+    assert_eq!(meta.earliest, new_anchor);
+}
+
+#[test]
+fn snapshot_update_refuses_when_meta_is_building() {
+    let db = setup_db();
+
+    // Plant a Building meta directly. Any update_snapshot call must refuse so
+    // the partial init tables aren't scribbled on top of.
+    write_snapshot_meta(
+        &db,
+        SnapshotMeta::new(BlockNumHash::new(7, B256::repeat_byte(0x07)), SnapshotStatus::Building),
+    );
+
+    let provider = MdbxProofsProviderV2::new(db.tx_mut().expect("rw tx"));
+    let result = provider
+        .update_snapshot(BlockNumHash::new(6, B256::repeat_byte(0x06)), &TrieUpdatesSorted::default());
+    assert!(matches!(result, Err(OpProofsStorageError::DatabaseError(_))), "got: {result:?}");
 }
 
 #[test]

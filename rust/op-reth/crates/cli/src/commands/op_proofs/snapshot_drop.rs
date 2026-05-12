@@ -10,7 +10,8 @@ use reth_node_core::version::version_metadata;
 use reth_optimism_chainspec::OpChainSpec;
 use reth_optimism_primitives::OpPrimitives;
 use reth_optimism_trie::{
-    OpProofsSnapshotInitProvider, OpProofsSnapshotReader, OpProofsStore,
+    OpProofsSnapshotInitProvider, OpProofsSnapshotProviderRO, OpProofsSnapshotStore,
+    OpProofsStore,
     db::MdbxProofsStorageV2,
 };
 use std::{path::PathBuf, sync::Arc};
@@ -67,7 +68,7 @@ impl<C: ChainSpecParser<ChainSpec = OpChainSpec>> SnapshotDropCommand<C> {
             None => info!(target: "reth::cli", "No snapshot present — clear is a no-op"),
         }
 
-        let bp = storage.backfill_provider()?;
+        let bp = storage.snapshot_provider()?;
         bp.clear_snapshot()?;
         OpProofsSnapshotInitProvider::commit(bp)?;
 

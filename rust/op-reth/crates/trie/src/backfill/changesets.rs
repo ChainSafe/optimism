@@ -31,7 +31,7 @@
 //! - branch created at N (existed at N, gone at N-1) → `(path, None)` via `removed_nodes`
 
 use crate::{
-    BlockStateDiff, OpProofsHashedAccountCursorFactory, OpProofsProviderRO, OpProofsSnapshotReader,
+    BlockStateDiff, OpProofsHashedAccountCursorFactory, OpProofsProviderRO, OpProofsSnapshotProviderRO,
     SnapshotTrieCursorFactory, backfill::error::BackfillError, proof::DatabaseStateRoot,
 };
 use alloy_primitives::BlockNumber;
@@ -154,7 +154,7 @@ where
         + BlockNumReader
         + DBProvider
         + StorageSettingsCache,
-    R: OpProofsProviderRO + OpProofsSnapshotReader + Clone,
+    R: OpProofsProviderRO + OpProofsSnapshotProviderRO + Clone,
 {
     let reverts_start = Instant::now();
     let sorted_post_state = from_reverts_auto(reth_provider, block_number..=block_number)?;
@@ -180,7 +180,7 @@ fn compute_trie_changesets_against_snapshot<R>(
     individual_state_revert: &HashedPostStateSorted,
 ) -> Result<TrieUpdatesSorted, BackfillError>
 where
-    R: OpProofsProviderRO + OpProofsSnapshotReader + Clone,
+    R: OpProofsProviderRO + OpProofsSnapshotProviderRO + Clone,
 {
     // Same algorithm as `compute_trie_changesets_against_proofs`, but with the
     // trie cursor swapped for the snapshot reader. The snapshot already reflects

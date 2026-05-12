@@ -299,7 +299,7 @@ impl<'a, T: OpProofsProviderRO + 'a> OpProofsProviderRO for &'a T {
 /// [`SnapshotStatus::Ready`](crate::db::SnapshotStatus::Ready) **and** the
 /// caller's target block equals `meta.earliest.number`.
 #[auto_impl(Arc)]
-pub trait OpProofsSnapshotReader: Send + Sync + Debug {
+pub trait OpProofsSnapshotProviderRO: Send + Sync + Debug {
     /// Cursor over the snapshot's account trie table.
     type SnapshotAccountTrieCursor<'tx>: TrieCursor + 'tx
     where
@@ -325,11 +325,11 @@ pub trait OpProofsSnapshotReader: Send + Sync + Debug {
     ) -> OpProofsStorageResult<Self::SnapshotStorageTrieCursor<'tx>>;
 }
 
-/// Blanket impl of [`OpProofsSnapshotReader`] for shared references.
+/// Blanket impl of [`OpProofsSnapshotProviderRO`] for shared references.
 ///
 /// Mirrors the [`OpProofsProviderRO`] blanket so a `&P` can be threaded into
 /// the same APIs that already accept `&P` for the merge-walk reader.
-impl<'a, T: OpProofsSnapshotReader + 'a> OpProofsSnapshotReader for &'a T {
+impl<'a, T: OpProofsSnapshotProviderRO + 'a> OpProofsSnapshotProviderRO for &'a T {
     type SnapshotAccountTrieCursor<'tx>
         = T::SnapshotAccountTrieCursor<'tx>
     where
@@ -375,31 +375,30 @@ impl<'a, T: OpProofsSnapshotReader + 'a> OpProofsSnapshotReader for &'a T {
 ///
 /// The lifecycle states encoded in [`SnapshotMeta`] are managed by the caller:
 ///
-/// 1. [`SnapshotInitJob`](crate::backfill) populates the snapshot tables, then
-///    [`Self::set_snapshot_meta`] flips the status from `Building` to `Ready`.
-/// 2. Each backfill iteration calls [`Self::apply_snapshot_revert`] to advance
-///    the snapshot one block backward, then [`Self::set_snapshot_meta`] to
-///    record the new `earliest`.
+/// 1. [`SnapshotInitJob`](crate::SnapshotInitJob) populates the snapshot
+///    tables via [`OpProofsSnapshotInitProvider`], then `commit_snapshot`
+///    flips the status from `Building` to `Ready`.
+/// 2. Each backfill (or prune) iteration calls [`Self::update_snapshot`] to
+///    move the snapshot to a new anchor in one atomic step.
 /// 3. If the snapshot falls out of sync with the proofs window, the caller
-///    flips status to `Stale` (or calls [`Self::clear_snapshot`] to drop it).
-pub trait OpProofsSnapshotProvider: OpProofsSnapshotReader {
-    /// Overwrite the singleton snapshot meta row.
-    fn set_snapshot_meta(&self, meta: SnapshotMeta) -> OpProofsStorageResult<()>;
-
-    /// Apply a single block's trie reverts to the snapshot, advancing it one
-    /// block backward.
+///    drops it entirely via
+///    [`OpProofsSnapshotInitProvider::clear_snapshot`].
+pub trait OpProofsSnapshotProviderRW: OpProofsSnapshotProviderRO {
+    /// Move the snapshot to `new_anchor` by applying `trie_updates`.
     ///
-    /// `trie_updates` carries the **before-values** for the block being
-    /// reverted (the same payload prepended into `V2*TrieChangeSets`):
-    /// - `(path, Some(node))` → restore `snapshot[path] = node`
-    /// - `(path, None)` → remove `path` from the snapshot (it did not exist
-    ///   before that block)
+    /// Combines the trie-data write and the anchor advance so they commit
+    /// atomically.
     ///
-    /// Does **not** update [`SnapshotMeta::earliest`]; the caller must invoke
-    /// [`Self::set_snapshot_meta`] to record the new boundary atomically within
-    /// the same transaction.
-    fn apply_snapshot_revert(
+    /// `trie_updates` semantics:
+    /// - `(path, Some(node))` → `snapshot[path] := node`
+    /// - `(path, None)` → remove `path` from the snapshot
+    ///
+    /// Direction is implicit in the diff shape
+    ///
+    /// Returns the number of trie-update entries applied.
+    fn update_snapshot(
         &self,
+        new_anchor: BlockNumHash,
         trie_updates: &TrieUpdatesSorted,
     ) -> OpProofsStorageResult<u64>;
 
@@ -431,7 +430,7 @@ pub struct SnapshotInitAnchor {
 /// Mirrors [`OpProofsInitProvider`]'s role for the original proofs init:
 /// a single trait that bundles all the read + write operations a snapshot-init
 /// job needs, isolated from the per-iteration backfill writer
-/// ([`OpProofsSnapshotProvider`]).
+/// ([`OpProofsSnapshotProviderRW`]).
 ///
 /// The job (see [`crate::snapshot::SnapshotInitJob`]) drives this trait in a
 /// loop of short rw-transactions:
@@ -441,7 +440,7 @@ pub struct SnapshotInitAnchor {
 /// 2. Per chunk: call [`Self::account_trie_source_chunk`] (or storage variant)
 ///    on an RO provider, then [`Self::store_account_trie_snapshot_branches`]
 ///    (or storage variant) on a fresh RW provider, then [`Self::commit`].
-/// 3. After both phases drain, transition status via [`Self::set_snapshot_meta`]
+/// 3. After both phases drain, transition status via [`Self::commit_snapshot`]
 ///    to [`SnapshotStatus::Ready`](crate::db::SnapshotStatus::Ready).
 ///
 /// On a crash mid-init, meta stays at [`SnapshotStatus::Building`](crate::db::SnapshotStatus::Building);
@@ -449,10 +448,17 @@ pub struct SnapshotInitAnchor {
 /// from the partially-populated destination tables, and continues from there.
 pub trait OpProofsSnapshotInitProvider: Send + Sync + Debug {
     /// Read the snapshot init anchor (meta + resume keys) in one call.
+    /// Analog of [`OpProofsInitProvider::initial_state_anchor`].
     fn snapshot_init_anchor(&self) -> OpProofsStorageResult<SnapshotInitAnchor>;
 
-    /// Overwrite the singleton snapshot meta row.
-    fn set_snapshot_meta(&self, meta: SnapshotMeta) -> OpProofsStorageResult<()>;
+    /// Plant the snapshot init anchor — writes meta with status
+    /// [`SnapshotStatus::Building`](crate::db::SnapshotStatus::Building).
+    /// Errors if a meta row already exists (the caller must `clear_snapshot`
+    /// first). Analog of [`OpProofsInitProvider::set_initial_state_anchor`].
+    fn set_snapshot_init_anchor(
+        &self,
+        anchor: alloy_eips::BlockNumHash,
+    ) -> OpProofsStorageResult<()>;
 
     /// Wipe both snapshot tables and the meta row. Used to rebuild from
     /// scratch or to drop a stale snapshot.
@@ -479,30 +485,19 @@ pub trait OpProofsSnapshotInitProvider: Send + Sync + Debug {
         entries: Vec<(B256, StoredNibblesSubKey, BranchNodeCompact)>,
     ) -> OpProofsStorageResult<()>;
 
-    /// Read up to `max_entries` rows from the source account-trie table
-    /// (`V2AccountsTrie`) in ascending key order, **strictly greater than**
-    /// `resume_after`.
-    fn account_trie_source_chunk(
-        &self,
-        resume_after: Option<StoredNibbles>,
-        max_entries: usize,
-    ) -> OpProofsStorageResult<Vec<(StoredNibbles, BranchNodeCompact)>>;
-
-    /// Read up to `max_entries` rows from the source storage-trie table
-    /// (`V2StoragesTrie`) in ascending `(hashed_address, subkey)` order,
-    /// **strictly greater than** `resume_after`.
-    fn storage_trie_source_chunk(
-        &self,
-        resume_after: Option<(B256, StoredNibblesSubKey)>,
-        max_entries: usize,
-    ) -> OpProofsStorageResult<Vec<(B256, StoredNibblesSubKey, BranchNodeCompact)>>;
+    /// Flip the snapshot meta from
+    /// [`SnapshotStatus::Building`](crate::db::SnapshotStatus::Building) to
+    /// [`SnapshotStatus::Ready`](crate::db::SnapshotStatus::Ready) at the same
+    /// anchor. Errors if no `Building` meta exists. Analog of
+    /// [`OpProofsInitProvider::commit_initial_state`].
+    fn commit_snapshot(&self) -> OpProofsStorageResult<()>;
 
     /// Commit the transaction. Consumes the provider.
     fn commit(self) -> OpProofsStorageResult<()>;
 }
 
 /// Factory trait for creating providers to interact with the proofs storage.
-#[auto_impl(Arc)]
+#[auto_impl(&, Arc)]
 pub trait OpProofsStore: Send + Sync + Debug {
     /// The read-only provider type created by the factory.
     type ProviderRO<'a>: OpProofsProviderRO + Clone + 'a
@@ -535,6 +530,39 @@ pub trait OpProofsStore: Send + Sync + Debug {
 
     /// Create a backfill provider for prepend-style writes that extend the window backward.
     fn backfill_provider<'a>(&'a self) -> OpProofsStorageResult<Self::BackfillProvider<'a>>;
+}
+
+#[auto_impl(&, Arc)]
+/// Factory trait extension for stores that maintain a trie-state snapshot.
+///
+/// Implemented only by snapshot-capable backends (currently only the V2 MDBX
+/// store, see [`crate::db::store_v2`]). Non-snapshot backends like V1 and
+/// in-memory only implement [`OpProofsStore`] and are statically excluded
+/// from snapshot-aware code paths (e.g. [`crate::backfill::BackfillJob::run_auto`]
+/// and [`crate::SnapshotInitJob`]).
+///
+/// The returned provider implements **both** writer halves of the snapshot
+/// surface — [`OpProofsSnapshotProviderRW`] for per-iteration writes
+/// (`update_snapshot`) and
+/// [`OpProofsSnapshotInitProvider`] for the chunked init job
+/// (`set_snapshot_init_anchor`, `store_*_branches`, `commit_snapshot`,
+/// `clear_snapshot`, `snapshot_init_anchor`). Both writer surfaces are needed
+/// in different scopes; bundling them on one provider keeps the trait surface
+/// tight and lets a single transaction span init + backfill ops when needed.
+pub trait OpProofsSnapshotStore: OpProofsStore {
+    /// The snapshot provider type created by the factory.
+    ///
+    /// Also requires [`OpProofsProviderRO`] so the init job can construct the
+    /// hashed-leaf cursor factory it uses during state-root validation.
+    type SnapshotProvider<'a>: OpProofsSnapshotProviderRW
+        + OpProofsSnapshotInitProvider
+        + OpProofsProviderRO
+        + 'a
+    where
+        Self: 'a;
+
+    /// Create a snapshot provider for snapshot init / per-iteration write ops.
+    fn snapshot_provider<'a>(&'a self) -> OpProofsStorageResult<Self::SnapshotProvider<'a>>;
 }
 
 /// Status of the initial state anchor.

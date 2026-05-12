@@ -1,4 +1,4 @@
-//! [`OpProofsSnapshotProvider`] implementation for [`MdbxProofsProviderV2`].
+//! [`OpProofsSnapshotProviderRW`] implementation for [`MdbxProofsProviderV2`].
 //!
 //! Per-iteration backfill writer surface. The init-time writer
 //! ([`OpProofsSnapshotInitProvider`](crate::api::OpProofsSnapshotInitProvider))
@@ -6,14 +6,16 @@
 
 use super::MdbxProofsProviderV2;
 use crate::{
-    OpProofsStorageResult,
-    api::OpProofsSnapshotProvider,
+    OpProofsStorageError, OpProofsStorageResult,
+    api::OpProofsSnapshotProviderRW,
     db::{
-        SnapshotMeta, SnapshotMetaKey,
+        SnapshotMeta, SnapshotMetaKey, SnapshotStatus,
         models::{V2AccountsTrieSnapshot, V2StoragesTrieSnapshot, V2TrieSnapshotMeta},
     },
 };
+use alloy_eips::BlockNumHash;
 use reth_db::{
+    DatabaseError,
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO},
     transaction::{DbTx, DbTxMut},
 };
@@ -22,22 +24,31 @@ use reth_trie::{
 };
 use std::fmt::Debug;
 
-impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotProvider
+impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotProviderRW
     for MdbxProofsProviderV2<TX>
 {
-    fn set_snapshot_meta(&self, meta: SnapshotMeta) -> OpProofsStorageResult<()> {
-        let mut cur = self.tx.cursor_write::<V2TrieSnapshotMeta>()?;
-        cur.upsert(SnapshotMetaKey::Singleton, &meta)?;
-        Ok(())
-    }
-
-    fn apply_snapshot_revert(
+    fn update_snapshot(
         &self,
+        new_anchor: BlockNumHash,
         trie_updates: &TrieUpdatesSorted,
     ) -> OpProofsStorageResult<u64> {
+        // Refuse to advance a snapshot that's still being built — the partial
+        // tables under `Building` aren't a valid anchor for a Ready move.
+        if let Some((_, meta)) = self
+            .tx
+            .cursor_read::<V2TrieSnapshotMeta>()?
+            .seek_exact(SnapshotMetaKey::Singleton)? &&
+            meta.status == SnapshotStatus::Building
+        {
+            return Err(OpProofsStorageError::DatabaseError(DatabaseError::Other(format!(
+                "update_snapshot called on a Building snapshot at block {}",
+                meta.earliest.number
+            ))));
+        }
+
         let mut count = 0u64;
 
-        // Account trie revert.
+        // Account trie diff.
         let mut acc = self.tx.cursor_write::<V2AccountsTrieSnapshot>()?;
         for (nibbles, maybe_node) in trie_updates.account_nodes_ref() {
             let key = StoredNibbles(*nibbles);
@@ -52,7 +63,7 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotProvide
             count += 1;
         }
 
-        // Storage trie revert.
+        // Storage trie diff.
         let mut stor = self.tx.cursor_dup_write::<V2StoragesTrieSnapshot>()?;
         for (hashed_address, nodes) in trie_updates.storage_tries_ref() {
             for (nibbles, maybe_node) in nodes.storage_nodes_ref() {
@@ -73,6 +84,13 @@ impl<TX: DbTxMut + DbTx + Send + Sync + Debug + 'static> OpProofsSnapshotProvide
                 count += 1;
             }
         }
+
+        // Advance the anchor atomically with the data write.
+        let mut meta_cur = self.tx.cursor_write::<V2TrieSnapshotMeta>()?;
+        meta_cur.upsert(
+            SnapshotMetaKey::Singleton,
+            &SnapshotMeta::new(new_anchor, SnapshotStatus::Ready),
+        )?;
 
         Ok(count)
     }

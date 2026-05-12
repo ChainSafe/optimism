@@ -8,7 +8,7 @@ use super::{BackfillError, BackfillJob};
 use crate::SnapshotInitJob;
 use crate::{
     MdbxProofsStorageV2, OpProofsStorageError, OpProofsStore, RethTrieStorageLayout,
-    api::{OpProofsProviderRO, OpProofsSnapshotReader},
+    api::{OpProofsProviderRO, OpProofsSnapshotProviderRO},
     db::{
         SnapshotStatus, V2AccountTrieChangeSets, V2AccountsTrie, V2AccountsTrieHistory,
         V2HashedAccountChangeSets, V2HashedAccounts, V2HashedAccountsHistory,
@@ -451,7 +451,7 @@ fn snapshot_init_validates_against_header_and_marks_ready() {
 
     let outcome = {
         let provider = provider_factory.database_provider_ro().unwrap();
-        SnapshotInitJob::new(provider, storage.clone()).run().unwrap()
+        SnapshotInitJob::new(provider, storage.clone()).run(latest_num).unwrap()
     };
 
     // Meta points at latest, status = Ready. The fact that we reached `Ready`
@@ -472,7 +472,7 @@ fn snapshot_init_validates_against_header_and_marks_ready() {
     // Re-running refuses because a snapshot already exists.
     let err = {
         let provider = provider_factory.database_provider_ro().unwrap();
-        SnapshotInitJob::new(provider, storage).run().unwrap_err()
+        SnapshotInitJob::new(provider, storage).run(latest_num).unwrap_err()
     };
     assert!(
         matches!(err, BackfillError::SnapshotAlreadyExists { .. }),
@@ -487,7 +487,7 @@ fn snapshot_init_resumes_partial_build() {
     // then forcibly downgrade meta to `Building` (mimicking a crash before the
     // final Ready commit). Re-run and verify it finishes cleanly with Ready,
     // anchor unchanged, and the snapshot tables exactly mirror the source.
-    use crate::api::OpProofsSnapshotProvider;
+    use crate::api::OpProofsSnapshotProviderRW;
     use crate::db::{SnapshotMeta, V2AccountsTrie, V2AccountsTrieSnapshot, V2StoragesTrie, V2StoragesTrieSnapshot};
     use alloy_eips::BlockNumHash;
     use reth_db::Database;
@@ -498,7 +498,7 @@ fn snapshot_init_resumes_partial_build() {
     // First run — completes normally to Ready.
     {
         let provider = provider_factory.database_provider_ro().unwrap();
-        SnapshotInitJob::new(provider, storage.clone()).run().unwrap();
+        SnapshotInitJob::new(provider, storage.clone()).run(latest_num).unwrap();
     }
     // Sanity: ready + anchor matches latest.
     {
@@ -508,14 +508,22 @@ fn snapshot_init_resumes_partial_build() {
     }
 
     // Force the meta back to Building (simulates crash post-data, pre-final-commit).
+    // Write directly via the DB tx — the trait surface doesn't (and shouldn't)
+    // expose a way to downgrade `Ready → Building` while preserving data.
     {
-        let bp = storage.backfill_provider().unwrap();
-        bp.set_snapshot_meta(SnapshotMeta::new(
-            BlockNumHash::new(latest_num, latest_hash),
-            SnapshotStatus::Building,
-        ))
+        use crate::db::{SnapshotMetaKey, V2TrieSnapshotMeta};
+        use reth_db::{cursor::DbCursorRW, transaction::DbTxMut};
+        let tx = storage.env().tx_mut().unwrap();
+        let mut cur = tx.cursor_write::<V2TrieSnapshotMeta>().unwrap();
+        cur.upsert(
+            SnapshotMetaKey::Singleton,
+            &SnapshotMeta::new(
+                BlockNumHash::new(latest_num, latest_hash),
+                SnapshotStatus::Building,
+            ),
+        )
         .unwrap();
-        OpProofsSnapshotProvider::commit(bp).unwrap();
+        tx.commit().unwrap();
     }
 
     // Resume: SnapshotInitJob detects Building+matching-anchor and resumes.
@@ -524,7 +532,7 @@ fn snapshot_init_resumes_partial_build() {
     // flip to Ready.
     let outcome = {
         let provider = provider_factory.database_provider_ro().unwrap();
-        SnapshotInitJob::new(provider, storage.clone()).run().unwrap()
+        SnapshotInitJob::new(provider, storage.clone()).run(latest_num).unwrap()
     };
     // No new rows were copied — everything was already there.
     assert_eq!(outcome.account_nodes_copied, 0);
@@ -571,45 +579,35 @@ fn snapshot_init_resumes_partial_build() {
 #[test]
 #[serial]
 fn snapshot_init_refuses_resume_when_anchor_moved() {
-    // Stand up a partial Building snapshot at one block, then advance the
-    // proofs window's `latest` (simulating a node processing new blocks),
-    // then re-run init. It must refuse with `SnapshotResumeDriftDetected`.
-    use crate::api::OpProofsSnapshotProvider;
-    use crate::db::SnapshotMeta;
+    // Stand up a partial Building snapshot at one block, then move the
+    // proofs-window `earliest` backward via a merge-walk backfill step.
+    // Re-running init must refuse with `SnapshotResumeDriftDetected` because
+    // the anchor no longer matches `current earliest`.
+    use crate::api::OpProofsSnapshotInitProvider;
     use alloy_eips::BlockNumHash;
 
     let (provider_factory, storage, latest_num, latest_hash) =
-        build_chain_and_initialize_storage(2);
+        build_chain_and_initialize_storage(3);
 
-    // Plant a Building meta with the current anchor (no data needed — the
-    // detection only looks at meta vs latest).
+    // Plant a Building meta with the current `earliest` (= `latest` for a
+    // fresh proofs storage) via the init-provider's `set_snapshot_init_anchor`.
     {
-        let bp = storage.backfill_provider().unwrap();
-        bp.set_snapshot_meta(SnapshotMeta::new(
-            BlockNumHash::new(latest_num, latest_hash),
-            SnapshotStatus::Building,
-        ))
-        .unwrap();
-        OpProofsSnapshotProvider::commit(bp).unwrap();
+        use crate::OpProofsSnapshotStore;
+        let sp = storage.snapshot_provider().unwrap();
+        sp.set_snapshot_init_anchor(BlockNumHash::new(latest_num, latest_hash)).unwrap();
+        OpProofsSnapshotInitProvider::commit(sp).unwrap();
     }
 
-    // Advance the proofs-window `latest` by writing a fake block on top of
-    // the current head. `store_trie_updates` advances `latest`, which is what
-    // the resume-safety check compares against the snapshot anchor.
+    // Move `earliest` backward by running one merge-walk backfill step.
     {
-        use crate::{BlockStateDiff, api::OpProofsProviderRw};
-        use alloy_eips::{NumHash, eip1898::BlockWithParent};
-        let rw = storage.provider_rw().unwrap();
-        let new_block = BlockWithParent::new(
-            latest_hash,
-            NumHash::new(latest_num + 1, B256::repeat_byte(0xAB)),
-        );
-        rw.store_trie_updates(new_block, BlockStateDiff::default()).unwrap();
-        OpProofsProviderRw::commit(rw).unwrap();
+        let provider = provider_factory.database_provider_ro().unwrap();
+        BackfillJob::new(provider, storage.clone()).run(latest_num - 1).unwrap();
     }
 
+    // Re-run init targeting the new `earliest` (latest_num - 1). The existing
+    // Building meta is at latest_num, so the targets don't match → drift.
     let provider = provider_factory.database_provider_ro().unwrap();
-    let err = SnapshotInitJob::new(provider, storage).run().unwrap_err();
+    let err = SnapshotInitJob::new(provider, storage).run(latest_num - 1).unwrap_err();
     assert!(
         matches!(err, BackfillError::SnapshotResumeDriftDetected { .. }),
         "expected SnapshotResumeDriftDetected, got {err:?}"
@@ -627,10 +625,10 @@ fn snapshot_init_errors_when_storage_uninitialized() {
 
     let storage = create_storage();
     let provider = provider_factory.database_provider_ro().unwrap();
-    let err = SnapshotInitJob::new(provider, storage).run().unwrap_err();
+    let err = SnapshotInitJob::new(provider, storage).run(0).unwrap_err();
     assert!(
-        matches!(err, BackfillError::SnapshotInitNoLatest),
-        "expected SnapshotInitNoLatest, got {err:?}"
+        matches!(err, BackfillError::SnapshotInitNoEarliest),
+        "expected SnapshotInitNoEarliest, got {err:?}"
     );
 }
 
@@ -645,7 +643,7 @@ fn run_with_snapshot_extends_window_backward() {
     // Build the snapshot at `latest`.
     {
         let provider = provider_factory.database_provider_ro().unwrap();
-        SnapshotInitJob::new(provider, storage.clone()).run().unwrap();
+        SnapshotInitJob::new(provider, storage.clone()).run(latest_num).unwrap();
     }
 
     // Sanity: snapshot Ready at latest.
@@ -713,11 +711,11 @@ fn run_auto_builds_snapshot_when_missing_and_proceeds() {
 
 #[test]
 #[serial]
-fn run_auto_errors_when_misaligned_and_cannot_rebuild() {
-    // 3-block chain, init storage, then manually run merge-walk backfill so
-    // `earliest` drops below `latest`. Now `run_auto` cannot rebuild the
-    // snapshot (since `build_snapshot_at_latest` would produce a misaligned
-    // snapshot), and there's no existing snapshot — so it errors.
+fn run_auto_builds_snapshot_at_earliest_below_latest() {
+    // 3-block chain, init storage, then run merge-walk backfill so
+    // `earliest` drops below `latest`. `run_auto` should then auto-build a
+    // snapshot anchored at the current `earliest` (using the merge-walk
+    // cursors) and proceed to backfill the remaining blocks.
     let (provider_factory, storage, latest_num, _) = build_chain_and_initialize_storage(3);
 
     {
@@ -726,12 +724,18 @@ fn run_auto_errors_when_misaligned_and_cannot_rebuild() {
         BackfillJob::new(provider, storage.clone()).run(latest_num - 1).unwrap();
     }
 
+    {
+        let provider = provider_factory.database_provider_ro().unwrap();
+        BackfillJob::new(provider, storage.clone()).run_auto(0).unwrap();
+    }
+
     let provider = provider_factory.database_provider_ro().unwrap();
-    let err = BackfillJob::new(provider, storage).run_auto(0).unwrap_err();
-    assert!(
-        matches!(err, BackfillError::SnapshotNotAligned { actual_status: None, .. }),
-        "expected SnapshotNotAligned, got {err:?}"
-    );
+    let genesis_hash = reth_provider::BlockHashReader::block_hash(&provider, 0).unwrap().unwrap();
+    let ro = storage.provider_ro().unwrap();
+    assert_eq!(ro.get_earliest_block_number().unwrap(), Some((0, genesis_hash)));
+    let meta = ro.snapshot_meta().unwrap().unwrap();
+    assert_eq!(meta.status, SnapshotStatus::Ready);
+    assert_eq!(meta.earliest.number, 0);
 }
 
 /// Walk both DBs' rows of `T` in parallel and assert each `(key, value)` pair

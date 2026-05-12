@@ -1,7 +1,7 @@
 //! Implements [`TrieCursorFactory`] and [`HashedCursorFactory`] for [`crate::OpProofsStore`] types.
 
 use crate::{
-    api::{OpProofsProviderRO, OpProofsSnapshotReader},
+    api::{OpProofsProviderRO, OpProofsSnapshotProviderRO},
     cursor::{OpProofsHashedAccountCursor, OpProofsHashedStorageCursor, OpProofsTrieCursor},
 };
 use alloy_primitives::B256;
@@ -68,7 +68,7 @@ pub struct SnapshotTrieCursorFactory<P> {
     reader: P,
 }
 
-impl<P: OpProofsSnapshotReader> SnapshotTrieCursorFactory<P> {
+impl<P: OpProofsSnapshotProviderRO> SnapshotTrieCursorFactory<P> {
     /// Create a new snapshot-backed trie cursor factory.
     pub const fn new(reader: P) -> Self {
         Self { reader }
@@ -77,7 +77,7 @@ impl<P: OpProofsSnapshotReader> SnapshotTrieCursorFactory<P> {
 
 impl<P> TrieCursorFactory for SnapshotTrieCursorFactory<P>
 where
-    P: OpProofsSnapshotReader,
+    P: OpProofsSnapshotProviderRO,
 {
     type AccountTrieCursor<'a>
         = P::SnapshotAccountTrieCursor<'a>
