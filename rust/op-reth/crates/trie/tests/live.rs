@@ -13,7 +13,8 @@ use reth_evm_ethereum::EthEvmConfig;
 use reth_node_api::{NodePrimitives, NodeTypesWithDB};
 use reth_optimism_trie::{
     MdbxProofsStorage, MdbxProofsStorageV2, OpProofStoragePruner, OpProofsStorage, OpProofsStore,
-    engine::{EngineError, EngineHandle}, RethTrieStorageLayout,
+    RethTrieStorageLayout,
+    engine::{EngineError, EngineHandle},
     initialize::InitializationJob,
 };
 use reth_primitives_traits::{Block as _, RecoveredBlock};
