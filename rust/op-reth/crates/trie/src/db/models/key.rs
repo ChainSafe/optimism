@@ -125,7 +125,9 @@ impl Decode for HashedStorageShardedKey {
 
 /// Sharded key for account trie history.
 ///
-/// Encoded as a fixed-size 73-byte buffer (see [`NIBBLE_SUBKEY_LEN`] for the rationale):
+/// Encoded as a fixed-size 73-byte buffer. The nibble portion is right-padded with `0x00` and
+/// followed by a length byte so MDBX's byte-wise sort agrees with `Nibbles`' lex-by-nibble
+/// order:
 ///
 /// ```text
 /// [nibbles: 64 bytes, right-padded 0x00] ++ [length: 1 byte] ++ [block_number: 8 BE bytes]
