@@ -162,14 +162,11 @@ impl Decode for AccountTrieShardedKey {
     fn decode(value: &[u8]) -> Result<Self, DatabaseError> {
         let bytes: &[u8; ACCOUNT_TRIE_SHARDED_KEY_LEN] =
             value.try_into().map_err(|_| DatabaseError::Decode)?;
-        let nibble_buf: &[u8; NIBBLE_SUBKEY_LEN] = bytes[..NIBBLE_SUBKEY_LEN]
-            .try_into()
-            .map_err(|_| DatabaseError::Decode)?;
+        let nibble_buf: &[u8; NIBBLE_SUBKEY_LEN] =
+            bytes[..NIBBLE_SUBKEY_LEN].try_into().map_err(|_| DatabaseError::Decode)?;
         let key = decode_nibble_subkey(nibble_buf);
         let highest_block_number = u64::from_be_bytes(
-            bytes[NIBBLE_SUBKEY_LEN..]
-                .try_into()
-                .map_err(|_| DatabaseError::Decode)?,
+            bytes[NIBBLE_SUBKEY_LEN..].try_into().map_err(|_| DatabaseError::Decode)?,
         );
         Ok(Self { key, highest_block_number })
     }
@@ -221,14 +218,11 @@ impl Decode for StorageTrieShardedKey {
         let bytes: &[u8; STORAGE_TRIE_SHARDED_KEY_LEN] =
             value.try_into().map_err(|_| DatabaseError::Decode)?;
         let hashed_address = B256::from_slice(&bytes[..32]);
-        let nibble_buf: &[u8; NIBBLE_SUBKEY_LEN] = bytes[32..32 + NIBBLE_SUBKEY_LEN]
-            .try_into()
-            .map_err(|_| DatabaseError::Decode)?;
+        let nibble_buf: &[u8; NIBBLE_SUBKEY_LEN] =
+            bytes[32..32 + NIBBLE_SUBKEY_LEN].try_into().map_err(|_| DatabaseError::Decode)?;
         let key = decode_nibble_subkey(nibble_buf);
         let highest_block_number = u64::from_be_bytes(
-            bytes[32 + NIBBLE_SUBKEY_LEN..]
-                .try_into()
-                .map_err(|_| DatabaseError::Decode)?,
+            bytes[32 + NIBBLE_SUBKEY_LEN..].try_into().map_err(|_| DatabaseError::Decode)?,
         );
         Ok(Self { hashed_address, key, highest_block_number })
     }
